@@ -128,6 +128,19 @@ For settings Omarchy declares as a `local` near the top of a file — monitor
 scale, GDK scale — a trailing block cannot reassign the variable, so re-call
 the setter instead. `hl.monitor()` and `hl.env()` are last-wins.
 
+## Shell plugins
+
+`config/plugins.txt` lists plugin git URLs, installed on the client profile by
+`modules/client/50-plugins.sh` via `omarchy plugin add --yes`. Headless boxes
+skip it -- these are bar widgets and desktop UI.
+
+Already-installed plugins are detected by their **git remote**, not their id:
+the id is only knowable after installing, but the URL is what the config has up
+front.
+
+Installing does not place a widget on the bar. Add `enable:<plugin-id>` after a
+URL to also run `omarchy plugin enable`, which writes `shell.json`.
+
 ## Unwanted packages
 
 Removal lists are data, not code -- edit `config/remove/*.txt`, one package per
@@ -145,10 +158,10 @@ package depends on is kept with a warning -- so these lists cannot break
 
 ## Non-goals
 
-- **The top bar is left alone.** `~/.config/omarchy/shell.json` is yours to
-  arrange interactively via `omarchy bar ...`; this repo never writes it. That
-  includes shell plugins under `~/.config/omarchy/plugins/`, such as the
-  Bitwarden bar widget -- install those with `omarchy plugin ...` by hand.
+- **The bar *layout* is left alone.** `~/.config/omarchy/shell.json` is yours
+  to arrange via `omarchy bar ...`; this repo never writes it. Plugins are
+  *installed* (see below) but not placed, unless a `config/plugins.txt` line
+  carries an explicit `enable:<id>` marker.
 - Themes are selected, not vendored -- custom ones install from a git URL via
   `omarchy theme install`.
 

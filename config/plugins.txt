@@ -1,0 +1,17 @@
+# Omarchy shell plugins, installed with `omarchy plugin add <url> --yes`.
+#
+#   <git-url>                      install only
+#   <git-url>  enable:<plugin-id>  install and place on the bar
+#
+# Installing does not put a widget on the bar. Bar layout stays yours to
+# arrange (see README non-goals) and `omarchy plugin enable` writes shell.json,
+# so enabling is opt-in per plugin via the explicit enable: marker.
+
+https://github.com/bobby-nicholas/omaland.git
+https://github.com/brianblakely/omarchy-plugins.git
+https://github.com/Elevate08/qs-bitwarden-cli.git
+https://github.com/SirJul1337/omarchy-lock-explorer.git
+https://github.com/huacnlee/omamail.git
+
+# Installed and placed on the bar, for reference:
+#   https://github.com/Elevate08/qs-bitwarden-cli.git  enable:io.github.elevate08.qs-bitwarden-cli
