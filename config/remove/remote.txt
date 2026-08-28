@@ -1,17 +1,9 @@
-# Removed on remote (headless) machines only -- desktop apps with no place on
-# a box reached over ssh.
+# Removed on remote (headless) machines only -- GUI apps Omarchy preinstalls
+# that are useless without a display.
 
-telegram-desktop
-signal-desktop
-discord
-obsidian-appimage
-
-# The Bitwarden *desktop app*: a GUI, so useless without a display.
-#
-# This is NOT about vault access. Remote hosts do use Bitwarden -- secrets come
-# from the vault on every profile (modules/common/70-secrets.sh) -- they just
-# use bitwarden-cli, which is installed by that module and never removed here.
-# The bar widget (io.github.elevate08.qs-bitwarden-cli) is a shell plugin, not
-# a package; the bar is a non-goal for this repo, so nothing installs it on a
-# remote in the first place.
+obsidian
 bitwarden
+
+# NOT about vault access: remote hosts do use Bitwarden. Secrets come from the
+# vault on every profile (modules/common/70-secrets.sh) via bitwarden-cli,
+# which that module installs and nothing removes. Only the desktop app goes.

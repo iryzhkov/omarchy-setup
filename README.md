@@ -128,6 +128,43 @@ For settings Omarchy declares as a `local` near the top of a file — monitor
 scale, GDK scale — a trailing block cannot reassign the variable, so re-call
 the setter instead. `hl.monitor()` and `hl.env()` are last-wins.
 
+## Agent CLIs and dev tools
+
+`claude`, `codex`, `agy` (antigravity-cli), `pi`, `opencode`, `crush` are **not
+packages** -- they are mise tools under `~/.local/share/mise/installs`. They
+live in `config/mise-tools.txt` and are applied by `modules/common/25-mise.sh`
+with `mise use --global`, which lets mise edit its own TOML rather than this
+repo hand-editing it.
+
+Both profiles get them: a remote is often exactly where you want an agent
+running.
+
+## Packages
+
+**Check before adding anything to `packages/`** -- Omarchy's base install is
+large, and most of what a setup script reaches for is already there:
+
+```bash
+grep -qxw <pkg> /usr/share/omarchy/install/omarchy-base.packages && echo preinstalled
+```
+
+`ripgrep`, `fd`, `lazygit`, `tmux`, `herdr`, `mise-bin`, `git` and `obsidian`
+are all base packages; re-installing them is noise. What remains is genuinely
+absent software (Brave, via Omarchy's own `omarchy install browser brave`, which
+picks the right build per platform) or real post-install configuration.
+
+## herdr
+
+Installed by Omarchy already. Both profiles keep its server running, by
+different means:
+
+- **client** -- `modules/client/55-herdr-autostart.sh` adds
+  `o.launch_on_start("herdr server")` to `~/.config/hypr/autostart.lua`, so it
+  comes up with the Hyprland session.
+- **remote** -- `modules/remote/45-herdr.sh` enables lingering, so the user
+  manager and the server outlive an ssh logout. The client then attaches with
+  `herdr --remote <ssh-target>`.
+
 ## Shell plugins
 
 `config/plugins.txt` lists plugin git URLs, installed on the client profile by

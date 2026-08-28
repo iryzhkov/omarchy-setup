@@ -1,3 +1,8 @@
 # Removed on client (workstation) machines only.
+#
+# None of these are Omarchy base packages, so a fresh install will not have
+# them -- these matter when reprovisioning a machine that already did.
 
-# spotify
+telegram-desktop
+signal-desktop
+discord

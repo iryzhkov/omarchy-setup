@@ -1,0 +1,17 @@
+# Agent CLIs and dev tools, managed by mise (mise-bin is an Omarchy base
+# package, so it is already present).
+#
+#   <tool>[@<version>]     version defaults to latest
+#
+# Applied with `mise use --global`, which edits ~/.config/mise/config.toml
+# properly rather than this repo hand-editing TOML.
+
+claude              # Claude Code
+codex               # OpenAI Codex
+antigravity-cli     # agy
+pi
+opencode
+crush
+
+node
+gh
