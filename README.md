@@ -145,11 +145,17 @@ running.
 large, and most of what a setup script reaches for is already there:
 
 ```bash
-grep -qxw <pkg> /usr/share/omarchy/install/omarchy-base.packages && echo preinstalled
+bin/preinstalled neovim git herdr ripgrep
 ```
 
-`ripgrep`, `fd`, `lazygit`, `tmux`, `herdr`, `mise-bin`, `git` and `obsidian`
-are all base packages; re-installing them is noise. What remains is genuinely
+Do not just grep the base list: it records some packages by what they
+*provide*. The entry is `nvim`, satisfied by the `neovim` package, so a plain
+`grep -w neovim` wrongly reports it missing. `bin/preinstalled` resolves
+provides.
+
+`nvim`/`neovim`, `git`, `mise-bin`, `herdr`, `ripgrep`, `fd`, `lazygit`, `tmux`
+and `obsidian` are all base packages; re-installing them is noise. Modules that
+depend on one use `ensure_cmd`, silent when present. What remains is genuinely
 absent software (Brave, via Omarchy's own `omarchy install browser brave`, which
 picks the right build per platform) or real post-install configuration.
 

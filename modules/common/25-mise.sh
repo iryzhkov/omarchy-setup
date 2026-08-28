@@ -10,7 +10,7 @@
 # format.
 source "${OMARCHY_SETUP_LIB:?}/common.sh"
 
-pkg_install mise-bin
+ensure_cmd mise mise-bin
 
 declare -a tools=()
 while read -r tool; do

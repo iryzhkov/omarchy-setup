@@ -8,7 +8,7 @@
 # GIT_NAME / GIT_EMAIL environment variables.
 source "${OMARCHY_SETUP_LIB:?}/common.sh"
 
-pkg_install git
+ensure_cmd git
 
 [[ -n ${GIT_NAME:-} && -n ${GIT_EMAIL:-} ]] ||
   { warn "GIT_NAME/GIT_EMAIL not set; leaving git identity alone"; exit 0; }

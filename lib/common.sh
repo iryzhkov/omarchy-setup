@@ -209,6 +209,16 @@ read_list() {
 # they skip packages missing from the repos instead of hard-failing.
 pkg_present() { omarchy pkg present "$@" >/dev/null 2>&1; }
 
+# For tools Omarchy ships in its base install. Silent when present, installs
+# only if something removed it -- avoids a pointless "already installed" line
+# on every run while still being self-healing.
+ensure_cmd() {
+  local cmd=$1 pkg=${2:-$1}
+  command -v "$cmd" >/dev/null 2>&1 && return 0
+  warn "$cmd missing though Omarchy ships it; installing $pkg"
+  pkg_install "$pkg"
+}
+
 pkg_install() {
   (( $# )) || return 0
   if pkg_present "$@"; then info "already installed: $*"; return 0; fi

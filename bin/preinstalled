@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Is a package already part of Omarchy's base install?
+#
+#   bin/preinstalled neovim
+#
+# Checks the package name AND everything it provides, because the base list
+# names some packages by what they provide: it says `nvim`, satisfied by the
+# `neovim` package. A plain `grep -w neovim` on the list misses that and
+# wrongly reports it as absent.
+set -euo pipefail
+
+BASE=/usr/share/omarchy/install/omarchy-base.packages
+[[ -f $BASE ]] || { echo "not an Omarchy system: $BASE missing" >&2; exit 2; }
+
+(( $# )) || { echo "usage: preinstalled <package>..." >&2; exit 2; }
+
+status=0
+for pkg in "$@"; do
+  # `|| true`: a package absent from the repos makes pacman (and then the
+  # filters) exit non-zero, which set -e would otherwise treat as fatal.
+  names=$(
+    {
+      echo "$pkg"
+      pacman -Qi "$pkg" 2>/dev/null | sed -n 's/^Provides *: //p' | tr ' ' '\n' || true
+      pacman -Si "$pkg" 2>/dev/null | sed -n 's/^Provides *: //p' | tr ' ' '\n' || true
+    } | sed 's/[<>=].*//' | grep -vx 'None' | grep -v '^$' | sort -u || true
+  )
+  [[ -n $names ]] || names=$pkg
+  match=$(grep -xFf <(printf '%s\n' "$names") "$BASE" 2>/dev/null | head -1 || true)
+  if [[ -n $match ]]; then
+    printf '%-20s PREINSTALLED (base list entry: %s)\n' "$pkg" "$match"
+  else
+    printf '%-20s not in base\n' "$pkg"
+    status=1
+  fi
+done
+exit "$status"

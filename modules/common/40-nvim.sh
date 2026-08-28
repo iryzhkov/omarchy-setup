@@ -5,7 +5,15 @@ source "${OMARCHY_SETUP_LIB:?}/common.sh"
 NVIM_REPO="${NVIM_REPO:-https://github.com/iryzhkov/nvim-configuration.git}"
 NVIM_CONFIG="$HOME/.config/nvim"
 
-pkg_install neovim git
+# Both are Omarchy base packages: the base list entry is `nvim`, which the
+# `neovim` package provides.
+ensure_cmd nvim neovim
+ensure_cmd git
+
+# omarchy-nvim (also in the base list) ships Omarchy's default nvim config. It
+# resolves to nothing in the aarch64 repos so it is absent here, but on x86 it
+# installs and may seed ~/.config/nvim -- which the clone below then moves
+# aside. That is handled, just noisy; nothing is lost.
 
 if [[ -d $NVIM_CONFIG/.git ]]; then
   info "nvim config already cloned; fetching"
