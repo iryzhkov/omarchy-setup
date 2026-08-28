@@ -15,3 +15,12 @@ crush
 
 node
 gh
+
+# Bitwarden CLI, pinned rather than latest.
+#
+# Arch's bitwarden-cli (2026.2.0) is older than the API version Vaultwarden
+# 1.37.2 advertises (2026.6.0), and unlocking against it failed in
+# bitwarden_crypto::keys::master_key with "The provided key is not the expected
+# type". Matching the server's API version fixes it. Bump this when the server
+# is upgraded.
+bitwarden@2026.6.0

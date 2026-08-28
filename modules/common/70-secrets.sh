@@ -44,7 +44,10 @@ if (( DRY_RUN )); then
 fi
 
 # ---- fetch ----------------------------------------------------------------
-pkg_install bitwarden-cli
+# bw comes from mise (config/mise-tools.txt, applied by 25-mise which runs
+# first) so the client matches the server's API version. The Arch package is
+# only a fallback if mise has not provided one.
+ensure_cmd bw bitwarden-cli
 source "$OMARCHY_SETUP_LIB/secrets.sh"
 on_exit bw_finish
 
