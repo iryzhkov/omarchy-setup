@@ -1,0 +1,5 @@
+# Packages removed on EVERY machine, one per line. '#' starts a comment.
+# Anything another package depends on is skipped automatically, so listing
+# something load-bearing cannot break `omarchy update`.
+
+# example-unwanted-thing

@@ -1,0 +1,11 @@
+# Removed on remote (headless) machines only -- desktop apps with no place on
+# a box reached over ssh.
+
+telegram-desktop
+signal-desktop
+discord
+obsidian-appimage
+
+# Remote hosts never get vault access (see README "Secrets"), so the GUI
+# client has no purpose there. bitwarden-cli is left alone.
+bitwarden

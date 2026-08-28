@@ -1,0 +1,6 @@
+# Never commit secret values. See README "Secrets" -- the repo holds the
+# manifest and templates, never the material.
+*.env
+secrets.local/
+*.key
+*.pem

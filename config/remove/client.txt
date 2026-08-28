@@ -1,0 +1,3 @@
+# Removed on client (workstation) machines only.
+
+# spotify
