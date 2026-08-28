@@ -32,7 +32,7 @@ main() {
 
   if ! command -v git >/dev/null 2>&1; then
     echo "==> installing git"
-    sudo pacman -S --noconfirm --needed git
+    omarchy pkg add git
   fi
 
   if (( pre_existing )); then
@@ -41,7 +41,14 @@ main() {
     echo "==> cloning $repo ($ref)"
     rm -rf "$dest"
     mkdir -p "$(dirname "$dest")"
-    git clone --quiet --depth 1 --branch "$ref" "$repo" "$dest"
+    # --branch takes a branch or tag, never a commit SHA, so fall back to a
+    # full clone and checkout. Pinning to a commit is exactly what you want on
+    # a fresh machine, and the shallow form silently fails on one.
+    if ! git clone --quiet --depth 1 --branch "$ref" "$repo" "$dest" 2>/dev/null; then
+      rm -rf "$dest"
+      git clone --quiet "$repo" "$dest"
+      git -C "$dest" checkout --quiet "$ref"
+    fi
   fi
 
   # `curl ... | bash` leaves stdin pointing at the already-consumed script, so

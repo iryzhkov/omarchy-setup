@@ -139,6 +139,19 @@ write_managed_block() {
   local start="$cp >>> omarchy-setup:$id >>>"
   local end="$cp <<< omarchy-setup:$id <<<"
   local content; content=$(cat)
+
+  # A managed block is delimited by exact lines; content containing one would
+  # produce a file we can no longer parse back, and a later rewrite would
+  # strand whatever followed the forged marker.
+  if grep -qxF -e "$start" -e "$end" <<<"$content"; then
+    die "refusing to write block '$id' into $file: content contains a fence marker"
+  fi
+
+  # Write through a symlink rather than replacing it -- these files are often
+  # symlinked out to a dotfiles checkout, and mv would silently break the link
+  # and leave the real file without the block.
+  [[ -L $file ]] && file=$(readlink -f "$file")
+
   local tmp; tmp=$(mktemp)
   local start_ln= end_ln=
 
@@ -201,7 +214,10 @@ remove_managed_block() {
 read_list() {
   local f=$1
   [[ -f $f ]] || return 0
-  sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$f"
+  # A '#' only starts a comment at the beginning of a line or after
+  # whitespace, so a URL fragment (repo.git#ref) survives intact.
+  sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#.*//' \
+      -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$f"
 }
 
 # -------------------------------------------------------------- packages --

@@ -81,9 +81,12 @@ if [[ -z $SETUP_PROFILE ]]; then
 fi
 [[ $SETUP_PROFILE == client || $SETUP_PROFILE == remote ]] ||
   die "unknown profile: $SETUP_PROFILE"
-mkdir -p "$OMARCHY_SETUP_STATE"
-printf '%s\n' "$SETUP_PROFILE" >"$PROFILE_FILE"
+if (( ! DRY_RUN )); then
+  mkdir -p "$OMARCHY_SETUP_STATE"
+  printf '%s\n' "$SETUP_PROFILE" >"$PROFILE_FILE"
+fi
 
+mkdir -p "$OMARCHY_SETUP_STATE"
 OMARCHY_SETUP_LOGFILE="$OMARCHY_SETUP_STATE/last-run.log"
 : >"$OMARCHY_SETUP_LOGFILE"
 # Secrets need a terminal to unlock the vault; skip rather than fail without
