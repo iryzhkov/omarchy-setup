@@ -146,7 +146,9 @@ package depends on is kept with a warning -- so these lists cannot break
 ## Non-goals
 
 - **The top bar is left alone.** `~/.config/omarchy/shell.json` is yours to
-  arrange interactively via `omarchy bar ...`; this repo never writes it.
+  arrange interactively via `omarchy bar ...`; this repo never writes it. That
+  includes shell plugins under `~/.config/omarchy/plugins/`, such as the
+  Bitwarden bar widget -- install those with `omarchy plugin ...` by hand.
 - Themes are selected, not vendored -- custom ones install from a git URL via
   `omarchy theme install`.
 
@@ -212,6 +214,13 @@ left holding no vault data.
 
 Rotation is just a re-run: change the value in Bitwarden, run setup again.
 Nothing hardcodes a key.
+
+This runs on **both profiles** -- a remote needs secrets as much as a
+workstation does, so `bitwarden-cli` is installed there too. What a remote does
+not get is the desktop app or the bar widget
+(`io.github.elevate08.qs-bitwarden-cli`, a shell plugin): both are GUI, and the
+bar is a non-goal here. Keep `config/secrets/remote.map` shorter than the
+client's regardless -- a remote should hold only what it needs to run.
 
 Skipping:
 
