@@ -287,6 +287,33 @@ Skipping:
 Secrets are skipped automatically when there is no terminal to type a master
 password into, so unattended runs still succeed rather than hanging.
 
+**The vault step needs a real terminal.** `bw unlock` uses Node's readline and
+fails with `ERR_USE_AFTER_CLOSE: readline was closed` anywhere without a tty --
+including inside an agent's shell. Run `--only secrets` from a terminal
+yourself; everything else works headless.
+
+### What the rendered file reaches
+
+`secrets.env` is sourced from `.bashrc`, so the variables reach **shell-launched
+processes only** -- terminals, and anything started from one. An app launched
+straight from the Hyprland launcher or a keybind does **not** see them, because
+nothing sources `.bashrc` on that path. If a desktop-launched app ever needs
+one, put it in `~/.config/environment.d/` instead.
+
+### Client version must match the server
+
+Arch's `bitwarden-cli` was four releases behind the API version Vaultwarden
+advertises, and unlocking failed in `bitwarden_crypto::keys::master_key` with
+"The provided key is not the expected type" -- which reads like a wrong
+password but is not. `bitwarden@<version>` is pinned in
+`config/mise-tools.txt`; check the server with:
+
+```bash
+curl -fsSL https://<your-vault>/api/config | jq .version
+```
+
+and bump the pin to match after upgrading Vaultwarden.
+
 Deliberate properties:
 
 - `BW_SESSION` is exported, never passed as `--session`: command-line arguments
