@@ -13,6 +13,11 @@ pi
 opencode
 crush
 
+# node backs the npm-installed tools above, so it stays declared even though it
+# is not what `node` resolves to at a shell: something pulls in the
+# nodejs-lts-jod package, and Omarchy appends the mise shims to PATH *after*
+# /usr/bin on purpose, so /usr/bin/node wins. Reach this one with `mise exec
+# node -- node` when the version actually matters.
 node
 gh
 

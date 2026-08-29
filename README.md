@@ -169,6 +169,14 @@ repo hand-editing it.
 Both profiles get them: a remote is often exactly where you want an agent
 running.
 
+Omarchy appends the mise shims to `PATH` *after* the system directories, so a
+mise tool that also exists as a pacman package is declared but never what runs:
+`node` resolves to `/usr/bin/node` from `nodejs-lts-jod`, not to mise's. That is
+fine for `node`, which is here to back the npm-installed CLIs rather than to be
+typed -- use `mise exec node -- node` when the version matters. It is *not* fine
+for `bw`, where the version has to match the server, which is why the secrets
+step resolves that binary through mise explicitly (see Secrets).
+
 ## Packages
 
 **Check before adding anything to `packages/`** -- Omarchy's base install is
