@@ -55,7 +55,11 @@ main() {
   # any prompt (profile choice, `bw unlock`) would read EOF. Reconnect to the
   # controlling terminal when there is one; stay non-interactive when there
   # isn't, and let run.sh skip what it cannot ask about.
-  if [[ ! -t 0 ]] && : </dev/tty 2>/dev/null; then
+  # `2>/dev/null` comes first on purpose: bash applies redirections left to
+  # right, and a failure to open /dev/tty is reported by the shell itself. With
+  # the order reversed, every run without a controlling terminal prints
+  # "/dev/tty: No such device or address" before anything is suppressed.
+  if [[ ! -t 0 ]] && : 2>/dev/null </dev/tty; then
     exec </dev/tty
   fi
 
