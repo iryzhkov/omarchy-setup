@@ -1,0 +1,11 @@
+-- Steam belongs on the display Sunshine streams to Moonlight.
+--
+-- Sunshine captures KMS monitor 0 -- HDMI-A-1, the Sony TV -- and workspace 1
+-- lives on that output. Without this rule Steam opens wherever the pointer is,
+-- which is normally the ultrawide, and the Moonlight client shows an empty
+-- desktop while Big Picture sits on a monitor nobody is streaming.
+--
+-- Hyprland's follow_mouse = 1 means new windows land on the focused monitor,
+-- so games launched from Big Picture follow the pointer, not this rule. Keep
+-- the pointer on the TV when playing remotely.
+o.window({ class = "^steam$" }, { workspace = "1" })
