@@ -46,9 +46,13 @@ fi
 # ---- fetch ----------------------------------------------------------------
 # bw comes from mise (config/mise-tools.txt, applied by 25-mise which runs
 # first) so the client matches the server's API version. The Arch package is
-# only a fallback if mise has not provided one.
-ensure_cmd bw bitwarden-cli
+# only a fallback if mise has not provided one -- and bw_resolve prefers the
+# mise build even when the Arch one is installed and earlier on PATH.
 source "$OMARCHY_SETUP_LIB/secrets.sh"
+if ! bw_resolve; then
+  ensure_cmd bw bitwarden-cli
+  bw_resolve || die "no bitwarden CLI available"
+fi
 on_exit bw_finish
 
 bw_configure_server "$BW_SERVER"

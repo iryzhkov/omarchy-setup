@@ -14,6 +14,22 @@ OMARCHY_SETUP_LIB="${OMARCHY_SETUP_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" &&
 OMARCHY_SETUP_ROOT="${OMARCHY_SETUP_ROOT:-$(cd "$OMARCHY_SETUP_LIB/.." && pwd)}"
 OMARCHY_SETUP_STATE="${OMARCHY_SETUP_STATE:-$HOME/.local/state/omarchy-setup}"
 
+# ------------------------------------------------------------ omarchy env --
+# `ssh host "cmd"` and `curl ... | bash` both run a non-login, non-interactive
+# shell, which sources neither /etc/profile.d/omarchy.sh nor ~/.bashrc. Omarchy
+# commands need OMARCHY_PATH: without it `omarchy theme list` looks in
+# "/themes/" and reports every theme as nonexistent, and `omarchy plugin`
+# refuses to run at all. The same file appends the mise shims to PATH, which is
+# what makes claude, codex and bw findable.
+#
+# env-bootstrap is Omarchy's own declared single source of truth for both, and
+# is idempotent, so sourcing it here is exactly what a login shell would do.
+if [[ -r /usr/share/omarchy/default/bash/env-bootstrap ]]; then
+  source /usr/share/omarchy/default/bash/env-bootstrap
+else
+  export OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+fi
+
 # ------------------------------------------------------------- personal ----
 # Sourced here rather than in run.sh so a module run on its own still has them.
 # Every entry uses ${VAR:-default}, so anything already exported wins.
@@ -269,6 +285,45 @@ pkg_remove() {
   (( ${#targets[@]} )) || return 0
   step "removing: ${targets[*]}"
   run omarchy pkg drop "${targets[@]}"
+}
+
+# ---------------------------------------------------------------- hypr -----
+# Apply a config change to the running session.
+#
+# Over ssh there is no HYPRLAND_INSTANCE_SIGNATURE, so plain `hyprctl reload`
+# refuses to do anything and the machine keeps its old config until the next
+# login. `hyprctl instances` works without the variable, so a single running
+# session can be addressed by name -- which is what makes setting up a
+# workstation remotely actually take effect.
+hypr_reload() {
+  (( DRY_RUN )) && return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+
+  local sig="${HYPRLAND_INSTANCE_SIGNATURE:-}"
+  if [[ -z $sig ]]; then
+    local -a sigs=()
+    while read -r line; do sigs+=("$line"); done < <(
+      hyprctl instances 2>/dev/null | sed -n 's/^instance \(.*\):$/\1/p'
+    )
+    case ${#sigs[@]} in
+      0) return 0 ;;                                  # no session; nothing to reload
+      1) sig=${sigs[0]} ;;
+      *) warn "${#sigs[@]} Hyprland instances running; not reloading any"; return 0 ;;
+    esac
+  fi
+
+  HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl reload >/dev/null 2>&1 || {
+    warn "hyprctl reload failed"
+    return 0
+  }
+  local errs
+  errs=$(HYPRLAND_INSTANCE_SIGNATURE="$sig" hyprctl configerrors 2>/dev/null || true)
+  if [[ -n $errs && $errs != *"no errors"* ]]; then
+    warn "hyprland reported config errors:"
+    printf '%s\n' "$errs" >&2
+  else
+    ok "hyprland reloaded cleanly"
+  fi
 }
 
 # ----------------------------------------------------------------- state --

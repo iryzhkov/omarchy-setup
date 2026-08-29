@@ -17,6 +17,37 @@ source "${OMARCHY_SETUP_LIB:?}/common.sh"
 
 _BW_WE_LOGGED_IN=0
 
+# ---------------------------------------------------------- which bw ------
+# The client must match the API version the server advertises (see README):
+# an older CLI fails to unlock inside bitwarden_crypto with an error that reads
+# like a wrong master password. config/mise-tools.txt pins the right one, but
+# Omarchy appends the mise shims *after* the system paths, so a
+# pacman-installed bitwarden-cli shadows the pinned build on PATH.
+#
+# Every bw call in this file goes through the resolved binary, never PATH.
+BW_BIN="${BW_BIN:-}"
+
+bw_resolve() {
+  local mise_bw path_bw
+  mise_bw=$(mise which bw 2>/dev/null || true)
+  path_bw=$(command -v bw 2>/dev/null || true)
+  if [[ -n $mise_bw ]]; then
+    BW_BIN=$mise_bw
+    if [[ -n $path_bw && $path_bw != "$mise_bw" ]]; then
+      info "using the pinned bw $("$mise_bw" --version 2>/dev/null); $path_bw ($("$path_bw" --version 2>/dev/null)) would shadow it on PATH"
+    fi
+  elif [[ -n $path_bw ]]; then
+    BW_BIN=$path_bw
+    warn "no mise-managed bw; using $path_bw, which may not match the server's API version"
+  else
+    return 1
+  fi
+  export BW_BIN
+  return 0
+}
+
+bw() { command "${BW_BIN:?bitwarden CLI not resolved; call bw_resolve first}" "$@"; }
+
 bw_status() { bw status 2>/dev/null | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p'; }
 
 # Point the CLI at a self-hosted server before any login attempt.

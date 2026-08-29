@@ -107,6 +107,36 @@ hosts/<hostname>/       per-machine overrides, layered on top of config/
 Modules from `common/` and the active profile are merged and ordered by their
 numeric prefix, so `35-sshd` (remote) slots between the shared `30-` and `40-`.
 
+## Running over ssh
+
+Setting up a workstation from another machine works, and is how this repo is
+tested:
+
+```bash
+ssh <host> 'curl -fsSL https://raw.githubusercontent.com/iryzhkov/omarchy-setup/main/install.sh | bash -s -- --profile client'
+```
+
+Three things differ from running it at the machine, and each is handled:
+
+- **`OMARCHY_PATH` is not set.** `ssh host 'cmd'` runs a non-login,
+  non-interactive shell, which sources neither `/etc/profile.d/omarchy.sh` nor
+  `~/.bashrc`. Without that variable Omarchy's own commands break in confusing
+  ways: `omarchy theme list` looks in `/themes/` and reports every theme as
+  nonexistent, so `omarchy theme set kanagawa` answers "Theme 'kanagawa' does
+  not exist", and `omarchy plugin` refuses to run at all. `lib/common.sh`
+  sources Omarchy's `default/bash/env-bootstrap`, which is its declared single
+  source of truth for `OMARCHY_PATH` and for the `PATH` entries that make the
+  mise shims findable.
+- **Hyprland is running but unaddressable.** There is no
+  `HYPRLAND_INSTANCE_SIGNATURE` over ssh, so a plain `hyprctl reload` does
+  nothing. `hypr_reload` reads `hyprctl instances` instead and reloads the one
+  running session by name, so a remote run takes effect immediately rather than
+  at the next login. With no session, or more than one, it does nothing.
+- **There is no terminal.** Secrets are skipped automatically (see below), and
+  a module failure cannot be confirmed interactively -- so an unattended run
+  continues through the remaining modules and names every failure at the end,
+  rather than stopping at the first one and hiding the rest.
+
 ## Managed blocks
 
 Omarchy's own migrations rewrite files under `~/.config/hypr/` on
@@ -158,6 +188,37 @@ and `obsidian` are all base packages; re-installing them is noise. Modules that
 depend on one use `ensure_cmd`, silent when present. What remains is genuinely
 absent software (Brave, via Omarchy's own `omarchy install browser brave`, which
 picks the right build per platform) or real post-install configuration.
+
+## Neovim
+
+`~/.config/nvim` is a checkout of `NVIM_REPO` (`--nvim-repo`), deliberately left
+as a git repo so it stays yours to edit and push.
+
+**x86 and aarch64 start from different places.** On x86 the `omarchy-nvim`
+package ships a complete LazyVim config in `/etc/skel/.config/nvim`, so a fresh
+user already has `~/.config/nvim` before this repo runs; the aarch64 fork has no
+such package and the directory is absent. The module handles both: a seeded
+config that is not a git checkout is moved to
+`~/.config/nvim.omarchy-setup.bak.<epoch>` once, and the repo is cloned in its
+place. `omarchy-nvim-setup` will not re-seed over a directory that exists, so
+the move does not fight `omarchy update`.
+
+Delete the backup once you are happy; nothing reads it.
+
+**Plugins are installed with `Lazy! restore`, not `Lazy! sync`.** The config repo
+commits a `lazy-lock.json` and that lockfile is the pin. `sync` *updates* it,
+which both ignores the pin and leaves the checkout dirty -- and a dirty checkout
+is what then blocks the next run's `git pull --ff-only`. `restore` installs
+what is missing at the locked commits and leaves the tree clean. A config with
+no lockfile falls back to `sync`.
+
+Updating a pin is therefore a deliberate act in the config repo (`:Lazy sync`,
+then commit the lockfile), not a side effect of running setup.
+
+A checkout with local changes is left alone entirely, with the `git status`
+printed. Omarchy migrations do write into `~/.config/nvim` -- the
+remote-clipboard migration installs a file there -- so this is a real state to
+land in, and skipping the pull beats failing halfway through it.
 
 ## herdr
 
@@ -313,6 +374,13 @@ curl -fsSL https://<your-vault>/api/config | jq .version
 ```
 
 and bump the pin to match after upgrading Vaultwarden.
+
+The pinned client also has to be the one that actually runs. Omarchy appends
+the mise shims to `PATH` *after* the system directories, so a pacman-installed
+`bitwarden-cli` at `/usr/bin/bw` shadows the mise build -- silently reintroducing
+the version mismatch above. `bw_resolve` in `lib/secrets.sh` therefore asks mise
+for the path (`mise which bw`) and calls that binary directly, falling back to
+`PATH` only when mise has no `bw` at all.
 
 Deliberate properties:
 

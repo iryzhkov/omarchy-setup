@@ -141,7 +141,7 @@ fi
 
 (( ${#SELECTED[@]} )) || die "no modules matched"
 
-failed=0
+declare -a FAILED=()
 for m in "${SELECTED[@]}"; do
   name=$(basename "$m" .sh)
   step "$name"
@@ -149,11 +149,19 @@ for m in "${SELECTED[@]}"; do
     mark_ran "$name"
   else
     fail "module failed: $name"
-    failed=1
-    confirm "continue with the remaining modules?" || break
+    FAILED+=("$name")
+    # An unattended run has nobody to ask, and stopping at the first failure
+    # would hide every later one. Carry on and report them all at the end.
+    if [[ $ASSUME_YES == 1 || ! -t 0 ]]; then
+      warn "continuing with the remaining modules"
+    elif ! confirm "continue with the remaining modules?"; then
+      break
+    fi
   fi
 done
 
 echo >&2
-(( failed )) && die "finished with failures (log: $OMARCHY_SETUP_LOGFILE)"
+if (( ${#FAILED[@]} )); then
+  die "finished with failures: ${FAILED[*]} (log: $OMARCHY_SETUP_LOGFILE)"
+fi
 ok "done (log: $OMARCHY_SETUP_LOGFILE)"

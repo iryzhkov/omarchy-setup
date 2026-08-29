@@ -14,6 +14,6 @@ write_managed_block "$HOME/.config/hypr/autostart.lua" herdr '--' <<'LUA'
 o.launch_on_start("herdr server")
 LUA
 
-if (( ! DRY_RUN )) && command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
-  hyprctl reload >/dev/null 2>&1 || true
-fi
+# Deliberately no `hyprctl reload` here: launch_on_start is read when the
+# session starts, so the block takes effect at the next login. Reloading would
+# look like it did something and would not.

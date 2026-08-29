@@ -46,13 +46,6 @@ for name in $(printf '%s\n' "${!names[@]}" | sort); do
   applied=1
 done
 
-if (( applied && ! DRY_RUN )) && command -v hyprctl >/dev/null && [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
-  hyprctl reload >/dev/null
-  errs=$(hyprctl configerrors 2>/dev/null || true)
-  if [[ -n $errs && $errs != *"no errors"* ]]; then
-    warn "hyprland reported config errors:"
-    printf '%s\n' "$errs" >&2
-  else
-    ok "hyprland reloaded cleanly"
-  fi
+if (( applied )); then
+  hypr_reload
 fi
