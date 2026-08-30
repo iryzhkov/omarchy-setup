@@ -12,8 +12,7 @@
 --
 -- The monitor half matters beyond preference: Hyprland opens new windows on
 -- the focused monitor, so with the default a stray pointer decides where an
--- app launches. That is what put Steam on the ultrawide while Sunshine was
--- streaming the TV (see hosts/omarchy-pc/hypr/hyprland.lua).
+-- app launches, which is disruptive on a multi-monitor desk.
 hl.config({
   input = {
     follow_mouse = 0,
