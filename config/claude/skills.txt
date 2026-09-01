@@ -8,6 +8,9 @@
 # written here rather than installed live in config/claude/skills/<name>/ and
 # are copied in as owned files. The `omarchy` and `diagnose-crash` skills are
 # linked by Omarchy's own migrations and are not listed.
+#
+# Add-only, like the package lists: a skill installed by hand or dropped from
+# this file is never removed by a run.
 
 mattpocock/skills      code-review codebase-design diagnosing-bugs domain-modeling grill-me grill-with-docs grilling handoff implement improve-codebase-architecture prototype resolving-merge-conflicts setup-matt-pocock-skills tdd to-spec to-tickets triage wayfinder
 juliusbrussee/caveman  caveman
