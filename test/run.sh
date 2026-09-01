@@ -26,6 +26,9 @@ mkdir -p "$HOME/.config/hypr" "$T/bin"
 printf '#!/bin/sh\ncase "$1" in configerrors) echo "no errors";; esac\nexit 0\n' >"$T/bin/hyprctl"
 chmod +x "$T/bin/hyprctl"
 export PATH="$T/bin:$PATH"
+# hypr_reload addresses the session through this variable; pin it so the stub
+# path is taken the same way on a desktop and in CI.
+export HYPRLAND_INSTANCE_SIGNATURE=stub
 
 HYPR="$HOME/.config/hypr"
 for n in hyprland bindings input autostart looknfeel monitors; do
