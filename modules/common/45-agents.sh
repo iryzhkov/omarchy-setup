@@ -124,12 +124,20 @@ else
   run "$OV_MCP_DIR/venv/bin/pip" install -q mcp httpx
 fi
 
-# Machine config: address only. The key comes from OV_API_KEY (secrets.env),
-# the api_key line here (never written by this repo), or the GNOME keyring.
-{
-  printf '# Written by omarchy-setup from OV_BASE_URL in config/defaults.conf.\n'
-  printf 'base_url = "%s"\nagent = "claude-code"\ntimeout = 120\n' "$OV_BASE_URL"
-} | write_owned_file "$HOME/.config/ov-mcp/config.toml"
+# Machine config is seeded once, never overwritten: a machine may keep its API
+# key in this file (a headless or autologin box has no unlocked keyring), and
+# TOML has no include line to hide behind. Seeded content is the address only;
+# the key comes from OV_API_KEY (secrets.env), an api_key line added by hand,
+# or the GNOME keyring (service=openviking key=api).
+OV_CONF="$HOME/.config/ov-mcp/config.toml"
+if [[ -f $OV_CONF ]]; then
+  info "config.toml: present, left alone"
+else
+  {
+    printf '# Seeded by omarchy-setup from OV_BASE_URL in config/defaults.conf; yours to edit.\n'
+    printf 'base_url = "%s"\nagent = "claude-code"\ntimeout = 120\n' "$OV_BASE_URL"
+  } | write_owned_file "$OV_CONF" 0600
+fi
 
 if command -v claude >/dev/null 2>&1; then
   if claude mcp get ov-memory >/dev/null 2>&1; then

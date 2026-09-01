@@ -70,7 +70,7 @@ Two stores hold long-term notes:
   tools (`memory_search`, `memory_read`, `memory_write`, ...). Guidance lives in the
   `ov-memory` skill. It is shared by every agent on every machine and is the only store that
   holds homelab, project and cross-machine knowledge.
-- **Machine-local Claude memory** at `~/.claude/projects/-home-igor/memory/` — this laptop's
+- **Machine-local Claude memory** at `~/.claude/projects/-home-igor/memory/` — this machine's
   own notes. Its `MEMORY.md` index loads automatically each session, so it is a fast cache,
   not the whole picture. Every note in it is also mirrored into OV.
 
@@ -82,7 +82,7 @@ service, a machine you cannot see, or "how did we set this up last time". Work t
 earns it.
 
 The auto-loaded `MEMORY.md` index is a starting point, never the answer. It carries one line per
-note, and OV holds much more than this laptop's notes, so a lookup that stops at the index is
+note, and OV holds much more than this machine's notes, so a lookup that stops at the index is
 incomplete. When a recalled memory names a file, service or flag, verify it still exists before
 acting on it.
 
@@ -94,7 +94,7 @@ them; `asahi`, `omarchy`, `emby`, `homeassistant`, `gaming-pc` and the project n
 already), and create a namespace only for a genuinely new subject.
 
 Additionally write the note to `~/.claude/projects/-home-igor/memory/` when it is about this
-laptop specifically, so it keeps loading automatically at session start; add its one-line
+machine specifically, so it keeps loading automatically at session start; add its one-line
 pointer to `MEMORY.md` as well. In that case the two copies say the same thing on purpose — the
 machine-local file is the cache, OV is the record.
 

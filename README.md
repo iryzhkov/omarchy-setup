@@ -252,7 +252,7 @@ again. Today:
 | What | How |
 |------|-----|
 | default agent | writes `claude` to `~/.config/omarchy/defaults/agent` (the command form would exec the agent) |
-| `CLAUDE.md` | `config/claude/CLAUDE.md` becomes the owned `~/.claude/omarchy-setup/CLAUDE.md`; `~/.claude/CLAUDE.md` gets one fenced `@~/.claude/omarchy-setup/CLAUDE.md` import line |
+| `CLAUDE.md` | `config/claude/CLAUDE.md` becomes the owned `~/.claude/omarchy-setup/CLAUDE.md`; `~/.claude/CLAUDE.md` gets one fenced `@~/.claude/omarchy-setup/CLAUDE.md` import line. Machine-specific instructions (a `# This machine` section) stay in `~/.claude/CLAUDE.md` outside the fence |
 | `settings.json` | keys in `config/claude/settings.json` are merged in with `jq`; `permissions.allow` is the union, so allows added on the machine survive |
 | skills written here | `config/claude/skills/<name>/` copied to `~/.claude/skills/<name>/` as owned files |
 | published skills | `config/claude/skills.txt` lists `owner/repo` plus skill names, installed with `npx skills add ... -g -a claude-code`; a name already present in `~/.claude/skills` is skipped |
@@ -261,7 +261,7 @@ Skills follow the same rule as packages: the list only ever adds. A skill
 installed by hand with `npx skills add`, or one dropped from `skills.txt`, is
 left in place -- nothing here removes a skill. Updating published skills is
 `npx skills update -g`, deliberately not part of a run.
-| memory | clones `OV_MCP_REPO` to `~/.local/lib/ov-mcp`, builds its venv, writes `~/.config/ov-mcp/config.toml` from `OV_BASE_URL`, registers it as the user-scope MCP server `ov-memory` |
+| memory | clones `OV_MCP_REPO` to `~/.local/lib/ov-mcp`, builds its venv, seeds `~/.config/ov-mcp/config.toml` from `OV_BASE_URL` (once; a machine may keep its key there), registers it as the user-scope MCP server `ov-memory` |
 
 The OpenViking API key is never written by this repo: ov-mcp reads
 `OV_API_KEY` (put it in the secrets manifest if the vault holds it), then the
