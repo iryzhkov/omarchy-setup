@@ -264,9 +264,14 @@ remove_managed_block() {
   s=$(grep -nxF -- "$start" "$file" | head -1 | cut -d: -f1) || return 0
   e=$(grep -nxF -- "$end" "$file" | head -1 | cut -d: -f1) || return 0
   [[ -n $s && -n $e && $s -lt $e ]] || return 0
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '%s  would remove%s block %s from %s\n' "$C_DIM" "$C_RESET" "$id" "$file" >&2
+    return 0
+  fi
   local tmp; tmp=$(mktemp)
   { head -n "$((s - 1))" "$file"; tail -n "+$((e + 1))" "$file"; } >"$tmp"
-  run mv "$tmp" "$file"
+  chmod --reference="$file" "$tmp"
+  mv "$tmp" "$file"
   ok "$(basename "$file"): block '$id' removed"
 }
 

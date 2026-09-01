@@ -81,6 +81,13 @@ if command -v npx >/dev/null 2>&1; then
         info "skill already installed: $name"
         continue
       fi
+      # A ~/.claude copied from another machine brings the symlinks but not
+      # ~/.agents/skills behind them; clear the dangling link so the install
+      # can recreate it.
+      if [[ -L $CLAUDE_DIR/skills/$name ]]; then
+        info "skill $name: dangling link, reinstalling"
+        run rm -f -- "$CLAUDE_DIR/skills/$name"
+      fi
       step "installing skill: $name (from $source)"
       run npx -y skills add "$source" -g -y -a claude-code -s "$name" ||
         warn "could not install skill $name"

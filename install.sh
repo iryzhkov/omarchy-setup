@@ -39,6 +39,11 @@ main() {
 
   if (( pre_existing )); then
     echo "==> using existing checkout at $dest"
+    # The kept clone from an earlier bootstrap: bring it up to date, but never
+    # override local work -- --ff-only refuses anything that is not a plain
+    # fast-forward, and a failure just runs what is there.
+    git -C "$dest" pull --ff-only --quiet 2>/dev/null ||
+      echo "==> could not fast-forward $dest; running it as it is"
   else
     echo "==> cloning $repo ($ref)"
     rm -rf "$dest"
