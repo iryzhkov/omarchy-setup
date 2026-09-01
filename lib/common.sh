@@ -95,7 +95,9 @@ is_profile()      { [[ $SETUP_PROFILE == "$1" ]]; }
 declare -a _CLEANUP_PATHS=() _CLEANUP_CMDS=()
 _run_cleanup() {
   local p c
-  for c in "${_CLEANUP_CMDS[@]:-}"; do [[ -n ${c:-} ]] && eval "$c" || true; done
+  for c in "${_CLEANUP_CMDS[@]:-}"; do
+    if [[ -n ${c:-} ]]; then eval "$c" || true; fi
+  done
   for p in "${_CLEANUP_PATHS[@]:-}"; do
     [[ -n ${p:-} && -e ${p:-} ]] && rm -rf -- "$p"
   done

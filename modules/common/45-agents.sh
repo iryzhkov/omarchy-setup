@@ -89,7 +89,9 @@ if command -v npx >/dev/null 2>&1; then
         run rm -f -- "$CLAUDE_DIR/skills/$name"
       fi
       step "installing skill: $name (from $source)"
-      run npx -y skills add "$source" -g -y -a claude-code -s "$name" ||
+      # </dev/null: npx reads stdin, which here is the list being looped over,
+      # and would swallow every line after the first install.
+      run npx -y skills add "$source" -g -y -a claude-code -s "$name" </dev/null ||
         warn "could not install skill $name"
     done
   done < <(read_list "$SRC/skills.txt")

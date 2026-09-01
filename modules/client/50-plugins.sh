@@ -33,7 +33,9 @@ while read -r url marker; do
     installed=$((installed + 1))
   else
     step "installing plugin: ${id:-$url}"
-    run omarchy plugin add "$url" --yes || { warn "could not add $url"; continue; }
+    # </dev/null: stdin is the list being looped over; a child that reads it
+    # would swallow the remaining lines.
+    run omarchy plugin add "$url" --yes </dev/null || { warn "could not add $url"; continue; }
     added=$((added + 1))
   fi
 
