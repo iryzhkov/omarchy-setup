@@ -3,9 +3,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/iryzhkov/omarchy-setup/main/install.sh | bash -s -- --profile client
 #
-# Fetches the repo, runs it, then removes the clone again -- a fresh machine is
-# left with the configured system and no build litter. State that must survive
-# (chosen profile, last run log) lives in ~/.local/state/omarchy-setup.
+# Fetches the repo to ~/.local/share/omarchy-setup and runs it. The clone is
+# kept: the `omarchy-setup` command and the post-update hook re-run it from
+# there. Set OMARCHY_SETUP_KEEP=0 to remove it afterwards instead. State
+# (chosen profile, checkout path, last run log) lives in
+# ~/.local/state/omarchy-setup.
 #
 # Everything is wrapped in a function invoked on the last line, so a truncated
 # download cannot execute a half-script.
@@ -19,7 +21,7 @@ main() {
   # Pin to a tag or commit; an unfinished push should never run on a fresh box.
   local ref="${OMARCHY_SETUP_REF:-main}"
   local dest="${OMARCHY_SETUP_DIR:-$HOME/.local/share/omarchy-setup}"
-  local keep="${OMARCHY_SETUP_KEEP:-0}"
+  local keep="${OMARCHY_SETUP_KEEP:-1}"
 
   command -v omarchy >/dev/null 2>&1 ||
     { echo "error: this does not look like an Omarchy system" >&2; exit 1; }
@@ -70,9 +72,9 @@ main() {
   if (( pre_existing )); then
     echo "==> keeping your existing checkout at $dest"
   elif (( keep )); then
-    echo "==> OMARCHY_SETUP_KEEP=1, leaving $dest in place"
+    echo "==> checkout kept at $dest (re-run with: omarchy-setup)"
   else
-    echo "==> cleaning up $dest"
+    echo "==> OMARCHY_SETUP_KEEP=0, cleaning up $dest"
     rm -rf "$dest"
   fi
 

@@ -85,4 +85,18 @@ for f in "$OWNED"/*.lua; do
   remove_managed_block "$HYPR/$name.lua" "$name" '--'
 done
 
+# Fences left by earlier versions of this repo -- content blocks under an id
+# that no longer exists, such as 'herdr' or 'looknfeel' -- are swept too, so a
+# machine set up before the include model converges without hand edits. A
+# fence is current only when its id is a managed name *and* it sits in that
+# name's file.
+for f in "$HYPR"/*.lua; do
+  [[ -f $f ]] || continue
+  while read -r id; do
+    [[ -n ${names[$id]:-} && $(basename "$f" .lua) == "$id" ]] && continue
+    info "removing stale fence '$id' from $(basename "$f")"
+    remove_managed_block "$f" "$id" '--'
+  done < <(sed -n 's/^-- >>> omarchy-setup:\([^ ]*\) >>>$/\1/p' "$f")
+done
+
 hypr_reload

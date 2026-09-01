@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Re-run omarchy-setup from wherever its checkout lives.
+#
+#   omarchy-setup [--pull] [run.sh options]
+#
+# run.sh records its checkout path in ~/.local/state/omarchy-setup/root on
+# every run, so this works both for the bootstrap clone at
+# ~/.local/share/omarchy-setup and for a checkout kept somewhere else.
+# --pull fast-forwards the checkout first.
+set -euo pipefail
+
+state=${OMARCHY_SETUP_STATE:-$HOME/.local/state/omarchy-setup}
+root=${OMARCHY_SETUP_ROOT:-$(cat "$state/root" 2>/dev/null || true)}
+
+if [[ -z $root || ! -x $root/run.sh ]]; then
+  echo "omarchy-setup: no checkout recorded in $state/root; run install.sh once first" >&2
+  exit 1
+fi
+
+if [[ ${1:-} == --pull ]]; then
+  shift
+  git -C "$root" pull --ff-only
+fi
+
+exec "$root/run.sh" "$@"

@@ -87,6 +87,9 @@ if (( ! DRY_RUN )); then
 fi
 
 mkdir -p "$OMARCHY_SETUP_STATE"
+# Where this checkout lives, for the omarchy-setup wrapper and the
+# post-update hook. Recorded on every real run so a moved checkout is found.
+(( DRY_RUN )) || printf '%s\n' "$OMARCHY_SETUP_ROOT" >"$OMARCHY_SETUP_STATE/root"
 OMARCHY_SETUP_LOGFILE="$OMARCHY_SETUP_STATE/last-run.log"
 : >"$OMARCHY_SETUP_LOGFILE"
 # Secrets need a terminal to unlock the vault; skip rather than fail without
@@ -135,7 +138,7 @@ printf '\n%sprofile%s %s   %shost%s %s   %sarch%s %s\n' \
 if (( LIST )); then
   printf '\nmodules that would run:\n' >&2
   for m in "${SELECTED[@]}"; do
-    printf '  %-28s %s\n' "$(basename "$m" .sh)" "${m#$OMARCHY_SETUP_ROOT/}" >&2
+    printf '  %-28s %s\n' "$(basename "$m" .sh)" "${m#"$OMARCHY_SETUP_ROOT"/}" >&2
   done
   exit 0
 fi

@@ -117,7 +117,8 @@ mktempdir() {
 backup_file() {
   local f=$1
   [[ -f $f ]] || return 0
-  local b="$f.omarchy-setup.bak.$(date +%s)" n=0
+  local b n=0
+  b="$f.omarchy-setup.bak.$(date +%s)"
   # date +%s is 1-second granularity; two writes in the same second must not
   # clobber each other's backup.
   while [[ -e $b ]]; do n=$((n + 1)); b="$f.omarchy-setup.bak.$(date +%s).$n"; done
@@ -172,7 +173,7 @@ write_managed_block() {
   [[ -L $file ]] && file=$(readlink -f "$file")
 
   local tmp; tmp=$(mktemp)
-  local start_ln= end_ln=
+  local start_ln='' end_ln=''
 
   if [[ -f $file ]]; then
     start_ln=$(grep -nxF -- "$start" "$file" 2>/dev/null | head -1 | cut -d: -f1) || true

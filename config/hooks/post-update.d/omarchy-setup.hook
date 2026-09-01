@@ -1,0 +1,22 @@
+#!/bin/bash
+# Re-assert omarchy-setup after `omarchy update`.
+#
+# Migrations rewrite files under ~/.config. Everything this repo manages sits
+# behind constant include lines in owned files, so a re-run restores anything a
+# migration displaced and picks up whatever the repo gained since. Package
+# removal is opt-in and never runs from here. Secrets need a terminal and are
+# skipped. Failure notifies and never fails the update itself.
+
+state="$HOME/.local/state/omarchy-setup"
+root=$(cat "$state/root" 2>/dev/null) || exit 0
+[[ -x $root/run.sh ]] || exit 0
+
+log="$state/post-update.log"
+{
+  git -C "$root" pull --ff-only -q 2>&1 || echo "note: git pull failed; running the checkout as it is"
+  "$root/run.sh" --yes --skip-secrets
+} >"$log" 2>&1 && exit 0
+
+omarchy-notification-send -u critical -g  "omarchy-setup" \
+  "Re-run after update failed -- see ~/.local/state/omarchy-setup/post-update.log" 2>/dev/null || true
+exit 0

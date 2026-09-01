@@ -1,0 +1,21 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck and luac
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck lua5.4
+      - name: shellcheck
+        run: |
+          # SC1090/1091: sourced files resolved at runtime. SC2094: false positive on
+          # `write_owned_file dest <src`. SC2016: tests pass '$1' to bash -c on purpose.
+          shellcheck -x -e SC1090,SC1091,SC2094,SC2016 \
+            run.sh install.sh lib/*.sh modules/*/*.sh packages/*/*.sh \
+            config/bin/* config/hooks/*/*.hook test/run.sh
+      - name: Module tests against a throwaway HOME
+        run: test/run.sh

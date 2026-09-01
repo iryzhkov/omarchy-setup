@@ -53,3 +53,8 @@ end)
 -- exec PATH is not guaranteed to include ~/.local/bin.
 hl.unbind("SUPER + L")
 o.bind("SUPER + L", "Cycle workspace layout", os.getenv("HOME") .. "/.local/bin/omarchy-workspace-layout-cycle")
+
+
+-- Force close: SUPER+W asks nicely (close_window); a hung client ignores it.
+-- SUPER+ALT+W kills the client outright.
+o.bind("SUPER + ALT + W", "Force close window", hl.dsp.window.kill())

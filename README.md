@@ -22,21 +22,56 @@ Use `--profile remote` for a headless box. The `-s --` is required: it is how
 arguments reach the script when bash is reading it from a pipe.
 
 `install.sh` only bootstraps -- it verifies this is Omarchy, installs git,
-shallow-clones this repo to `~/.local/share/omarchy-setup`, runs it, and then
-**removes the clone again**, so a fresh machine is left configured with no build
-litter. All real logic lives in the repo, where it is reviewable and testable.
+shallow-clones this repo to `~/.local/share/omarchy-setup` and runs it. The
+clone stays: the `omarchy-setup` command and the post-update hook (below)
+re-run it from there. All real logic lives in the repo, where it is
+reviewable and testable.
 
 What survives a run:
 
 | Path | Why |
 |------|-----|
 | `~/.local/state/omarchy-setup/profile` | remembered profile, so re-runs need no flags |
+| `~/.local/state/omarchy-setup/root` | where the checkout is, for `omarchy-setup` and the hook |
+| `~/.local/share/omarchy-setup` | the checkout itself (`OMARCHY_SETUP_KEEP=0` removes it) |
 | `~/.local/state/omarchy-setup/last-run.log` | log of the last run |
 | `~/.config/nvim` | your live config checkout, deliberately kept as a git repo |
 
-Set `OMARCHY_SETUP_KEEP=1` to keep the clone for iterating. A checkout that was
-already at `~/.local/share/omarchy-setup` before the run is treated as yours and
-never deleted.
+A checkout that was already at `~/.local/share/omarchy-setup` before the run is
+treated as yours and never deleted.
+
+## Re-running
+
+```bash
+omarchy-setup                  # re-run with the remembered profile
+omarchy-setup --pull           # fast-forward the checkout first
+omarchy-setup --only hypr --dry-run
+```
+
+`omarchy-setup` is installed to `~/.local/bin` from `config/bin` and finds the
+checkout through `~/.local/state/omarchy-setup/root`, so it works whether the
+repo lives at the bootstrap location or somewhere you cloned it by hand.
+
+**After `omarchy update`**, the hook at
+`~/.config/omarchy/hooks/post-update.d/omarchy-setup.hook` (installed from
+`config/hooks/` by `modules/common/85-hooks.sh`) pulls the checkout and runs
+`run.sh --yes --skip-secrets`. Migrations are exactly what the include model
+guards against, so this is what keeps a machine converged without anyone
+remembering to re-run. It logs to `~/.local/state/omarchy-setup/post-update.log`
+and notifies only on failure; package removal is opt-in and never happens
+from the hook.
+
+## Tests
+
+```bash
+test/run.sh
+```
+
+Runs the file-managing modules against a throwaway `HOME` and a copy of the
+repo: fences, owned files, host overlays, pruning, the sweep of pre-include-
+model fences, the Lua syntax guard, dry run. Needs only bash and coreutils
+(`luac` when present); `hyprctl` is stubbed, so it runs anywhere, including the
+GitHub Action in `.github/workflows/test.yml`, which also runs `shellcheck`.
 
 ## Configuring / forking
 
@@ -381,12 +416,14 @@ Deliberately left to hand configuration on each machine:
   `.luarc.json` so `lua_ls` knows about `hl`/`o`. `<name>` must be one of
   Omarchy's files (`bindings`, `input`, `autostart`, ...), since that is where
   the require line goes. Rebinding a default needs `hl.unbind` before `o.bind`.
-- **A helper script** — drop it in `config/bin/`; `modules/client/28-scripts.sh`
+- **A helper script** — drop it in `config/bin/`; `modules/common/28-scripts.sh`
   installs it to `~/.local/bin`. Refer to it from a binding by full path
   (`os.getenv("HOME") .. "/.local/bin/<name>"`), since Hyprland's exec `PATH`
   is not guaranteed to include `~/.local/bin`.
+- **An Omarchy hook** — drop `config/hooks/<event>.d/<name>.hook` in;
+  `85-hooks` installs it executable.
 - **A step** — add `modules/<profile>/NN-<name>.sh`, source `lib/common.sh`,
-  keep it idempotent.
+  keep it idempotent, and add a case to `test/run.sh` if it manages files.
 
 ## SSH access (remote profile)
 
