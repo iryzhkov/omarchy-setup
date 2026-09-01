@@ -1,0 +1,14 @@
+{
+  "model": "claude-fable-5[1m]",
+  "theme": "auto",
+  "tui": "fullscreen",
+  "syntaxHighlightingDisabled": true,
+  "permissions": {
+    "allow": [
+      "Bash(gh issue:*)",
+      "Bash(gh api graphql:*)",
+      "Bash(gh label:*)",
+      "Bash(gh pr view:*)"
+    ]
+  }
+}

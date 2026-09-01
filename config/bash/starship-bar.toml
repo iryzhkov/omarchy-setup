@@ -1,0 +1,61 @@
+# Content source for the terminal bottom bar (~/.config/bash/bottom-bar.sh).
+# Rendered by a single `starship prompt` call and split on the section marker
+# below, so the bar reuses starship's context detection: language modules only
+# appear inside a matching project, username/hostname only over SSH.
+#
+# Colours are terminal palette names, never hex -- same rule as starship.toml,
+# so the bar follows the active Omarchy theme.
+
+add_newline = false
+command_timeout = 100
+
+# left <U+00A7> middle <U+00A7> right
+format = "$username$hostname§$nodejs$python$rust$golang$java$ruby$php$lua$zig$dotnet§$time"
+
+[username]
+show_always = false
+format = "[$user]($style)"
+style_user = "cyan bold"
+style_root = "red bold"
+
+[hostname]
+ssh_only = true
+format = "[@$hostname]($style)"
+style = "cyan"
+
+[time]
+disabled = false
+format = "[$time]($style)"
+time_format = "%H:%M"
+style = "yellow"
+
+[nodejs]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[python]
+format = "[$symbol$pyenv_prefix($version)( \\($virtualenv\\)) ]($style)"
+style = "green"
+[rust]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[golang]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[java]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[ruby]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[php]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[lua]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[zig]
+format = "[$symbol($version) ]($style)"
+style = "green"
+[dotnet]
+format = "[$symbol($tfm) ]($style)"
+style = "green"

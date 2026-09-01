@@ -1,0 +1,5 @@
+# Graphical session (uwsm) counterpart to the same line in ~/.bashrc.
+# Sourced after /usr/share/uwsm/env.d/10-omarchy, so it can reorder what the
+# Omarchy env bootstrap and `mise activate --shims` have already set up.
+# Installed by omarchy-setup; changes require a session restart to take effect.
+[ -r "$HOME/.config/bash/omarchy-setup/10-local-bin-first.sh" ] && . "$HOME/.config/bash/omarchy-setup/10-local-bin-first.sh"

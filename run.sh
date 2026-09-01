@@ -31,7 +31,6 @@ usage: run.sh [options]
   --github-user <name>      GitHub user whose SSH keys to authorize
   --git-name <name>         git user.name
   --git-email <addr>        git user.email
-  --theme <name>            Omarchy theme
   --nvim-repo <url>         Neovim config repo
   -h, --help                this message
 USAGE
@@ -53,7 +52,6 @@ while (( $# )); do
     --github-user) GITHUB_USER=${2:?};shift 2 ;;
     --git-name)    GIT_NAME=${2:?};   shift 2 ;;
     --git-email)   GIT_EMAIL=${2:?};  shift 2 ;;
-    --theme)       OMARCHY_THEME=${2:?}; shift 2 ;;
     --nvim-repo)   NVIM_REPO=${2:?};  shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
@@ -96,7 +94,7 @@ if [[ ${SKIP_SECRETS:-0} != 1 && $DRY_RUN != 1 && ! -t 0 ]]; then
   SKIP_SECRETS=1
 fi
 export SETUP_PROFILE SETUP_HOST SETUP_ARCH DRY_RUN ASSUME_YES SKIP_SECRETS OMARCHY_SETUP_LOGFILE OMARCHY_SETUP_STATE
-export BW_SERVER GITHUB_USER GIT_NAME GIT_EMAIL NVIM_REPO OMARCHY_THEME
+export BW_SERVER GITHUB_USER GIT_NAME GIT_EMAIL NVIM_REPO
 
 # ---- discover modules: common + profile, interleaved by numeric prefix -----
 declare -a MODULES=()

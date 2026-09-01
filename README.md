@@ -50,7 +50,6 @@ overridden without editing anything:
 | git user.email | `--git-email` | `igor.o.ryzhkov@gmail.com` |
 | Bitwarden server | `--bw-server` | `https://vault.ryzhkov.dev` |
 | Neovim config repo | `--nvim-repo` | derived from the GitHub account |
-| Omarchy theme | `--theme` | `kanagawa` |
 
 Precedence is **flag > environment variable > `config/defaults.conf`**:
 
@@ -101,6 +100,9 @@ modules/
 packages/
   common|client|remote/ one script per package, run by 20-packages-install
 config/hypr/*.lua       shared Hyprland config (real .lua, edit directly)
+config/bin/*            helper scripts the bindings call, installed to ~/.local/bin
+config/bash/*           shell snippets sourced from one fence in ~/.bashrc
+config/claude/          Claude Code: CLAUDE.md, owned settings keys, skills
 hosts/<hostname>/       per-machine overrides, layered on top of config/
 ```
 
@@ -137,26 +139,96 @@ Three things differ from running it at the machine, and each is handled:
   continues through the remaining modules and names every failure at the end,
   rather than stopping at the first one and hiding the rest.
 
-## Managed blocks
+## Owned files and include lines
 
 Omarchy's own migrations rewrite files under `~/.config/hypr/` on
-`omarchy update`, so this repo never replaces those files. It appends a fenced
-block and owns only what is inside the fence:
+`omarchy update`, so this repo never replaces those files -- and it never
+puts *content* in them either. Every setting lives in a file this repo owns
+outright, and Omarchy's file gets one constant line that pulls it in:
 
-```lua
--- >>> omarchy-setup:looknfeel >>>
-hl.config({ decoration = { rounding = 0 } })
--- <<< omarchy-setup:looknfeel <<<
+```
+config/hypr/bindings.lua                  what you edit, in this repo
+        |
+        v   generated, overwritten on every run, never hand-edited
+~/.config/hypr/omarchy-setup/bindings.lua
+        ^
+        |   one require line inside a fence, written once
+~/.config/hypr/bindings.lua               Omarchy's file
 ```
 
-Re-running rewrites only between the fences and skips the write entirely when
-nothing changed. The pristine file is backed up once, the first time it is
-touched. (The pattern is borrowed from the block Omaland already writes into
-`looknfeel.lua`.)
+The block in Omarchy's file is always the same three lines, whatever the
+content does:
 
-For settings Omarchy declares as a `local` near the top of a file — monitor
-scale, GDK scale — a trailing block cannot reassign the variable, so re-call
-the setter instead. `hl.monitor()` and `hl.env()` are last-wins.
+```lua
+-- >>> omarchy-setup:bindings >>>
+require("default.hypr.require_optional").module("hypr.omarchy-setup.bindings")
+-- <<< omarchy-setup:bindings <<<
+```
+
+So the modification to a system file is identical on every machine and every
+run; changing a binding touches only the owned file. The pristine system file
+is backed up once, the first time it is touched, and a re-run that finds the
+line already there writes nothing. `.bashrc` follows the same model: one
+fenced `. secrets.env` line, content elsewhere.
+
+Two details of that line are deliberate:
+
+- **`require_optional`** (Omarchy's own helper) skips a module that is not on
+  the path, so deleting `~/.config/hypr/omarchy-setup/` by hand leaves a
+  working Hyprland config rather than a broken one. Errors *inside* an owned
+  file still surface normally, in `hyprctl configerrors`.
+- **The `hypr.` prefix** is what makes `hyprctl reload` pick up changes.
+  Omarchy's `bootstrap.lua` evicts only the `default.hypr`, `hypr` and
+  `omarchy.current.theme` prefixes from `package.loaded` before a reload; a
+  module under any other name would stay cached until the next login.
+
+A name dropped from `config/hypr/` is cleaned up on the next run: its owned
+file is deleted and its fence removed. Every owned file is syntax-checked with
+`luac -p` before it is written, where `luac` exists.
+
+The helpers are `write_owned_file` (replace wholesale) and
+`write_managed_block` (own only what is between the fences) in
+`lib/common.sh`; use the pair for any other config format that has an include
+directive (`source =` in hypr `.conf` files, `include=` in foot, `import` in
+alacritty).
+
+## Shell extras
+
+`config/bash/NN-<name>.sh` are installed to `~/.config/bash/omarchy-setup/`
+and sourced by a single fenced loop at the end of `~/.bashrc`
+(`modules/common/35-bash.sh`). Adding a snippet never touches `.bashrc`
+again. Today:
+
+- `10-local-bin-first.sh` -- moves `~/.local/bin` ahead of `/usr/bin`.
+  Omarchy's bootstrap appends it, so a local override such as a wrapper
+  script is never picked up otherwise. The graphical session gets the same
+  through `~/.config/uwsm/env.d/90-local-bin-first` (owned file; `env.d` is
+  include-by-design), since the `.bashrc` fence sits after Omarchy's
+  interactive-only `return`.
+- `20-bottom-bar.sh` -- terminal bottom status line (user@host over SSH,
+  project language versions, clock), rendered by `starship` against the
+  `starship-bar.toml` installed alongside it. `BOTTOM_BAR=0` disables it for
+  a session.
+
+## Agents
+
+`modules/common/45-agents.sh`, on both profiles:
+
+| What | How |
+|------|-----|
+| default agent | writes `claude` to `~/.config/omarchy/defaults/agent` (the command form would exec the agent) |
+| `CLAUDE.md` | `config/claude/CLAUDE.md` becomes the owned `~/.claude/omarchy-setup/CLAUDE.md`; `~/.claude/CLAUDE.md` gets one fenced `@~/.claude/omarchy-setup/CLAUDE.md` import line |
+| `settings.json` | keys in `config/claude/settings.json` are merged in with `jq`; `permissions.allow` is the union, so allows added on the machine survive |
+| skills written here | `config/claude/skills/<name>/` copied to `~/.claude/skills/<name>/` as owned files |
+| published skills | `config/claude/skills.txt` lists `owner/repo` plus skill names, installed with `npx skills add ... -g -a claude-code`; a name already present in `~/.claude/skills` is skipped |
+| memory | clones `OV_MCP_REPO` to `~/.local/lib/ov-mcp`, builds its venv, writes `~/.config/ov-mcp/config.toml` from `OV_BASE_URL`, registers it as the user-scope MCP server `ov-memory` |
+
+The OpenViking API key is never written by this repo: ov-mcp reads
+`OV_API_KEY` (put it in the secrets manifest if the vault holds it), then the
+config file, then the GNOME keyring (`service=openviking key=api`).
+
+The `local-file-llm` MCP server on the laptop points at a checkout with no
+remote (`~/src/mcp-local-file-llm`) and is not reproduced here.
 
 ## Agent CLIs and dev tools
 
@@ -194,8 +266,9 @@ provides.
 `nvim`/`neovim`, `git`, `mise-bin`, `herdr`, `ripgrep`, `fd`, `lazygit`, `tmux`
 and `obsidian` are all base packages; re-installing them is noise. Modules that
 depend on one use `ensure_cmd`, silent when present. What remains is genuinely
-absent software (Brave, via Omarchy's own `omarchy install browser brave`, which
-picks the right build per platform) or real post-install configuration.
+absent software (Brave Origin, via Omarchy's own `omarchy install browser
+brave-origin`, which picks the right build per platform and is then made the
+default browser) or real post-install configuration.
 
 ## Neovim
 
@@ -228,18 +301,6 @@ printed. Omarchy migrations do write into `~/.config/nvim` -- the
 remote-clipboard migration installs a file there -- so this is a real state to
 land in, and skipping the pull beats failing halfway through it.
 
-## herdr
-
-Installed by Omarchy already. Both profiles keep its server running, by
-different means:
-
-- **client** -- `modules/client/55-herdr-autostart.sh` adds
-  `o.launch_on_start("herdr server")` to `~/.config/hypr/autostart.lua`, so it
-  comes up with the Hyprland session.
-- **remote** -- `modules/remote/45-herdr.sh` enables lingering, so the user
-  manager and the server outlive an ssh logout. The client then attaches with
-  `herdr --remote <ssh-target>`.
-
 ## Shell plugins
 
 `config/plugins.txt` lists plugin git URLs, installed on the client profile by
@@ -270,6 +331,10 @@ package depends on is kept with a warning -- so these lists cannot break
 
 ## Non-goals
 
+- **Appearance is per machine, not per repo.** Theme, monitor scale,
+  `GDK_SCALE`, gaps, rounding, blur and which bar section a widget sits in
+  all depend on the display in front of you, so none of them are managed
+  here. `config/hypr/` holds behaviour only: keybindings, input, autostart.
 - **The bar *layout* is left alone.** `~/.config/omarchy/shell.json` is yours
   to arrange via `omarchy bar ...`; this repo never writes it. Plugins are
   *installed* (see below) but not placed, unless a `config/plugins.txt` line
@@ -283,7 +348,13 @@ package depends on is kept with a warning -- so these lists cannot break
   post-install config; see `packages/remote/tmux.sh`.
 - **Hyprland config** — edit `config/hypr/<name>.lua`, or
   `hosts/<hostname>/hypr/<name>.lua` for one machine. Both are plain Lua with a
-  `.luarc.json` so `lua_ls` knows about `hl`/`o`.
+  `.luarc.json` so `lua_ls` knows about `hl`/`o`. `<name>` must be one of
+  Omarchy's files (`bindings`, `input`, `autostart`, ...), since that is where
+  the require line goes. Rebinding a default needs `hl.unbind` before `o.bind`.
+- **A helper script** — drop it in `config/bin/`; `modules/client/28-scripts.sh`
+  installs it to `~/.local/bin`. Refer to it from a binding by full path
+  (`os.getenv("HOME") .. "/.local/bin/<name>"`), since Hyprland's exec `PATH`
+  is not guaranteed to include `~/.local/bin`.
 - **A step** — add `modules/<profile>/NN-<name>.sh`, source `lib/common.sh`,
   keep it idempotent.
 

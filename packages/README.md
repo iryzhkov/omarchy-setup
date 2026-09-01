@@ -22,8 +22,10 @@ Modules that merely *depend* on one of these use `ensure_cmd`, which is silent
 when the tool is present and installs only if something removed it -- rather
 than printing "already installed" on every run.
 
-Genuinely absent, and so worth a script here: Brave (installed through
-`omarchy install browser brave`, which picks the right build per platform).
+Genuinely absent, and so worth a script here: Brave Origin (installed through
+`omarchy install browser brave-origin`, which picks the right build per
+platform, then made the default browser with `omarchy default browser`), and
+spotify-player, which the SUPER+SHIFT+M binding launches.
 
 Agent CLIs are not packages at all -- they are mise tools, in
 `config/mise-tools.txt`.

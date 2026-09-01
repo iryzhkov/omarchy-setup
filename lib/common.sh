@@ -146,14 +146,17 @@ host_file() {
 # migrations can keep patching everything outside our fences. Modelled on the
 # block Omaland already writes into ~/.config/hypr/looknfeel.lua.
 #
-#   write_managed_block <file> <id> [comment-prefix]   # content on stdin
+#   write_managed_block <file> <id> [comment-prefix] [comment-suffix]
+#                                                       # content on stdin
+# The suffix is for formats whose comments need closing (Markdown/HTML:
+# prefix '<!--', suffix '-->').
 #
 # Idempotent: rewrites only between the fences, and skips the write entirely
 # when nothing changed, so hot-reloading configs are not needlessly touched.
 write_managed_block() {
-  local file=$1 id=$2 cp=${3:-#}
-  local start="$cp >>> omarchy-setup:$id >>>"
-  local end="$cp <<< omarchy-setup:$id <<<"
+  local file=$1 id=$2 cp=${3:-#} cs=${4:-}
+  local start="$cp >>> omarchy-setup:$id >>>${cs:+ $cs}"
+  local end="$cp <<< omarchy-setup:$id <<<${cs:+ $cs}"
   local content; content=$(cat)
 
   # A managed block is delimited by exact lines; content containing one would
@@ -199,7 +202,7 @@ write_managed_block() {
 
   if [[ $DRY_RUN == 1 ]]; then
     printf '%s  would update%s block %s in %s\n' "$C_DIM" "$C_RESET" "$id" "$file" >&2
-    diff -u "${file:-/dev/null}" "$tmp" 2>/dev/null | sed 's/^/      /' >&2 || true
+    diff -u "$([[ -f $file ]] && printf %s "$file" || printf /dev/null)" "$tmp" | sed 's/^/      /' >&2 || true
     rm -f "$tmp"
     return 0
   fi
@@ -207,15 +210,55 @@ write_managed_block() {
   mkdir -p "$(dirname "$file")"
   # Preserve the pristine original: once per file, not once per block.
   backup_once "$file"
+  # mktemp creates 0600 files; moving one over a 0644 config would silently
+  # tighten its mode on every first write. Keep the original's mode instead.
+  if [[ -f $file ]]; then chmod --reference="$file" "$tmp"; else chmod 0644 "$tmp"; fi
   mv "$tmp" "$file"
   ok "$(basename "$file"): block '$id' written"
 }
 
+# ------------------------------------------------------------ owned file --
+# Write a file this repo owns outright -- nothing else edits it, so there is
+# no fence to respect and no backup to keep: the content is simply replaced.
+# This is the other half of the include model: Omarchy's own config gets one
+# constant include/require line (a managed block), and the real content lives
+# in an owned file like this one, where it can change freely without touching
+# the system file again.
+#
+#   write_owned_file <file> [mode]      # content on stdin, mode default 0644
+#
+# Idempotent: skips the write when the content is already identical.
+write_owned_file() {
+  local file=$1 mode=${2:-0644}
+  local tmp; tmp=$(mktemp)
+  cat >"$tmp"
+
+  [[ -L $file ]] && file=$(readlink -f "$file")
+
+  if [[ -f $file ]] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    info "$(basename "$file"): already current"
+    return 0
+  fi
+
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '%s  would write%s %s\n' "$C_DIM" "$C_RESET" "$file" >&2
+    diff -u "$([[ -f $file ]] && printf %s "$file" || printf /dev/null)" "$tmp" | sed 's/^/      /' >&2 || true
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$file")"
+  mv "$tmp" "$file"
+  chmod "$mode" "$file"
+  ok "$(basename "$file"): written"
+}
+
 remove_managed_block() {
-  local file=$1 id=$2 cp=${3:-#}
+  local file=$1 id=$2 cp=${3:-#} cs=${4:-}
   [[ -f $file ]] || return 0
-  local start="$cp >>> omarchy-setup:$id >>>"
-  local end="$cp <<< omarchy-setup:$id <<<"
+  local start="$cp >>> omarchy-setup:$id >>>${cs:+ $cs}"
+  local end="$cp <<< omarchy-setup:$id <<<${cs:+ $cs}"
   local s e
   s=$(grep -nxF -- "$start" "$file" | head -1 | cut -d: -f1) || return 0
   e=$(grep -nxF -- "$end" "$file" | head -1 | cut -d: -f1) || return 0
