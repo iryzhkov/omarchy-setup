@@ -39,18 +39,32 @@ else
   run git clone "$NVIM_REPO" "$NVIM_CONFIG"
 fi
 
-# Install plugins headlessly so the first interactive launch is not a wall of
-# lazy.nvim progress bars.
+# Build tools the config's plugins need (telescope-fzf-native, LuaSnip's
+# jsregexp, tree-sitter parsers). Neither is in Omarchy's base list, though
+# gcc usually arrives as a dependency of something else.
+for pair in make:make cc:gcc; do
+  command -v "${pair%%:*}" >/dev/null 2>&1 || pkg_install "${pair#*:}"
+done
+
+# Let the config repo finish its own setup: my config ships a setup.sh that
+# restores plugins from lazy-lock.json, installs tree-sitter parsers and Mason
+# packages, and links its Omarchy theme-set hook. Its output is a wall of
+# lazy.nvim progress, so it goes to a log; a failure names the log.
 #
-# `restore` and not `sync`: the repo commits a lazy-lock.json, and that lockfile
-# is the pin. `Lazy! sync` *updates* it, which both ignores the pin and leaves
-# the checkout dirty -- and a dirty checkout is exactly what stops the next run
-# from pulling. `restore` installs what is missing and checks each plugin out at
-# the locked commit, so the tree stays clean.
-#
-# lazy.nvim writes its progress to stdout even with --headless, so both streams
-# are dropped; a real failure still shows up as a non-zero exit.
-if (( ! DRY_RUN )) && [[ -d $NVIM_CONFIG ]]; then
+# A config without setup.sh gets the old inline plugin install. `restore` and
+# not `sync`: the lockfile is the pin, and `sync` would both ignore it and
+# leave the checkout dirty, which is what stops the next run from pulling.
+if [[ -x $NVIM_CONFIG/setup.sh ]]; then
+  step "running the nvim config's setup.sh"
+  nvim_log="$OMARCHY_SETUP_STATE/nvim-setup.log"
+  if (( DRY_RUN )); then
+    run "$NVIM_CONFIG/setup.sh"
+  else
+    mkdir -p "$OMARCHY_SETUP_STATE"
+    "$NVIM_CONFIG/setup.sh" >"$nvim_log" 2>&1 ||
+      warn "nvim setup.sh reported a problem; see $nvim_log"
+  fi
+elif (( ! DRY_RUN )) && [[ -d $NVIM_CONFIG ]]; then
   if [[ -f $NVIM_CONFIG/lazy-lock.json ]]; then
     step "installing nvim plugins at their locked versions"
     nvim --headless "+Lazy! restore" +qa >/dev/null 2>&1 ||

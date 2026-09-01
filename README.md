@@ -339,12 +339,19 @@ the move does not fight `omarchy update`.
 
 Delete the backup once you are happy; nothing reads it.
 
-**Plugins are installed with `Lazy! restore`, not `Lazy! sync`.** The config repo
-commits a `lazy-lock.json` and that lockfile is the pin. `sync` *updates* it,
-which both ignores the pin and leaves the checkout dirty -- and a dirty checkout
-is what then blocks the next run's `git pull --ff-only`. `restore` installs
-what is missing at the locked commits and leaves the tree clean. A config with
-no lockfile falls back to `sync`.
+**Setup is delegated to the config repo.** When the checkout has an executable
+`setup.sh`, the module runs it: mine restores plugins from `lazy-lock.json`,
+installs tree-sitter parsers and Mason packages, and links its Omarchy
+theme-set hook. Its output (mostly lazy.nvim progress) goes to
+`~/.local/state/omarchy-setup/nvim-setup.log`, named on failure. `make` and
+`gcc` are installed first if missing, since plugin builds and parser
+compilation need them.
+
+A config without `setup.sh` gets the inline fallback: `Lazy! restore`, not
+`Lazy! sync`. The lockfile is the pin; `sync` *updates* it, which both ignores
+the pin and leaves the checkout dirty -- and a dirty checkout is what then
+blocks the next run's `git pull --ff-only`. A config with no lockfile falls
+back to `sync`.
 
 Updating a pin is therefore a deliberate act in the config repo (`:Lazy sync`,
 then commit the lockfile), not a side effect of running setup.
