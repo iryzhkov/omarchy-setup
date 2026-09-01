@@ -198,5 +198,21 @@ check "dry run exits 0" env DRY_RUN=1 bash "$ROOT/modules/client/30-hypr.sh"
 check "no file changed" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
 check "owned dir not created" [ ! -e "$HOME/.config/hypr/omarchy-setup" ]
 
+# -------------------------------------------------------------- uninstall --
+section "uninstall"
+module client/30-hypr.sh; module common/35-bash.sh; module common/28-scripts.sh; module common/85-hooks.sh
+mkdir -p "$HOME/.claude"; printf '# mine\n' >"$HOME/.claude/CLAUDE.md"
+printf '@x\n' | (source "$ROOT/lib/common.sh"; write_managed_block "$HOME/.claude/CLAUDE.md" claude '<!--' '-->') >/dev/null 2>&1
+before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
+check "dry run exits 0" bash "$ROOT/uninstall.sh" --dry-run
+check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
+check "uninstall exits 0" bash "$ROOT/uninstall.sh"
+check "no fence left anywhere" [ -z "$(grep -rl 'omarchy-setup:' "$HOME/.config/hypr" "$HOME/.bashrc" "$HOME/.claude/CLAUDE.md" 2>/dev/null)" ]
+check "owned dirs gone" [ ! -e "$HYPR/omarchy-setup" ] && [ ! -e "$HOME/.config/bash/omarchy-setup" ] && [ ! -e "$HOME/.claude/omarchy-setup" ]
+check "scripts and hook gone" [ ! -e "$HOME/.local/bin/omarchy-setup" ] && [ ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook" ]
+check "Omarchy content kept" grep -q 'Omarchy default bindings' "$HYPR/bindings.lua"
+check "user CLAUDE.md content kept" grep -qx '# mine' "$HOME/.claude/CLAUDE.md"
+check "bashrc return kept" grep -q return "$HOME/.bashrc"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 (( fail == 0 ))

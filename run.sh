@@ -26,6 +26,7 @@ usage: run.sh [options]
   --yes                     assume yes for confirmations
   --skip-secrets            do not touch the vault or write any secrets
   --remove-packages         uninstall what config/remove/*.txt lists (default: report only)
+  --uninstall               remove every fence and owned file this repo wrote, then exit
 
   Personal values (defaults in config/defaults.conf; env vars also work):
   --bw-server <url>         Bitwarden/Vaultwarden server ('' for the cloud)
@@ -50,6 +51,7 @@ while (( $# )); do
     --yes|-y)  ASSUME_YES=1;         shift ;;
     --skip-secrets) SKIP_SECRETS=1;  shift ;;
     --remove-packages) REMOVE_PACKAGES=1; shift ;;
+    --uninstall) shift; exec "$OMARCHY_SETUP_ROOT/uninstall.sh" "$@" ;;
     --bw-server)   BW_SERVER=${2?};   shift 2 ;;
     --github-user) GITHUB_USER=${2:?};shift 2 ;;
     --git-name)    GIT_NAME=${2:?};   shift 2 ;;

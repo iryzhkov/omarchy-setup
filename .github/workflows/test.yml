@@ -15,7 +15,7 @@ jobs:
           # SC1090/1091: sourced files resolved at runtime. SC2094: false positive on
           # `write_owned_file dest <src`. SC2016: tests pass '$1' to bash -c on purpose.
           shellcheck -x -e SC1090,SC1091,SC2094,SC2016 \
-            run.sh install.sh lib/*.sh modules/*/*.sh packages/*/*.sh \
+            run.sh install.sh uninstall.sh lib/*.sh modules/*/*.sh packages/*/*.sh \
             config/bin/* config/hooks/*/*.hook test/run.sh
       - name: Module tests against a throwaway HOME
         run: test/run.sh

@@ -61,6 +61,19 @@ remembering to re-run. It logs to `~/.local/state/omarchy-setup/post-update.log`
 and notifies only on failure; package removal is opt-in and never happens
 from the hook.
 
+## Uninstalling
+
+```bash
+omarchy-setup --uninstall --dry-run
+omarchy-setup --uninstall
+```
+
+Removes every fence and every owned file this repo wrote and leaves
+Omarchy's files as they were. It does not remove what was *added*: packages,
+mise tools, plugins, skills, the ov-mcp checkout and MCP registration, merged
+`settings.json` keys, the nvim checkout, `secrets.env`. See the header of
+`uninstall.sh`.
+
 ## Tests
 
 ```bash
