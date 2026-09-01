@@ -25,6 +25,7 @@ usage: run.sh [options]
   --dry-run                 print actions without changing anything
   --yes                     assume yes for confirmations
   --skip-secrets            do not touch the vault or write any secrets
+  --remove-packages         uninstall what config/remove/*.txt lists (default: report only)
 
   Personal values (defaults in config/defaults.conf; env vars also work):
   --bw-server <url>         Bitwarden/Vaultwarden server ('' for the cloud)
@@ -48,6 +49,7 @@ while (( $# )); do
     --dry-run) DRY_RUN=1;            shift ;;
     --yes|-y)  ASSUME_YES=1;         shift ;;
     --skip-secrets) SKIP_SECRETS=1;  shift ;;
+    --remove-packages) REMOVE_PACKAGES=1; shift ;;
     --bw-server)   BW_SERVER=${2?};   shift 2 ;;
     --github-user) GITHUB_USER=${2:?};shift 2 ;;
     --git-name)    GIT_NAME=${2:?};   shift 2 ;;
@@ -93,7 +95,8 @@ if [[ ${SKIP_SECRETS:-0} != 1 && $DRY_RUN != 1 && ! -t 0 ]]; then
   warn "no terminal available; skipping secrets (vault cannot be unlocked)"
   SKIP_SECRETS=1
 fi
-export SETUP_PROFILE SETUP_HOST SETUP_ARCH DRY_RUN ASSUME_YES SKIP_SECRETS OMARCHY_SETUP_LOGFILE OMARCHY_SETUP_STATE
+REMOVE_PACKAGES=${REMOVE_PACKAGES:-0}
+export SETUP_PROFILE SETUP_HOST SETUP_ARCH DRY_RUN ASSUME_YES SKIP_SECRETS OMARCHY_SETUP_LOGFILE OMARCHY_SETUP_STATE REMOVE_PACKAGES
 export BW_SERVER GITHUB_USER GIT_NAME GIT_EMAIL NVIM_REPO
 
 # ---- discover modules: common + profile, interleaved by numeric prefix -----

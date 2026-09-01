@@ -329,6 +329,17 @@ Packages that aren't installed are skipped silently, and anything another
 package depends on is kept with a warning -- so these lists cannot break
 `omarchy update`.
 
+**Removal is opt-in.** A plain run only reports what is installed and listed;
+nothing is uninstalled unless you pass `--remove-packages`. This is the one
+step that takes something away, and a listed package may well have been
+installed on purpose since the list was written -- so an unattended or
+routine re-run must never act on it.
+
+```bash
+./run.sh --only packages-remove                    # report only
+./run.sh --only packages-remove --remove-packages  # actually remove
+```
+
 ## By hand, after a run
 
 Deliberately left to hand configuration on each machine:
