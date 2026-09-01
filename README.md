@@ -329,6 +329,20 @@ Packages that aren't installed are skipped silently, and anything another
 package depends on is kept with a warning -- so these lists cannot break
 `omarchy update`.
 
+## By hand, after a run
+
+Deliberately left to hand configuration on each machine:
+
+- `omarchy install terminal kitty` and `omarchy default editor nvim`.
+- `gh auth login` and `bw login` (interactive, once per machine).
+- `~/.ssh/config` hosts and any extra keys.
+- Nebula VPN: needs the CA to sign a host certificate, so it is issued from an
+  existing machine and copied into `/etc/nebula/`.
+- Optional packages nobody depends on: `simple-scan` + `sane-airscan`,
+  `tsukimi`, `powertop`, `try-cli`.
+- `~/.agents/bin/setup-issue-tracker` and `~/.agents/trackers/github.md`,
+  used by the wayfinder/triage/to-tickets skills when starting a repo.
+
 ## Non-goals
 
 - **Appearance is per machine, not per repo.** Theme, monitor scale,
