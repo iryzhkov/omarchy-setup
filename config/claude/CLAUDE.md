@@ -133,6 +133,7 @@ After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `se
 | A search and replace across files | `rename_symbol` |
 | `mv`, `git mv` | `move_file` |
 | `Write` a new source file, `rm` one | `create_file`, `delete_file` |
+| Cut a block of functions out of one file and paste it into another | `move_symbols` |
 | Reading a file back to check an edit | the diagnostics the edit tool already returned |
 | Running the build to see if you broke something | `check_project` |
 
