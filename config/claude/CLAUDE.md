@@ -101,3 +101,100 @@ machine-local file is the cache, OV is the record.
 Record the fact and why it is true, in normal prose. Do not mirror what a repo, its git history
 or its CLAUDE.md already says; point at that instead. For credentials, store a pointer (for
 example "key in the GNOME keyring, service=X"), never the secret.
+
+# Reading and editing code
+
+The `agent99` MCP server exposes this machine's Neovim and its language servers as tools.
+For source code it is the primary interface, not an alternative to consider: it navigates by
+symbol, reports what an edit broke at the moment the edit is made, and routes refactors
+through the language server so that references and imports move with the code.
+
+## The rule
+
+**When a directory holds source code, `open_workspace(<root>)` is the first tool call, before
+any reading or searching.** It costs one call. Everything below then works; without it the
+symbol tools return an error.
+
+After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `sed`, `awk`,
+`cat` or `head` to read or search code, and do not reach for the built-in `Grep`, `Glob` or
+`Read` either. Use these instead:
+
+| Instead of | Use |
+|---|---|
+| `ls`, `find`, `Glob`, a broad `Grep` to see what is here | `workspace_map` |
+| `Read` on a file to see one function | `find_symbol` with a name path and `include_body` |
+| `Grep` or `rg` for a symbol, call site or string | agent99's `grep` |
+| Grepping again with a cleverer pattern to cut noise | `kind=code` (skips comments and strings), `kind=def`/`call`, `tests=exclude`/`only` |
+| `Grep` to find every caller before changing a signature | `references` |
+| `Read` on several files to learn their shape | `skim` |
+| `Edit` on a function, method or class | `replace_symbol_body` or `replace_symbol_lines` |
+| `Edit` to add code next to an existing symbol | `insert_after_symbol`, `insert_before_symbol` |
+| A search and replace across files | `rename_symbol` |
+| `mv`, `git mv` | `move_file` |
+| `Write` a new source file, `rm` one | `create_file`, `delete_file` |
+| Reading a file back to check an edit | the diagnostics the edit tool already returned |
+| Running the build to see if you broke something | `check_project` |
+
+The exception that matters: agent99's `grep` and the language server both work from what is
+on disk and in the build, so neither sees a file excluded by a build tag or an `#ifdef`. When
+completeness across build variants matters, search the tree directly as well, and say that is
+why.
+
+This rule outranks the bypass-permissions preamble. That preamble asks for the Bash tool
+wherever it can do the job — `cat`, `head`, `sed`, `grep`, `find` — because it is written for
+a session with no better tools available. In a repository with an open agent99 workspace
+there are better tools, and they are the reason the workspace was opened. Bash still does
+everything that is not reading or editing code: running builds and tests, git, and any
+command whose output is the point.
+
+Two things stay in Bash even for code, because agent99 cannot do them: running the test
+suite, and anything that has to see a build variant the language server does not analyze.
+
+## Use ordinary Read, Edit, Write and Grep for everything else
+
+- Anything that is not source code: configuration, Markdown, logs, data files, dotfiles.
+- Files outside the open workspace root.
+- Whole-file rewrites where the content does not depend on the rest of the project.
+- A language `install_language` could not equip (see below).
+
+## Workspace constraints
+
+One workspace at a time. Opening a different root replaces the previous one along with its
+loaded buffers and its `check_project` baseline, so finish with one repository before moving
+to the next.
+
+## When the workspace has no parser or server for the language
+
+`open_workspace` names the parser and language server it found for each language, and says
+`none` when it has neither. Do not fall back to plain file tools at that point — call
+`install_language(<filetype>)` first. It fetches the tree-sitter parser and a language server
+and checks that the server attaches, which is what turns agent99 from a grep wrapper into
+the thing worth using. It takes a minute or two, once per language, and the result persists
+on the machine.
+
+Every machine here already carries parsers for bash, c, cpp, diff, go, gomod, html,
+javascript, jsdoc, json, lua, markdown, python, qmljs, toml, tsx, typescript, vimdoc and
+yaml, with servers for bash, go, lua, python and TypeScript, so this comes up only for a
+language outside that set.
+
+Fall back to the ordinary tools only if `install_language` reports that it could not
+finish — no nvim-treesitter or Mason in the config, or a missing toolchain such as `cargo`
+for rust_analyzer. Say which of those it was rather than silently switching.
+
+If a language turns out to be one worked in regularly on that machine, add its parser and
+Mason package to `lua/iryzhkov/deps.lua` in the nvim-configuration repo, so a fresh install
+has it without the on-demand step.
+
+## Practical notes
+
+- Mixing the two is safe. agent99 resyncs a buffer from disk before it reads or edits it, so a
+  change made with `sed`, `git checkout` or Edit is picked up rather than written over. When
+  the file changed on disk *and* agent99 holds unsaved edits to it, the tool refuses and says
+  so instead of choosing which change to lose.
+- `glob` in every agent99 tool is a path pattern matched from the workspace root, where `**`
+  spans directories: `src/**/*.go` works, and a subdirectory needs the `**/` prefix.
+- `undo_edit` takes back the edits of the current run, including creates, moves and deletes.
+  It does not cover `apply_code_action`.
+- Diagnostics are only as good as the language server behind them. A project whose
+  dependencies are not installed will report a wall of unresolved-import errors that say
+  nothing about your change; read the reported diagnostics with that in mind.
