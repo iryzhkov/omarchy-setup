@@ -127,7 +127,8 @@ After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `se
 | Grepping again with a cleverer pattern to cut noise | `kind=code` (skips comments and strings), `kind=def`/`call`, `tests=exclude`/`only` |
 | `Grep` to find every caller before changing a signature | `references` |
 | `Read` on several files to learn their shape | `skim` |
-| `Edit` on a function, method or class | `replace_symbol_body` or `replace_symbol_lines` |
+| `sed -n 'N,Mp'` or `Read` for a contiguous region (a const block, a neighbouring test) | agent99's `read_file` with offset/limit, or `buffer_lines` |
+| `Edit` on a function, method or class | `replace_symbol_body`, or `replace_symbol_lines` with `expect=` |
 | `Edit` to add code next to an existing symbol | `insert_after_symbol`, `insert_before_symbol` |
 | A search and replace across files | `rename_symbol` |
 | `mv`, `git mv` | `move_file` |
@@ -138,7 +139,14 @@ After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `se
 The exception that matters: agent99's `grep` and the language server both work from what is
 on disk and in the build, so neither sees a file excluded by a build tag or an `#ifdef`. When
 completeness across build variants matters, search the tree directly as well, and say that is
-why.
+why. An edit tool now says so itself when the server cannot analyze the file it just changed,
+and that reply means the edit is unverified until you build or test with the tags that
+include it.
+
+`replace_symbol_lines` numbers lines relative to the symbol's declaration, and any edit above
+that symbol shifts them without making them look wrong. Pass `expect=` with the text those
+lines currently hold whenever the numbers came from an earlier call, so a stale offset fails
+instead of overwriting working code.
 
 This rule outranks the bypass-permissions preamble. That preamble asks for the Bash tool
 wherever it can do the job — `cat`, `head`, `sed`, `grep`, `find` — because it is written for
