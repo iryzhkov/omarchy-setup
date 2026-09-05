@@ -43,6 +43,7 @@ What the server actually does, and why the tools compensate:
 The one cost to weigh: re-ingestion regenerates the abstract through the model,
 so a move of a large namespace is not free. `memory_mv` skips re-ingestion above
 twenty documents and says so.
+
 ## What a pass can do
 
 1. **Audit, and report.** `memory_tree "viking://resources" level_limit=2` for
@@ -64,6 +65,7 @@ twenty documents and says so.
    user has agreed to lose. There is no undo.
 6. **Leave a decision list.** End the pass with what could not be fixed and what
    it would cost, rather than half-applying a reorganisation.
+
 ## Known drift (as of 2026-09-05)
 
 - `resources/homeassistant` and `resources/iryzhkov/homeassistant` are two

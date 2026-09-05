@@ -49,6 +49,7 @@ chunk files plus hidden `.abstract.md` / `.overview.md`. So
   chunk inside it. Pass `group=False` to see the raw records.
 - Notes under an `archive/` namespace are hidden from results; pass
   `include_archived=True` when the history is the point.
+
 ## Which tool
 
 - `memory_search` — concepts and questions. First stop.
@@ -71,6 +72,7 @@ Reorganising and repair belong to the [ov-memory-curation] skill: `memory_mv`,
 `memory_rm`, `memory_reindex`, `memory_index_audit` and `memory_index_prune` all
 change the store, so they are for a pass the user has asked for, not for normal
 reading and writing.
+
 ## What goes where
 
 `viking://resources/` is flat, one namespace per subject. As of 2026-08-29:
