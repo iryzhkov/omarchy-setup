@@ -37,14 +37,18 @@ Four scopes live under the root (`memory_ls "/"`):
 
 OpenViking ingests a document as a *directory* named for the file, holding its
 chunk files plus hidden `.abstract.md` / `.overview.md`. So
-`viking://resources/projects/ov-agent-access.md` is a directory, not a file, and
-search hits point at chunks inside it.
+`viking://resources/projects/ov-agent-access.md` is a directory, not a file.
 
-- `memory_read` on such a directory resolves to its single part automatically,
-  or lists the parts when there are several.
+- `memory_read` walks that directory and returns the parts joined in document
+  order, so a note reads back as one text however it was chunked. It never
+  answers with an empty string for a node that has content: when a node really
+  holds no text it says so and lists what it does hold.
 - `memory_abstract` and `memory_overview` want the *directory*; a plain file has
   neither.
-
+- Search hits are grouped by document, so a result names the note rather than one
+  chunk inside it. Pass `group=False` to see the raw records.
+- Notes under an `archive/` namespace are hidden from results; pass
+  `include_archived=True` when the history is the point.
 ## Which tool
 
 - `memory_search` — concepts and questions. First stop.
@@ -56,11 +60,17 @@ search hits point at chunks inside it.
   area before reading anything.
 - `memory_abstract` — triage a search hit without paying for the whole file.
 - `memory_read` — the full document, once you know you want it.
-- `memory_relations` — what else connects to a node.
+- `memory_stat` — how big a document is, and how many parts, before reading it.
+- `memory_relations` — stored links, the `[[wikilinks]]` in a note, and the notes
+  that link back to it.
 - `memory_status` — when calls fail, before blaming the network.
 
 Work top-down: search, triage abstracts, then read only what earns it.
 
+Reorganising and repair belong to the [ov-memory-curation] skill: `memory_mv`,
+`memory_rm`, `memory_reindex`, `memory_index_audit` and `memory_index_prune` all
+change the store, so they are for a pass the user has asked for, not for normal
+reading and writing.
 ## What goes where
 
 `viking://resources/` is flat, one namespace per subject. As of 2026-08-29:
@@ -97,6 +107,20 @@ small enough to be worth searching.
   that will not make sense in six months is not worth storing.
 - Indexing costs OpenAI embedding calls, so do not mirror things that live in a
   repo or in git history — link to them instead.
+- The write is verified: it is read back and compared with what was sent, and the
+  reply says so. A `WARNING` there means the stored text differs from what you
+  wrote — keep the original in the conversation until that is understood.
+- Superseding an existing note: write the new one, and store the old version with
+  `archived=True`, which files it under `archive/` so it stops competing with the
+  live note in search. Link related notes with `[[note-name]]`; those are resolved
+  and recorded as real links on write.
+- Ingestion reshapes long content. A Markdown note keeps every line, but its title
+  becomes the name of the directory holding it and its sections come back in name
+  order; a note written under another extension (`config.yaml`, `output.txt`)
+  keeps every word but loses whitespace where the chunks were cut. For content
+  that has to come back character-for-character -- configuration, command output,
+  anything quoted -- pass `verbatim=True`, which stores it in parts that rejoin
+  exactly.
 
 ## Machine-local memory is a cache of OV
 
