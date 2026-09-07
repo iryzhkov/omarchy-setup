@@ -15,5 +15,12 @@ https://github.com/huacnlee/omamail.git
 https://github.com/calebhat/omarchy-themebook.git
 https://github.com/jankeesvw/omarchy-notification-center.git
 
+# Self-authored plugins.
+https://github.com/iryzhkov/omarchy-glide-menus.git       enable:io.github.iryzhkov.glide-menus
+https://github.com/iryzhkov/omarchy-glide-workspaces.git  enable:io.github.iryzhkov.glide-workspaces
+https://github.com/iryzhkov/omarchy-omaperch.git          enable:io.github.iryzhkov.omaperch
+https://github.com/iryzhkov/omarchy-omadeck.git           enable:io.github.iryzhkov.omadeck
+https://github.com/iryzhkov/omarchy-nebula.git            enable:io.github.iryzhkov.nebula
+
 # Installed and placed on the bar, for reference:
 #   https://github.com/Elevate08/qs-bitwarden-cli.git  enable:io.github.elevate08.qs-bitwarden-cli
