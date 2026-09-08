@@ -1,7 +1,7 @@
 ---
 name: t3-backlog
 description: >
-  Queue work for the t3-quota-watchdog backlog: an unattended T3 Code thread
+  Queue work for the t3-steward backlog: an unattended T3 Code thread
   that starts in a quiet slot when the provider quota has room, on this machine
   or another host. Use when the user says to do something later, tonight, over
   the weekend, when they are not around, in the background, or to add it to the
@@ -13,7 +13,7 @@ description: >
 
 # t3-backlog
 
-Every T3 host runs `t3-quota-watchdog`, which watches the Codex and Claude
+Every T3 host runs `t3-steward`, which watches the Codex and Claude
 quota windows and keeps a backlog of markdown tasks. A task becomes a new T3
 thread in its project when no interactive session has run for 30 minutes and
 the watchdog's forecast of the user's own usage leaves room before the next
@@ -44,8 +44,8 @@ model must be one that instance offers, and the options must be ones the
 model knows. A failed check prints what is wrong and queues nothing.
 
 Without `t3-backlog` on PATH, write the file yourself into
-`~/.config/t3-quota-watchdog/backlog/<id>.md` and run
-`t3-quota-watchdog backlog check <file>`:
+`~/.config/t3-steward/backlog/<id>.md` and run
+`t3-steward backlog check <file>`:
 
 ```markdown
 ---
@@ -92,11 +92,11 @@ homelab for things that must run on the server itself.
 ## Watch it
 
 ```sh
-t3-quota-watchdog backlog list          # this host: status, estimate, why it waits
-t3-quota-watchdog backlog list --all    # every host in report.remotes
-t3-quota-watchdog backlog show <id>     # file and state
-t3-quota-watchdog forecast              # when the user usually works, headroom now
-t3-quota-watchdog backlog retry <id>    # re-queue after a fix; editing the file does the same
+t3-steward backlog list          # this host: status, estimate, why it waits
+t3-steward backlog list --all    # every host in report.remotes
+t3-steward backlog show <id>     # file and state
+t3-steward forecast              # when the user usually works, headroom now
+t3-steward backlog retry <id>    # re-queue after a fix; editing the file does the same
 ```
 
 Statuses: `pending` (with the reason it waits), `running` (thread id shown),
