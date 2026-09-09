@@ -102,6 +102,21 @@ Record the fact and why it is true, in normal prose. Do not mirror what a repo, 
 or its CLAUDE.md already says; point at that instead. For credentials, store a pointer (for
 example "key in the GNOME keyring, service=X"), never the secret.
 
+# Deferred and parked work: the T3 steward
+
+Two things the `t3-steward` daemon does for agents on these machines, both described in
+skills:
+
+- **Backlog** (`t3-backlog` skill): work that does not need the user now goes into the
+  backlog, `t3-backlog --project ... --title ... < prompt`, rather than into a thread opened
+  on the spot. The steward starts it as an unattended T3 thread in the next quiet slot with
+  quota headroom, on whichever host the task names. Use it when the user says later,
+  tonight, when I am not around, or backlog, and for any scheduled agent job.
+- **Wait** (`t3-wait` skill): never poll in a loop for something external (a PR review,
+  CI, a long job). Register the check, `t3-steward wait add --name ... -- <command>`, and end
+  the turn; the steward polls with backoff and wakes the thread with the outcome. Exit 0
+  means done, exit 2 means give up, anything else means not yet.
+
 # Reading and editing code
 
 The `agent99` MCP server exposes this machine's Neovim and its language servers as tools.
