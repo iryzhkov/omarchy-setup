@@ -70,9 +70,11 @@ Two stores hold long-term notes:
   tools (`memory_search`, `memory_read`, `memory_write`, ...). Guidance lives in the
   `ov-memory` skill. It is shared by every agent on every machine and is the only store that
   holds homelab, project and cross-machine knowledge.
-- **Machine-local Claude memory** at `~/.claude/projects/-home-igor/memory/` — this machine's
-  own notes. Its `MEMORY.md` index loads automatically each session, so it is a fast cache,
-  not the whole picture. Every note in it is also mirrored into OV.
+- **Machine-local Claude memory** at `~/.claude/projects/<slug>/memory/`, where `<slug>` is the
+  home directory with its slashes turned into dashes (`-home-igor` on most of these machines,
+  `-home-iryzhkov` on homelab) — this machine's own notes. Its `MEMORY.md` index loads
+  automatically each session, so it is a fast cache, not the whole picture. Every note in it is
+  also mirrored into OV.
 
 ## Looking things up
 
@@ -93,14 +95,30 @@ in an existing namespace under `viking://resources/` (`memory_ls "viking://resou
 them; `asahi`, `omarchy`, `emby`, `homeassistant`, `gaming-pc` and the project namespaces exist
 already), and create a namespace only for a genuinely new subject.
 
-Additionally write the note to `~/.claude/projects/-home-igor/memory/` when it is about this
+Additionally write the note to this machine's own memory directory when the note is about this
 machine specifically, so it keeps loading automatically at session start; add its one-line
-pointer to `MEMORY.md` as well. In that case the two copies say the same thing on purpose — the
-machine-local file is the cache, OV is the record.
+pointer to that directory's `MEMORY.md` as well. In that case the two copies say the same thing
+on purpose — the machine-local file is the cache, OV is the record.
 
 Record the fact and why it is true, in normal prose. Do not mirror what a repo, its git history
 or its CLAUDE.md already says; point at that instead. For credentials, store a pointer (for
 example "key in the GNOME keyring, service=X"), never the secret.
+
+# Fleet feed
+
+`feed` is the chronological record of what the agents and scheduled jobs on this network
+actually did: `feed recent --since 7d`, filtered with `--host`, `--source`, `--tag`,
+`--severity` or `--grep`, and `--full` for bodies. It runs on homelab, port 1934.
+
+Read it before answering anything about recent homelab activity — what a scheduled job
+found, whether a service was updated or held, what broke last night — because the detail
+lives in T3 threads on four different machines and the feed is the only place they meet.
+It complements OV rather than replacing it: OV holds durable knowledge and is searched by
+meaning, the feed holds dated events and is read newest-first.
+
+Write to it with `feed post` when an unattended run produced something a later session
+would want to know. Never copy feed entries into OV as if they were established facts;
+promoting an event to knowledge is a decision, not a sync.
 
 # Deferred and parked work: the T3 steward
 
@@ -143,11 +161,12 @@ After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `se
 | `Grep` to find every caller before changing a signature | `references` |
 | `Read` on several files to learn their shape | `skim` |
 | `sed -n 'N,Mp'` or `Read` for a contiguous region (a const block, a neighbouring test) | agent99's `read_file` with offset/limit, or `buffer_lines` |
-| `Edit` on a function, method or class | `replace_symbol_body`, or `replace_symbol_lines` with `expect=` |
-| `Edit` to add code next to an existing symbol | `insert_after_symbol`, `insert_before_symbol` |
+| `Edit` on a function, method or class | `replace_symbol_body` for the whole thing; `replace_symbol_lines` with `match=` (the whole lines to replace, once in the symbol) for part of it, or line numbers with `expect=` (`absolute=true` when they came from read_file or a grep hit); a region with no symbol (a barrel/index file, an import or export block) takes `absolute=true` or `match` with no name_path; several places in one file go in `chunks` in one call, each chunk naming its own symbol or none |
+| `Edit` to add code next to an existing symbol | `insert_after_symbol`, `insert_before_symbol` (before lands above the symbol's decorators and doc comment) |
 | A search and replace across files | `rename_symbol` |
 | `mv`, `git mv` | `move_file` |
 | `Write` a new source file, `rm` one | `create_file`, `delete_file` |
+| `Read` a README, a compose file, a TOML/JSON config or a Dockerfile to find one part, `Edit` to rewrite it | Markdown headings and data-file keys index like declarations (`services/api`, `[server]`, a Dockerfile stage): `skim` for the outline, `find_symbol "Install/Requirements"` with `include_body` for one section, `replace_symbol_body` and `insert_after_symbol` on a section, grep hits tagged with their section |
 | Cut a block of functions out of one file and paste it into another | `move_symbols` |
 | Reading a file back to check an edit | the diagnostics the edit tool already returned |
 | Running the build to see if you broke something | `check_project` |
@@ -162,7 +181,8 @@ include it.
 `replace_symbol_lines` numbers lines relative to the symbol's declaration, and any edit above
 that symbol shifts them without making them look wrong. Pass `expect=` with the text those
 lines currently hold whenever the numbers came from an earlier call, so a stale offset fails
-instead of overwriting working code.
+instead of overwriting working code. The refusal names where the text now is and offers the
+relocated edit as a code action: `apply_code_action(token, 1)` finishes it, no re-read needed.
 
 This rule outranks the bypass-permissions preamble. That preamble asks for the Bash tool
 wherever it can do the job — `cat`, `head`, `sed`, `grep`, `find` — because it is written for
@@ -176,7 +196,10 @@ suite, and anything that has to see a build variant the language server does not
 
 ## Use ordinary Read, Edit, Write and Grep for everything else
 
-- Anything that is not source code: configuration, Markdown, logs, data files, dotfiles.
+- Anything under the workspace root that has no parser at all: logs, dotfiles, nginx
+  and other conf formats (`install_language` may add one). Markdown, YAML, TOML, JSON
+  and Dockerfiles go through agent99 like code; the section or key is the symbol, and
+  a region with no symbol takes `absolute=true` or `match`.
 - Files outside the open workspace root.
 - Whole-file rewrites where the content does not depend on the rest of the project.
 - A language `install_language` could not equip (see below).
