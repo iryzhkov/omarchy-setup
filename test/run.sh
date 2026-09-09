@@ -159,6 +159,33 @@ chmod +x "$T/bin/npm" "$T/bin/curl"
 case $? in 0) ok "npm and GitHub failures leave the caller running" ;; *) bad "lib/t3.sh lookup step $?" ;; esac
 rm -f "$T/bin/npm" "$T/bin/curl"
 
+# ------------------------------------------------------------------- 26-t3 --
+# Resolving versions needs a network. What is testable here is the timer the
+# module writes for itself: that it names this checkout, honours the configured
+# hour, and is enabled once rather than on every run.
+section "26-t3: the update timer"
+printf '#!/bin/sh\necho "systemctl $*" >>"%s/systemctl.log"\ncase "$*" in *is-enabled*) exit 1;; *is-active*) exit 1;; esac\nexit 0\n' "$T" >"$T/bin/systemctl"
+chmod +x "$T/bin/systemctl"
+: >"$T/systemctl.log"
+cat >"$ROOT/config/t3.conf" <<'CONF'
+T3_VERSION=
+T3_STEWARD_VERSION=
+T3_AUTO_UPDATE=0
+T3_UPDATE_ON_CALENDAR=04:20
+CONF
+check "module runs with nothing declared" module common/26-t3.sh
+U="$HOME/.config/systemd/user"
+check "service written" test -f "$U/t3-update.service"
+check "timer written" test -f "$U/t3-update.timer"
+check "ExecStart names this checkout" grep -qxF "ExecStart=$ROOT/bin/t3-update" "$U/t3-update.service"
+check "configured hour honoured" grep -qxF 'OnCalendar=*-*-* 04:20' "$U/t3-update.timer"
+check "timer enabled" grep -q 'enable --now t3-update.timer' "$T/systemctl.log"
+: >"$T/systemctl.log"
+printf '#!/bin/sh\necho "systemctl $*" >>"%s/systemctl.log"\ncase "$*" in *is-active*) exit 1;; esac\nexit 0\n' "$T" >"$T/bin/systemctl"
+check "second run" module common/26-t3.sh
+check "an enabled timer is not re-enabled" [ "$(count 'enable --now t3-update.timer' "$T/systemctl.log")" = 0 ]
+rm -f "$T/bin/systemctl"
+
 # ------------------------------------------------------------------- hypr --
 section "30-hypr: first run"
 check "module exits 0" module client/30-hypr.sh

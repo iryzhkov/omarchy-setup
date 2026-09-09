@@ -77,7 +77,8 @@ it touches T3.
 |------|------|
 | `config/t3.conf` | the declared pair: `T3_VERSION`, `T3_STEWARD_VERSION`, the steward repo, the auto-update switches, and the bind address used only when seeding a new `t3code.service` |
 | `lib/t3.sh` | version comparison, the tested-range parser, the npm and GitHub lookups, and the parsers for `t3-steward check` output. Kept separate so `test/run.sh` can exercise the decision logic with no network |
-| `modules/common/26-t3.sh` | resolves the newest compatible pair, installs T3 with npm and the steward from its GitHub release, handles the two user units, and restarts T3 when it is idle |
+| `bin/t3-update` | pull the checkout and run the module, with no orchestrator: what the timer runs, and the only way in on a host without Omarchy |
+| `modules/common/26-t3.sh` | resolves the newest compatible pair, installs T3 with npm and the steward from its GitHub release, handles the user units including its own timer, and restarts T3 when it is idle |
 
 The module is idempotent and runs on both profiles. It sits at 26 so that
 mise (25) has installed node before npm is needed.
@@ -113,6 +114,9 @@ What it does on each run:
    version is pending and defers to the next run, which is why nothing is lost
    by the host being busy every time. `T3_RESTART_WHEN_IDLE=0` turns the
    restart back into a message.
+6. Writes `t3-update.service` and `t3-update.timer` and enables the timer if it
+   is not enabled yet, so the check also happens on a host nobody is updating
+   by hand. See "The daily timer" below.
 
 `omarchy update` reaches all of this through the existing post-update hook
 (`config/hooks/post-update.d/omarchy-setup.hook`), which pulls this repo and
@@ -226,45 +230,41 @@ in this repo) and `~/.config/t3-steward/config.yaml`, which
 `t3-steward init` writes as a commented template. The module warns if the
 credential file is missing rather than failing.
 
-## homelab, which has no Omarchy
+## The daily timer, and the host with no Omarchy
 
-homelab is Debian 12. `run.sh` refuses to start there — it requires Omarchy for
-`omarchy pkg`, the hook directories and the theme commands — and there is no
-`omarchy update`, so the post-update hook that carries the module on every
-other host can never fire. The module itself needs none of that: `npm`, `curl`,
-`jq` and the steward binary are its whole dependency list.
+`omarchy update` is the main trigger, but it only fires when someone runs it,
+and a host nobody has updated for a month would sit on an old pair. So every
+host also carries `t3-update.timer`: daily at `T3_UPDATE_ON_CALENDAR` (09:15)
+with 20 minutes of jitter, `Persistent=true` so a laptop that was asleep at
+that hour catches up rather than skipping the day. Overlapping with the hook
+costs nothing — the module is idempotent, and a check that finds nothing is two
+requests.
 
-`bin/t3-update` is the entry point for that case. It pulls the checkout (a
-failed pull is a note, not a stop: a host that cannot reach the remote should
-still run the module it has) and execs `modules/common/26-t3.sh` directly. It
-works on any host, and is the convenient way to ask for the check by hand.
+Both units are written by the module itself, as owned files, rather than
+shipped as static config. `ExecStart` has to name the checkout that wrote it,
+and only the module knows where that is.
 
-The trigger is homelab's own convention — a user timer, like
-`homelab-drift-check.timer` and the backup units next to it. Both units are
-tracked here, under `hosts/homelab/systemd/user/`, and installed by hand
-because the module that would install them (`29-host-files`) rides on the same
-`run.sh` that cannot run there:
+What the timer runs is `bin/t3-update`: pull the checkout — a failed pull is a
+note, not a stop, since a host that cannot reach the remote should still run
+the module it has — then exec `modules/common/26-t3.sh`. It is also the tidy
+way to ask for the check by hand on any host.
+
+That indirection is what makes homelab work. It is Debian 12: `run.sh` refuses
+to start there, since it requires Omarchy for `omarchy pkg`, the hook
+directories and the theme commands, and there is no `omarchy update` for the
+post-update hook to ride. The module needs none of that — `npm`, `curl`, `jq`
+and the steward binary are its whole dependency list — so on that host one
+command does everything, including installing and enabling its own timer:
 
 ```bash
 ssh homelab
-cd ~/.local/share/omarchy-setup && git pull --ff-only
-install -Dm644 hosts/homelab/systemd/user/t3-update.service \
-  ~/.config/systemd/user/t3-update.service
-install -Dm644 hosts/homelab/systemd/user/t3-update.timer \
-  ~/.config/systemd/user/t3-update.timer
-systemctl --user daemon-reload
-systemctl --user enable --now t3-update.timer
-systemctl --user start t3-update.service   # once, to see it work
+~/.local/share/omarchy-setup/bin/t3-update
 journalctl --user -u t3-update -n 20 --no-pager
 ```
 
-It runs daily at 09:15 with a 20-minute jitter, after the overnight backups and
-the 08:30 drift check. `Persistent=true` so a reboot does not skip a day. The
-units are `%h`-relative, so nothing in them is specific to that host beyond the
-choice of hour — a second non-Omarchy host can take the same pair.
-
-Editing either unit later means copying it across again; there is no installer
-on that host to do it.
+The user units need lingering to fire with nobody logged in
+(`loginctl show-user "$USER" -p Linger`); homelab, gaming-pc and normandy all
+have it already.
 
 ## Upgrading the pair
 

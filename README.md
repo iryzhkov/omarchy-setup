@@ -339,11 +339,13 @@ started the update. So the restart is gated: it happens when the steward
 reports the served version is behind *and* no thread is running, and otherwise
 says so and defers to the next run.
 
-homelab has no Omarchy and therefore no `omarchy update` to ride along with, so
-it runs `bin/t3-update` -- pull the checkout, run the module, no orchestrator --
-from a user timer of its own, kept in `hosts/homelab/systemd/user/`.
-`docs/t3-code-and-steward.md` has the whole story, including that timer's
-one-time install and what to do on a host that has never run T3.
+The hook only fires when someone runs `omarchy update`, so every host also
+carries `t3-update.timer`, written and enabled by the module itself: daily,
+jittered, `Persistent` so a sleeping laptop catches up. It runs `bin/t3-update`
+-- pull the checkout, run the module, no orchestrator -- which is also what
+makes homelab work at all: that host is Debian, has no `omarchy update`, and
+`run.sh` refuses to start on it. `docs/t3-code-and-steward.md` has the whole
+story, including what to do on a host that has never run T3.
 
 ## Packages
 

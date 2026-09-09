@@ -39,6 +39,7 @@ T3_PORT=${T3_PORT:-7391}
 T3_AUTO_UPDATE=${T3_AUTO_UPDATE:-1}
 T3_STEWARD_PRERELEASES=${T3_STEWARD_PRERELEASES:-1}
 T3_RESTART_WHEN_IDLE=${T3_RESTART_WHEN_IDLE:-1}
+T3_UPDATE_ON_CALENDAR=${T3_UPDATE_ON_CALENDAR:-09:15}
 
 BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -317,6 +318,60 @@ elif [[ -n $T3_VERSION ]]; then
   fi
   [[ -f $HOME/.config/claude/oauth.env ]] ||
     warn "no ~/.config/claude/oauth.env; T3 will start unauthenticated until it is written"
+fi
+
+# ---- the daily check -------------------------------------------------------
+# `omarchy update` is the main trigger, but it only fires when someone runs it,
+# and homelab has no such command at all. A timer of its own means the pair
+# keeps moving on a machine nobody has touched for a month. Both are harmless
+# together: the module is idempotent, and a check that finds nothing costs two
+# requests.
+#
+# The units are generated rather than copied so ExecStart names *this*
+# checkout, wherever it sits, rather than a path this repo assumes.
+if [[ -x $OMARCHY_SETUP_ROOT/bin/t3-update ]] && command -v systemctl >/dev/null 2>&1; then
+  {
+    printf '# Written by omarchy-setup (modules/common/26-t3.sh); edits are overwritten.\n'
+    printf '[Unit]\n'
+    printf 'Description=Follow the newest compatible T3 Code and t3-steward pair\n'
+    printf 'Documentation=https://github.com/iryzhkov/omarchy-setup\n\n'
+    printf '[Service]\n'
+    printf 'Type=oneshot\n'
+    # npm comes from a mise shim and the steward lives in ~/.local/bin; a user
+    # unit inherits neither from a login shell.
+    printf 'Environment=PATH=%%h/.local/share/mise/shims:%%h/.local/bin:/usr/local/bin:/usr/bin:/bin\n'
+    printf 'Environment=HOME=%%h\n'
+    printf 'ExecStart=%s/bin/t3-update\n\n' "$OMARCHY_SETUP_ROOT"
+    printf '[Install]\n'
+    printf 'WantedBy=default.target\n'
+  } | write_owned_file "$UNIT_DIR/t3-update.service"
+
+  {
+    printf '# Written by omarchy-setup (modules/common/26-t3.sh); edits are overwritten.\n'
+    printf '[Unit]\n'
+    printf 'Description=Daily check for a newer T3 Code and t3-steward pair\n\n'
+    printf '[Timer]\n'
+    # Morning, after an overnight backup window and before a working day, so a
+    # restart that becomes due has the best chance of finding the host idle.
+    printf 'OnCalendar=*-*-* %s\n' "$T3_UPDATE_ON_CALENDAR"
+    # Laptops are asleep at that hour and hosts reboot; catch up rather than
+    # skip the day.
+    printf 'Persistent=true\n'
+    # Four hosts asking GitHub and npm the same question want spreading out.
+    printf 'RandomizedDelaySec=20m\n\n'
+    printf '[Install]\n'
+    printf 'WantedBy=timers.target\n'
+  } | write_owned_file "$UNIT_DIR/t3-update.timer"
+
+  if (( ! DRY_RUN )); then
+    run systemctl --user daemon-reload
+    # `enable --now` on a timer that is already running is a no-op, but saying
+    # so on every run is noise.
+    if ! systemctl --user is-enabled --quiet t3-update.timer 2>/dev/null; then
+      step "enabling t3-update.timer"
+      run systemctl --user enable --now t3-update.timer
+    fi
+  fi
 fi
 
 # ---- restart T3 when it is idle --------------------------------------------
