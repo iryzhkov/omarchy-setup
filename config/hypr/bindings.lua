@@ -21,18 +21,6 @@ o.bind("SUPER + SHIFT + M", "Music", { tui = "spotify_player", focus = true })
 hl.unbind("SUPER + SHIFT + SLASH")
 o.bind("SUPER + SHIFT + SLASH", "Passwords", "omarchy-shell io.github.elevate08.qs-bitwarden-cli toggle")
 
--- Email: SUPER+SHIFT+E defaults to { webapp = "https://app.hey.com" } and
--- SUPER+SHIFT+ALT+E to HEY's compose URL. Use Omamail (config/plugins.txt)
--- instead -- it runs inside the omarchy-shell process rather than as a browser
--- webapp. The IPC target is `shell`, not the plugin id: the window is summoned
--- by the shell, which is what loads the plugin in the first place (see the
--- omamail README). Payload `{"compose":true}` opens an empty draft.
-hl.unbind("SUPER + SHIFT + E")
-o.bind("SUPER + SHIFT + E", "Email", [[omarchy shell shell toggle omamail '{}']])
-
-hl.unbind("SUPER + SHIFT + ALT + E")
-o.bind("SUPER + SHIFT + ALT + E", "New email", [[omarchy shell shell toggle omamail '{"compose":true}']])
-
 -- Select all: SUPER+A sends CTRL+A to the focused surface, mirroring the
 -- universal copy/paste/cut keys in default/hypr/bindings/clipboard.lua.
 -- The window target is omitted so it reaches layer-shell panels too, and the
