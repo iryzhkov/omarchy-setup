@@ -248,7 +248,8 @@ fi
 # Written after the installs, so it states what is on disk rather than what was
 # intended: a download that failed must not leave a version recorded as current.
 if (( ! DRY_RUN )); then
-  installed_t3=$(command -v npm >/dev/null 2>&1 && npm_t3_version || true)
+  installed_t3=""
+  if command -v npm >/dev/null 2>&1; then installed_t3=$(npm_t3_version); fi
   installed_steward=$(steward_installed_version)
   if [[ -n $installed_t3 || -n $installed_steward ]]; then
     mkdir -p "$OMARCHY_SETUP_STATE"
@@ -326,7 +327,8 @@ fi
 # running, so the restart waits for a moment when losing nothing is certain.
 if (( ! DRY_RUN )) && [[ -x $BIN_DIR/t3-steward ]] &&
   systemctl --user is-active --quiet t3code.service 2>/dev/null; then
-  installed_t3=$(command -v npm >/dev/null 2>&1 && npm_t3_version || true)
+  installed_t3=""
+  if command -v npm >/dev/null 2>&1; then installed_t3=$(npm_t3_version); fi
   check_out=$("$BIN_DIR/t3-steward" check 2>&1 || true)
   served=$(t3_server_version <<<"$check_out")
   running=$(t3_running_threads <<<"$check_out")
