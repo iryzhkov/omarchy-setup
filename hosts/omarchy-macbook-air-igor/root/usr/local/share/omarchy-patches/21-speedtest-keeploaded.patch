@@ -1,0 +1,10 @@
+--- a/shell/plugins/panels/speedtest/manifest.json
++++ b/shell/plugins/panels/speedtest/manifest.json
+@@ -5,6 +5,7 @@
+   "version": "1.0.0",
+   "author": "Omarchy",
+   "description": "Internet speed test with download and upload dials",
++  "keepLoaded": true,
+   "kinds": [
+     "panel"
+   ],

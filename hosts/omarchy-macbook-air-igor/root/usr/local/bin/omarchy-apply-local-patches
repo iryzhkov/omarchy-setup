@@ -1,0 +1,48 @@
+#!/bin/bash
+# Re-apply local patches to /usr/share/omarchy after the omarchy package is
+# upgraded. Run by /etc/pacman.d/hooks/90-omarchy-local-patches.hook as root,
+# and safe to run by hand at any time.
+#
+# Patches live in /usr/local/share/omarchy-patches/*.patch as unified diffs
+# with a/ and b/ prefixes relative to /usr/share/omarchy. For each patch:
+#   - already applied (reverse dry-run succeeds)  -> skip
+#   - applies cleanly (forward dry-run succeeds)   -> apply, keep a .orig
+#   - neither                                       -> report; upstream changed
+#     the file and the patch needs a rebase (or has become unnecessary)
+#
+# Exits non-zero if any patch failed, so pacman prints it in the transaction
+# output. Nothing is left half-applied: patch is only run for real after the
+# dry run passes.
+set -u
+ROOT=/usr/share/omarchy
+PATCHES=/usr/local/share/omarchy-patches
+status=0
+shopt -s nullglob
+for p in "$PATCHES"/*.patch; do
+  name=$(basename "$p" .patch)
+  if patch -p1 -d "$ROOT" -R --dry-run -s -f < "$p" >/dev/null 2>&1; then
+    echo "omarchy-local-patches: $name: already applied"
+    continue
+  fi
+  if patch -p1 -d "$ROOT" --dry-run -s -f -N < "$p" >/dev/null 2>&1; then
+    # Keep a pristine copy of every file the patch touches, for diffing later.
+    grep -E '^\+\+\+ b/' "$p" | sed 's#^+++ b/##' | while read -r f; do
+      [[ -f "$ROOT/$f" && ! -f "$ROOT/$f.orig" ]] && cp -p "$ROOT/$f" "$ROOT/$f.orig"
+    done
+    if patch -p1 -d "$ROOT" -s -f -N < "$p"; then
+      echo "omarchy-local-patches: $name: applied"
+    else
+      echo "omarchy-local-patches: $name: FAILED while applying" >&2
+      status=1
+    fi
+    continue
+  fi
+  echo "omarchy-local-patches: $name: DOES NOT APPLY — upstream changed the file; rebase or drop this patch" >&2
+  status=1
+done
+if [[ $status -ne 0 ]]; then
+  echo "omarchy-local-patches: one or more patches need attention (see above)" >&2
+else
+  echo "omarchy-local-patches: done; restart the shell (omarchy-restart-shell) to load QML changes"
+fi
+exit $status

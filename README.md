@@ -152,6 +152,8 @@ config/bin/*            helper scripts the bindings call, installed to ~/.local/
 config/bash/*           shell snippets sourced from one fence in ~/.bashrc
 config/claude/          Claude Code: CLAUDE.md, owned settings keys, skills
 hosts/<hostname>/       per-machine overrides, layered on top of config/
+                        (hypr fragments, scripts, configs, units, root files;
+                        see hosts/README.md)
 ```
 
 Modules from `common/` and the active profile are merged and ordered by their
@@ -442,6 +444,11 @@ Deliberately left to hand configuration on each machine:
   is not guaranteed to include `~/.local/bin`.
 - **An Omarchy hook** — drop `config/hooks/<event>.d/<name>.hook` in;
   `85-hooks` installs it executable.
+- **Something one machine needs** — put it under `hosts/<hostname>/` in the
+  directory that mirrors where it lands (`bin/`, `config/`, `share/`,
+  `systemd/user/`, `root/`); `29-host-files` installs the tree on that
+  machine only. The laptop's Asahi audio overrides, local omarchy patches and
+  pacman hooks live there. `hosts/README.md` lists the layout.
 - **A step** — add `modules/<profile>/NN-<name>.sh`, source `lib/common.sh`,
   keep it idempotent, and add a case to `test/run.sh` if it manages files.
 

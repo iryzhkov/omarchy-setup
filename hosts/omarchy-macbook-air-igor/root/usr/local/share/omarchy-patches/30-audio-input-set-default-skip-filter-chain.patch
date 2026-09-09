@@ -1,0 +1,30 @@
+--- a/bin/omarchy-audio-input-set-default
++++ b/bin/omarchy-audio-input-set-default
+@@ -1,5 +1,4 @@
+ #!/bin/bash
+-
+ # omarchy:summary=Set the default audio input and move active streams
+ # omarchy:args=<node-id> <source-name>
+ # omarchy:examples=omarchy audio input set default 43 alsa_input.pci-0000_00_1f.3.analog-stereo
+@@ -15,6 +14,20 @@
+ wpctl set-default "$node_id" 2>/dev/null || true
+ pactl set-default-source "$source_name" 2>/dev/null || true
+ 
+-pactl list short source-outputs 2>/dev/null | awk '{ print $1 }' | while read -r output; do
++# Move only real capture clients. A DSP filter chain (asahi-audio's microphone
++# beamformer, EasyEffects) is itself a source-output: its capture stream reads
++# the raw hardware and is what produces the source the user just picked. Moving
++# that stream onto its own output makes its target invalid; the stream is
++# node.dont-fallback, so it goes UNCONNECTED and libpipewire-module-filter-chain
++# destroys the whole chain, taking the microphone with it. Such streams carry
++# node.link-group and node.passive; skip them.
++pactl list source-outputs 2>/dev/null | awk '
++  function flush() { if (id != "" && !skip) print id; id = ""; skip = 0 }
++  /^Source Output #/ { flush(); id = substr($3, 2) }
++  /node\.link-group = / { skip = 1 }
++  /node\.passive = "true"/ { skip = 1 }
++  /application\.name = "EasyEffects"/ { skip = 1 }
++  END { flush() }
++' | while read -r output; do
+   [[ -n $output ]] && pactl move-source-output "$output" "$source_name" 2>/dev/null || true
+ done

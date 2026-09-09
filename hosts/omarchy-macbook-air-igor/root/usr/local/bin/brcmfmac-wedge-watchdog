@@ -1,0 +1,93 @@
+#!/bin/bash
+#
+# Watch the journal for the Broadcom firmware wedge signature and run
+# omarchy-wifi-resume-fix when it appears.
+#
+# Omarchy installs omarchy-wifi-resume-fix.service, but it is wired only to
+# the sleep targets, so it recovers the wedge described in
+# https://github.com/AsahiLinux/linux/issues/439 only after a resume. The same
+# wedge also hits at other times: on 2026-09-07 a cold boot with no suspend
+# involved produced 7 "CTRL-EVENT-ASSOC-REJECT status_code=16" events and 21
+# "brcmf_cfg80211_scan: scan error (-52)" errors, and Wi-Fi only came back
+# after several manual attempts.
+#
+# This service watches for that signature continuously and calls the same
+# recovery script, so a wedge at boot, while roaming, or after a long idle is
+# handled the way a wedge after resume already is.
+
+set -uo pipefail
+
+# Two rejects confirm the wedge on their own: a healthy association never
+# emits status_code=16 twice. The scan errors are a weaker signal because a
+# single failed scan happens on a healthy link too, so they need a higher
+# count before they count as confirmation.
+REJECT_SIGNATURE='CTRL-EVENT-ASSOC-REJECT.*status_code=16([^0-9]|$)'
+SCAN_SIGNATURE='brcmf_cfg80211_scan: scan error \(-52\)'
+REJECT_THRESHOLD=2
+SCAN_THRESHOLD=6
+WINDOW=90     # seconds the events must fall inside to count together
+COOLDOWN=300  # minimum seconds between two recoveries
+
+rejects=()
+scans=()
+last_recovery=0
+
+prune() {
+  local -n events=$1
+  local cutoff=$2
+  local kept=() t
+  for t in ${events[@]+"${events[@]}"}; do
+    ((t >= cutoff)) && kept+=("$t")
+  done
+  events=(${kept[@]+"${kept[@]}"})
+}
+
+recover() {
+  local reason=$1 now=$2 status
+
+  if ((now - last_recovery < COOLDOWN)); then
+    echo "$reason, but the last recovery was $((now - last_recovery))s ago - holding off"
+    return
+  fi
+
+  # After a resume both this watchdog and omarchy-wifi-resume-fix.service see
+  # the same events. Let the resume service win: it is the one systemd is
+  # waiting on, and two concurrent brcmfmac reloads would fight.
+  if systemctl is-active --quiet omarchy-wifi-resume-fix.service; then
+    echo "$reason, but omarchy-wifi-resume-fix is already running - leaving it to that"
+    return
+  fi
+
+  echo "$reason - running omarchy-wifi-resume-fix"
+  /usr/bin/omarchy-wifi-resume-fix
+  status=$?
+  echo "recovery finished with status $status"
+
+  last_recovery=$(date +%s)
+  rejects=()
+  scans=()
+}
+
+echo "watching for the brcmfmac wedge signature"
+
+journalctl -f -n 0 -o cat -t wpa_supplicant -t kernel | while IFS= read -r line; do
+  now=$(date +%s)
+  cutoff=$((now - WINDOW))
+
+  if [[ $line =~ $REJECT_SIGNATURE ]]; then
+    rejects+=("$now")
+  elif [[ $line =~ $SCAN_SIGNATURE ]]; then
+    scans+=("$now")
+  else
+    continue
+  fi
+
+  prune rejects "$cutoff"
+  prune scans "$cutoff"
+
+  if ((${#rejects[@]} >= REJECT_THRESHOLD)); then
+    recover "${#rejects[@]} association rejects in ${WINDOW}s" "$now"
+  elif ((${#scans[@]} >= SCAN_THRESHOLD)); then
+    recover "${#scans[@]} scan errors in ${WINDOW}s" "$now"
+  fi
+done

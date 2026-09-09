@@ -56,8 +56,9 @@ mode()    { stat -c %a "$1"; }
 # ------------------------------------------------------------------ syntax
 section "bash -n over every script"
 while IFS= read -r f; do
+  head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b' || continue   # python helpers, pacman hooks
   check "bash -n ${f#"$ROOT"/}" bash -n "$f"
-done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/config/bin/*' \) | sort)
+done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/config/bin/*' -o -path '*/hosts/*/bin/*' -o -path '*/root/usr/local/bin/*' \) | sort)
 
 # -------------------------------------------------------- managed blocks --
 section "write_managed_block"
@@ -189,6 +190,26 @@ check "post-update hook executable" test -x "$HOME/.config/omarchy/hooks/post-up
 check "hook is a no-op without a recorded checkout" bash "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
 check "wrapper refuses without a recorded checkout" env -u OMARCHY_SETUP_ROOT bash -c '! "$1"' _ "$HOME/.local/bin/omarchy-setup"
 
+# ------------------------------------------------------------ host files --
+section "29-host-files"
+check "no host directory is a no-op" env SETUP_HOST=nohost bash -c 'bash "$1" >"$2" 2>&1' _ "$ROOT/modules/common/29-host-files.sh" "$T/last.log"
+check "no-op says so" log_has "nothing machine-specific"
+HF="$ROOT/hosts/testhost"
+mkdir -p "$HF/bin" "$HF/config/app/sub" "$HF/share/tool" "$HF/systemd/user"
+printf '#!/bin/sh\necho hi\n' >"$HF/bin/hosttool"; chmod +x "$HF/bin/hosttool"
+printf 'key = 1\n' >"$HF/config/app/sub/settings.conf"
+printf 'data\n' >"$HF/share/tool/data.txt"
+printf '[Unit]\nDescription=t\n[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n' >"$HF/systemd/user/hosttool.service"
+printf '#!/bin/sh\necho "systemctl $*" >>"%s/systemctl.log"\ncase "$*" in *is-enabled*) exit 1;; esac\nexit 0\n' "$T" >"$T/bin/systemctl"; chmod +x "$T/bin/systemctl"
+check "host files run" module common/29-host-files.sh
+check "script installed executable" test -x "$HOME/.local/bin/hosttool"
+check "config keeps its relative path" test -f "$HOME/.config/app/sub/settings.conf"
+check "share file installed" test -f "$HOME/.local/share/tool/data.txt"
+check "unit installed 0644" [ "$(mode "$HOME/.config/systemd/user/hosttool.service")" = 644 ]
+check "unit enabled" grep -q 'enable --now hosttool.service' "$T/systemctl.log"
+check "second run rewrites nothing" module common/29-host-files.sh && ! log_has ': written'
+rm -f "$T/bin/systemctl"
+
 # ---------------------------------------------------------------- dry run --
 section "dry run changes nothing"
 rm -rf "$HOME/.config/hypr/omarchy-setup"
@@ -207,6 +228,7 @@ before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
 check "dry run exits 0" bash "$ROOT/uninstall.sh" --dry-run
 check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
 check "uninstall exits 0" bash "$ROOT/uninstall.sh"
+check "host files gone" [ ! -e "$HOME/.local/bin/hosttool" ] && [ ! -e "$HOME/.config/app/sub/settings.conf" ] && [ ! -e "$HOME/.config/systemd/user/hosttool.service" ]
 check "no fence left anywhere" [ -z "$(grep -rl 'omarchy-setup:' "$HOME/.config/hypr" "$HOME/.bashrc" "$HOME/.claude/CLAUDE.md" 2>/dev/null)" ]
 check "owned dirs gone" [ ! -e "$HYPR/omarchy-setup" ] && [ ! -e "$HOME/.config/bash/omarchy-setup" ] && [ ! -e "$HOME/.claude/omarchy-setup" ]
 check "scripts and hook gone" [ ! -e "$HOME/.local/bin/omarchy-setup" ] && [ ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook" ]

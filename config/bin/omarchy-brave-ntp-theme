@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Point Brave's new tab background at the active Omarchy theme.
+#
+# Brave stores that background as a CSS value in each profile's Preferences:
+#   brave.new_tab_page.background = {type: "color", selected_value: "<css>"}
+# so a theme-coloured gradient is written straight into the pref -- no
+# extension, no custom image upload. Brave's own NTP cannot be made
+# transparent: it is a web page inside an opaque Wayland window.
+#
+# Brave rewrites Preferences from memory when it exits, so a write while it is
+# running would be lost. When Brave is up this only notifies, and the value
+# lands at the next theme switch (or on a manual run) with Brave closed.
+#
+# Installed as a theme-set hook; safe to run by hand any time.
+
+set -uo pipefail
+
+THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
+BRAVE_DIR="${BRAVE_NTP_DIR:-$HOME/.config/BraveSoftware/Brave-Browser}"
+
+[[ -r $THEME_COLORS ]] || exit 0
+[[ -d $BRAVE_DIR ]] || exit 0
+
+read_color() {
+  local key=$1
+  sed -n "s/^${key}[[:space:]]*=[[:space:]]*\"\\(#[0-9a-fA-F]\\{6\\}\\)\".*/\\1/p" "$THEME_COLORS" | head -1
+}
+
+OUTER=$(read_color background)
+INNER=$(read_color lighter_background)
+[[ -n $OUTER ]] || exit 0
+[[ -n $INNER ]] || INNER=$OUTER
+
+# Same gradient geometry Brave ships with, recoloured from the theme.
+GRADIENT="radial-gradient(80% 80% at 101.61% 76.99%, ${INNER} 0%, ${OUTER} 100%)"
+
+# --force writes even while Brave runs; Brave may still clobber it on exit.
+# Otherwise, when Brave is up, leave a detached watcher that applies the value
+# the moment Brave exits. Restarting Brave outright is not an option here:
+# session.restore_on_startup is 5 (open a new tab), so a restart would drop
+# every open tab. The flock keeps exactly one watcher alive across repeated
+# theme switches, and --watcher stops a watcher from spawning another.
+BRAVE_PROC="${BRAVE_NTP_PROC:-brave}"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-brave-ntp.lock"
+
+if [[ ${1:-} != --force ]] && pgrep -x "$BRAVE_PROC" >/dev/null 2>&1; then
+  if [[ ${1:-} != --watcher ]]; then
+    SELF=$(readlink -f "$0")
+    setsid nohup bash -c '
+      exec 9>"$2" || exit 0
+      flock -n 9 || exit 0
+      while pgrep -x "$3" >/dev/null 2>&1; do sleep 20; done
+      sleep 3
+      exec "$1" --watcher
+    ' _ "$SELF" "$LOCK" "$BRAVE_PROC" >/dev/null 2>&1 < /dev/null &
+    disown 2>/dev/null
+  fi
+  command -v omarchy-notification-send >/dev/null 2>&1 &&
+    omarchy-notification-send -g "󰖟" "Brave is running — new tab colour will apply when you next quit it"
+  exit 0
+fi
+
+python3 - "$BRAVE_DIR" "$GRADIENT" <<'PY'
+import json, os, sys
+
+brave_dir, gradient = sys.argv[1], sys.argv[2]
+changed = []
+
+for entry in sorted(os.listdir(brave_dir)):
+    prefs = os.path.join(brave_dir, entry, "Preferences")
+    if not os.path.isfile(prefs):
+        continue
+    try:
+        with open(prefs, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        continue
+
+    node = data.setdefault("brave", {}).setdefault("new_tab_page", {})
+    current = node.get("background")
+    wanted = {"random": False, "selected_value": gradient, "type": "color"}
+    if current == wanted:
+        continue
+    node["background"] = wanted
+
+    tmp = prefs + ".omarchy-tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, separators=(",", ":"))
+    os.replace(tmp, prefs)
+    changed.append(entry)
+
+print("updated profiles:", ", ".join(changed) if changed else "none (already current)")
+PY

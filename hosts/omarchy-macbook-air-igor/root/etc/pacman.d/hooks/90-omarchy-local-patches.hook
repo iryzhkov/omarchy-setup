@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = omarchy
+
+[Action]
+Description = Re-applying local omarchy patches (/usr/local/share/omarchy-patches)
+When = PostTransaction
+Exec = /usr/local/bin/omarchy-apply-local-patches

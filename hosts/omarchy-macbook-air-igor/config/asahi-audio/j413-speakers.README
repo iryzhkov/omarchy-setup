@@ -1,0 +1,14 @@
+j413-speakers.json is a copy of /usr/share/asahi-audio/j413/graph.json
+(asahi-audio 4.1) with one change: woofer_lim is retuned into a brickwall
+(threshold al 1.0 -> 0.56, about -5 dB, knee 0.5 -> 0.3; ratio cr 15 -> 100).
+
+Why: stock settings let bass-heavy content overshoot the woofer outputs to
++3.9 dB over full scale at 100% volume (11.6% of samples clamped by the DAC),
+which is audible clipping on the built-in speakers. Measured 2026-09-01 by
+recording the DSP-out stream while playing a bass-heavy test signal.
+
+Adding an LSP limiter_stereo node instead crashes WirePlumber's LV2 loader
+(core dump, no worker-feature support), so the existing compressor is retuned.
+
+Wired in by ~/.config/wireplumber/wireplumber.conf.d/99-j413-mic-mono.conf.
+After an asahi-audio update, diff against the packaged graph.json and re-apply.

@@ -1,0 +1,74 @@
+#!/bin/bash
+# Report whether Brave private windows actually have a tunnel to go through.
+#
+# The browser side of this cannot be checked from here: whether the extension
+# is allowed in private windows is per-profile state inside Brave. What this
+# does check is everything below the browser, plus a direct probe of the proxy,
+# so a failure here explains a private window that will not load.
+
+PROXY=10.200.200.2:1080
+ok=0
+
+status() { printf '%-22s %s\n' "$1" "$2"; }
+
+for unit in vpn-netns.service vpn-socks.service; do
+  if systemctl is-active --quiet "$unit"; then
+    status "$unit" "active"
+  else
+    status "$unit" "INACTIVE"
+    ok=1
+  fi
+done
+
+if ! ip netns list 2>/dev/null | grep -q '^vpn'; then
+  status "namespace" "MISSING"
+  echo
+  echo "Start it with: systemctl start vpn-netns vpn-socks"
+  exit 1
+fi
+status "namespace" "present"
+
+# A WireGuard peer with no recent handshake is the usual reason private windows
+# hang rather than fail outright: the link stays up and packets go nowhere.
+hs=$(sudo -n ip netns exec vpn wg show pvpn latest-handshakes 2>/dev/null | awk '{print $2}')
+if [ -n "$hs" ] && [ "$hs" != "0" ]; then
+  age=$(( $(date +%s) - hs ))
+  if [ "$age" -lt 180 ]; then
+    status "handshake" "${age}s ago"
+  else
+    status "handshake" "STALE (${age}s ago)"
+    ok=1
+  fi
+else
+  # `wg show` needs CAP_NET_ADMIN, so without root this check is skipped
+  # rather than failed. The proxy probe below covers the same ground.
+  status "handshake" "not checked (needs root)"
+fi
+
+# Probe the proxy the way Brave will use it, from the host side of the veth.
+exit_ip=$(curl -s --max-time 12 --socks5-hostname "$PROXY" https://api.ipify.org)
+if [ -n "$exit_ip" ]; then
+  status "proxy exit address" "$exit_ip"
+else
+  status "proxy exit address" "NO ANSWER"
+  ok=1
+fi
+
+direct_ip=$(curl -s --max-time 12 https://api.ipify.org)
+status "direct exit address" "${direct_ip:-unknown}"
+
+if [ -n "$exit_ip" ] && [ "$exit_ip" = "$direct_ip" ]; then
+  echo
+  echo "WARNING: the proxy and the direct path share an exit address."
+  echo "The tunnel is not carrying private traffic."
+  ok=1
+fi
+
+echo
+if [ "$ok" -eq 0 ]; then
+  echo "Tunnel side is healthy. Confirm the browser side by opening a private"
+  echo "window on https://api.ipify.org: it must show $exit_ip, not $direct_ip."
+else
+  echo "Something above is wrong; private windows will fail or leak."
+fi
+exit "$ok"

@@ -158,3 +158,12 @@ if command -v claude >/dev/null 2>&1; then
 else
   warn "claude not on PATH; MCP server not registered (re-run after 25-mise has installed it)"
 fi
+
+# ---- shared instruction files ---------------------------------------------
+# OpenCode and Codex do not read ~/.claude/CLAUDE.md or the skills. The
+# agents-instructions-gen script (config/bin, installed by 28-scripts) renders
+# ~/.config/agents/*.md from the skills and CLAUDE.md written above; OpenCode's
+# config lists those files as instructions.
+if command -v agents-instructions-gen >/dev/null 2>&1; then
+  run agents-instructions-gen
+fi

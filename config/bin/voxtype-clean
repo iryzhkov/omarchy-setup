@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Post-process voxtype transcriptions before they are typed.
+
+Whisper output arrives with hard line breaks; typed as Enter keystrokes they
+submit chat prompts early. This script always collapses the text to a single
+line, and additionally tries an LLM cleanup pass (punctuation, filler removal)
+on the gaming-pc ollama instance. Any LLM failure — host down, timeout, empty
+or suspicious answer — falls back to the plain collapsed text, so dictation
+never breaks when the gaming PC is off.
+
+The cleanup model is used only when it is already fully loaded in GPU memory
+(checked via /api/ps): a cold load takes far longer than the voxtype
+post-process timeout allows. When the model is not loaded, this run falls back
+to plain collapse and a detached request starts loading the model, so a later
+dictation can use it. llama3.2:3b is no longer used: it echoed the prompt's
+few-shot example into transcripts.
+
+Wired in via [output.post_process] in ~/.config/voxtype/config.toml.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+
+OLLAMA_BASE = os.environ.get("VOXTYPE_CLEAN_BASE", "http://192.168.90.212:11434")
+MODEL = os.environ.get("VOXTYPE_CLEAN_MODEL", "devstral:24b")
+TIMEOUT_SECS = float(os.environ.get("VOXTYPE_CLEAN_TIMEOUT", "5"))
+PS_TIMEOUT_SECS = 1.5
+KEEP_ALIVE = "2h"
+
+PROMPT = (
+    "Below is raw speech-to-text output. Fix punctuation and capitalization "
+    "and join the broken lines into normal sentences. Remove only filler "
+    "sounds (um, uh, er). Keep every other word exactly as spoken - do not "
+    "rephrase, shorten, or answer it. The line breaks in the input are "
+    "arbitrary: most of them fall mid-sentence and must be removed. Insert a "
+    "blank line only where the text clearly starts a new paragraph or a "
+    "different person starts speaking; if it reads as one continuous "
+    "passage, output a single paragraph. Output only the corrected text.\n\n"
+    "Never leave out words such as names or 'said'.\n\n"
+    "Example input:\n"
+    "the fix is deployed\nand it um works fine\nmoving on to something else\n"
+    "i need to book the dentist\nthen anna said are you free\nand i said no\n\n"
+    "Example output:\n"
+    "The fix is deployed and it works fine.\n\n"
+    "Moving on to something else: I need to book the dentist.\n\n"
+    "Then Anna said: are you free?\n\n"
+    "And I said: no.\n\n"
+    "Now the actual input:\n"
+)
+
+# Distinctive fragments of the few-shot example above. If one shows up in the
+# answer but not in the input, the model replayed its example (seen with
+# llama3.2:3b) and the answer must be discarded.
+EXAMPLE_MARKERS = ("book the dentist", "fix is deployed", "anna said")
+
+
+def collapse(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def model_loaded_in_vram(model: str) -> bool | None:
+    """True/False for whether `model` is (almost) fully resident in VRAM;
+    None when the ollama server is unreachable."""
+    try:
+        with urllib.request.urlopen(
+            f"{OLLAMA_BASE}/api/ps", timeout=PS_TIMEOUT_SECS
+        ) as resp:
+            models = json.loads(resp.read()).get("models", [])
+    except Exception:
+        return None
+    for m in models:
+        if m.get("name") == model:
+            size = m.get("size") or 0
+            return size > 0 and m.get("size_vram", 0) >= 0.9 * size
+    return False
+
+
+def trigger_load(model: str) -> None:
+    """Ask ollama to load `model` without waiting for it. The child curl
+    outlives this script; an empty generate request just loads the model."""
+    payload = json.dumps({"model": model, "keep_alive": KEEP_ALIVE})
+    try:
+        subprocess.Popen(
+            [
+                "curl", "-s", "-o", "/dev/null", "--max-time", "600",
+                "-d", payload, f"{OLLAMA_BASE}/api/generate",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+def llm_clean(text: str) -> str | None:
+    payload = json.dumps(
+        {
+            "model": MODEL,
+            "prompt": PROMPT + text,
+            "stream": False,
+            "keep_alive": KEEP_ALIVE,
+            "options": {"temperature": 0},
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{OLLAMA_BASE}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_SECS) as resp:
+            answer = json.loads(resp.read())["response"]
+    except Exception:
+        return None
+
+    # Small models sometimes prepend "Here is the corrected text:" — drop it.
+    answer = re.sub(
+        r"^\s*here('?s| is)?\b[^:\n]*:\s*", "", answer, flags=re.IGNORECASE
+    )
+    # Some models emit exotic spaces (U+202F, U+00A0); typed into a terminal
+    # they look like spaces but break copy-paste and search.
+    answer = re.sub("[\\u00a0\\u2007\\u2009\\u202f]", " ", answer)
+    # Keep the paragraph breaks the model chose, but normalize everything
+    # else: single spaces within lines, at most one blank line between
+    # paragraphs. voxtype types the remaining newlines as Shift+Enter
+    # (shift_enter_newlines = true), so they don't submit chat prompts.
+    answer = re.sub(r"[ \t]+", " ", answer)
+    answer = re.sub(r" ?\n ?", "\n", answer)
+    answer = re.sub(r"\n{3,}", "\n\n", answer).strip().strip('"')
+    if not answer:
+        return None
+
+    low_in, low_out = text.lower(), answer.lower()
+    if any(m in low_out and m not in low_in for m in EXAMPLE_MARKERS):
+        return None
+
+    # Guard against the model paraphrasing or answering instead of cleaning:
+    # a faithful cleanup keeps roughly the same word count.
+    in_words = len(text.split())
+    out_words = len(answer.split())
+    if in_words >= 4 and not (0.5 * in_words <= out_words <= 1.5 * in_words):
+        return None
+    return answer
+
+
+def main() -> None:
+    raw = sys.stdin.read()
+    fallback = collapse(raw)
+    if not fallback:
+        return
+    cleaned = None
+    if os.environ.get("VOXTYPE_CLEAN_LLM") != "0":
+        loaded = model_loaded_in_vram(MODEL)
+        if loaded:
+            cleaned = llm_clean(raw)
+        elif loaded is False:
+            trigger_load(MODEL)
+    sys.stdout.write(cleaned if cleaned is not None else fallback)
+
+
+if __name__ == "__main__":
+    main()

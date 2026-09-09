@@ -1,0 +1,13 @@
+--- a/shell/plugins/bar/Bar.qml
++++ b/shell/plugins/bar/Bar.qml
+@@ -820,6 +820,10 @@
+       restoreForegroundAnimation()
+       return
+     }
++    // Flip the visual immediately so the bar clears before the flush-bar
++    // gaps change re-tiles the windows. The text keeps the theme foreground
++    // until the text-color probe below returns and refines it.
++    transparent = true
+     scheduleTransparentForegroundRefresh()
+   }
+ 

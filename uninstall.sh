@@ -60,6 +60,27 @@ for f in "$OMARCHY_SETUP_ROOT"/config/bin/*; do
   [[ -f $f ]] && remove_owned "$HOME/.local/bin/$(basename "$f")"
 done
 
+step "host files"
+# User-side copies only. Files under hosts/<host>/root/ (pacman hooks, local
+# patches, system units) stay: they were installed with sudo and removing them
+# is a decision to make by hand on that machine.
+HOST_DIR="$OMARCHY_SETUP_ROOT/hosts/$SETUP_HOST"
+if [[ -d $HOST_DIR ]]; then
+  for f in "$HOST_DIR"/systemd/user/*.service; do
+    [[ -f $f ]] || continue
+    systemctl --user disable --now "$(basename "$f")" >/dev/null 2>&1 || true
+  done
+  while IFS= read -r -d '' f; do
+    rel=${f#"$HOST_DIR"/}
+    case $rel in
+      bin/*)          remove_owned "$HOME/.local/bin/${rel#bin/}" ;;
+      config/*)       remove_owned "$HOME/.config/${rel#config/}" ;;
+      share/*)        remove_owned "$HOME/.local/share/${rel#share/}" ;;
+      systemd/user/*) remove_owned "$HOME/.config/systemd/user/${rel#systemd/user/}" ;;
+    esac
+  done < <(find "$HOST_DIR" -type f -print0)
+fi
+
 step "hooks"
 for f in "$OMARCHY_SETUP_ROOT"/config/hooks/*.d/*.hook; do
   [[ -f $f ]] && remove_owned "$HOME/.config/omarchy/hooks/$(basename "$(dirname "$f")")/$(basename "$f")"

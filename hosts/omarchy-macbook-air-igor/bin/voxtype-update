@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Update voxtype from AUR without the Vulkan GPU build.
+#
+# This laptop transcribes remotely (whisper.ryzhkov.dev), so the 54 MiB
+# voxtype-vulkan binary is dead weight and its separate cargo build (a full
+# rebuild after cargo clean) roughly doubles every update. The stock AUR
+# PKGBUILD has no toggle for it, so this script pulls the AUR repo at
+# ~/Work/pkgbuilds/voxtype, strips the Vulkan build and install steps, and
+# builds with makepkg. voxtype is in IgnorePkg, so yay -Syu leaves it alone
+# and this script is the only update path.
+#
+# Run it manually when a new version is out (yay prints the ignored-update
+# notice), or just periodically; it exits early when nothing changed.
+
+set -euo pipefail
+
+repo=~/Work/pkgbuilds/voxtype
+
+if [[ ! -d $repo/.git ]]; then
+    mkdir -p "$(dirname "$repo")"
+    git clone -q https://aur.archlinux.org/voxtype.git "$repo"
+fi
+cd "$repo"
+git checkout -q -- PKGBUILD
+git pull -q --ff-only
+
+pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+installed=$(pacman -Q voxtype 2>/dev/null | awk '{print $2}' || true)
+if [[ "$installed" == "$pkgver-$pkgrel" && "${1:-}" != "--force" ]]; then
+    echo "voxtype $installed is current (--force to rebuild anyway)"
+    exit 0
+fi
+
+# Strip the Vulkan variant: the build block (comment line through the cp that
+# names the binary) and the install block in package().
+awk '
+    /^[[:space:]]*# Build Vulkan GPU binary/ {skip=1}
+    skip && /cp target\/release\/voxtype voxtype-vulkan/ {skip=0; next}
+    /^[[:space:]]*# Install Vulkan GPU binary/ {next}
+    /install -Dm755 "voxtype-vulkan"/ {next}
+    !skip
+' PKGBUILD > PKGBUILD.novulkan
+
+if grep -q 'voxtype-vulkan' PKGBUILD.novulkan; then
+    echo "ERROR: upstream PKGBUILD changed shape; voxtype-vulkan references survived the strip." >&2
+    echo "Inspect $repo/PKGBUILD and fix the awk patterns in $0." >&2
+    exit 1
+fi
+mv PKGBUILD.novulkan PKGBUILD
+
+makepkg -sirc --noconfirm
+git checkout -q -- PKGBUILD

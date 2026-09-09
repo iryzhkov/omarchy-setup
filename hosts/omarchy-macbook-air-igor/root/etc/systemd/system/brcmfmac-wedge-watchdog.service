@@ -1,0 +1,14 @@
+[Unit]
+Description=Reload brcmfmac when the Broadcom firmware wedges
+Documentation=https://github.com/AsahiLinux/linux/issues/439
+After=NetworkManager.service wpa_supplicant.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/brcmfmac-wedge-watchdog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

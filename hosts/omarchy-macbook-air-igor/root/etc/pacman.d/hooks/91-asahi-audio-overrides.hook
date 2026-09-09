@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = asahi-audio
+
+[Action]
+Description = Checking user asahi-audio DSP overrides (~/.config/asahi-audio)
+When = PostTransaction
+Exec = /usr/local/bin/asahi-audio-check-overrides

@@ -1,0 +1,24 @@
+--- a/shell/plugins/bar/Bar.qml
++++ b/shell/plugins/bar/Bar.qml
+@@ -1016,11 +1016,17 @@
+       window: barWindow
+     }
+ 
++    // Park by the bar's EFFECTIVE height: on an Apple notched panel the bar
++    // is max(barSize, notchFloor) tall, and sliding by barSize alone leaves
++    // the difference peeking out along the screen edge.
++    readonly property int hiddenOffset: root.vertical
++      ? root.barSize : Math.max(root.barSize, notchFloor)
++
+     margins {
+-      top: root.barHidden && root.position === "top" ? -root.barSize : 0
+-      bottom: root.barHidden && root.position === "bottom" ? -root.barSize : 0
+-      left: root.barHidden && root.position === "left" ? -root.barSize : 0
+-      right: root.barHidden && root.position === "right" ? -root.barSize : 0
++      top: root.barHidden && root.position === "top" ? -barWindow.hiddenOffset : 0
++      bottom: root.barHidden && root.position === "bottom" ? -barWindow.hiddenOffset : 0
++      left: root.barHidden && root.position === "left" ? -barWindow.hiddenOffset : 0
++      right: root.barHidden && root.position === "right" ? -barWindow.hiddenOffset : 0
+     }
+ 
+     anchors {

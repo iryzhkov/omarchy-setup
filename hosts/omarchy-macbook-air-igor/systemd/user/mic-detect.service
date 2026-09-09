@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for j413 mic filter-chain teardown and snapshot state
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mic-detect.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

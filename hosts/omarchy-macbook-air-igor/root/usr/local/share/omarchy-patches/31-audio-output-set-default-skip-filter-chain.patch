@@ -1,0 +1,39 @@
+--- a/bin/omarchy-audio-output-set-default
++++ b/bin/omarchy-audio-output-set-default
+@@ -1,5 +1,4 @@
+ #!/bin/bash
+-
+ # omarchy:summary=Set the default audio output and move active streams
+ # omarchy:args=<node-id> <sink-name>
+ # omarchy:examples=omarchy audio output set default 42 alsa_output.pci-0000_00_1f.3.analog-stereo
+@@ -15,17 +14,19 @@
+ timeout 2 wpctl set-default "$node_id" 2>/dev/null || true
+ timeout 2 pactl set-default-sink "$sink_name" 2>/dev/null || true
+ 
+-# Move only real application streams. A DSP filter-chain's own output is also a
+-# sink input but carries no application.name, and moving it would rewire the
+-# processing itself -- onto headphones, or into its own virtual sink, which is a
+-# cycle. EasyEffects' output stream must stay put for the same reason.
++# Move only real playback clients. A DSP filter chain (asahi-audio's speaker
++# convolver, EasyEffects) is itself a sink-input: its playback stream feeds the
++# raw hardware from the sink the user just picked. Moving that stream onto its
++# own input would make its target invalid and libpipewire-module-filter-chain
++# would destroy the chain. Such streams carry node.link-group and node.passive;
++# skip them, as EasyEffects already was.
+ timeout 2 pactl list sink-inputs 2>/dev/null | awk '
+-  /^Sink Input #/ {id = substr($3, 2)}
+-  /application\.name = / {
+-    app = $0
+-    sub(/.*application\.name = "/, "", app)
+-    sub(/"$/, "", app)
+-    if (app != "EasyEffects") print id
+-  }' | while read -r input; do
++  function flush() { if (id != "" && !skip) print id; id = ""; skip = 0 }
++  /^Sink Input #/ { flush(); id = substr($3, 2) }
++  /node\.link-group = / { skip = 1 }
++  /node\.passive = "true"/ { skip = 1 }
++  /application\.name = "EasyEffects"/ { skip = 1 }
++  END { flush() }
++' | while read -r input; do
+   [[ -n $input ]] && timeout 2 pactl move-sink-input "$input" "$sink_name" 2>/dev/null || true
+ done

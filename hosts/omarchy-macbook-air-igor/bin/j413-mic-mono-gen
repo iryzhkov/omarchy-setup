@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Generate a copy of asahi-audio's J413 mic filter graph whose output channel is
+# MONO instead of AUX0. Quickshell's PwNodePeakMonitor (the mic level bar in the
+# Omarchy audio panel) negotiates a FL/FR capture stream against the AUX0 node
+# and then refuses to compute peaks because the node has no FL/FR volumes; a
+# MONO source negotiates cleanly. Regenerated on every WirePlumber start
+# (ExecStartPre drop-in) so an asahi-audio update to the packaged file is picked
+# up automatically. Falls back to an unchanged copy if the file changes shape.
+set -euo pipefail
+src=/usr/share/asahi-audio/j413/mic.json
+dst="${XDG_CONFIG_HOME:-$HOME/.config}/asahi-audio/j413-mic.json"
+mkdir -p "$(dirname "$dst")"
+if grep -q '"audio.position": \["AUX0"\]' "$src"; then
+  sed 's/"audio.position": \["AUX0"\]/"audio.position": ["MONO"]/' "$src" > "$dst.tmp"
+else
+  echo "j413-mic-mono-gen: expected AUX0 playback position not found in $src; copying unchanged" >&2
+  cp "$src" "$dst.tmp"
+fi
+mv -f "$dst.tmp" "$dst"

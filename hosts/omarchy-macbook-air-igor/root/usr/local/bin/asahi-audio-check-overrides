@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Run by the pacman hook 91-asahi-audio-overrides.hook after an asahi-audio
+# install or upgrade. The user keeps override DSP graphs under
+# ~/.config/asahi-audio that shadow the packaged ones (see the README there);
+# this script warns when an upgrade breaks or obsoletes them. It only prints —
+# it never modifies anything.
+
+USER_HOME=/home/igor
+OVERRIDE_DIR=$USER_HOME/.config/asahi-audio
+PACKAGED=/usr/share/asahi-audio/j413/graph.json
+SPEAKERS=$OVERRIDE_DIR/j413-speakers.json
+
+warn() { printf '  WARNING: asahi-audio override: %s\n' "$*"; }
+
+[[ -d $OVERRIDE_DIR ]] || exit 0
+
+# 1. Every packaged file an override references must still exist, or the
+#    filter graph fails to load and the speakers/mic go silent.
+for f in "$OVERRIDE_DIR"/*.json; do
+    [[ -f $f ]] || continue
+    grep -o '"/usr/share/asahi-audio/[^"]*"' "$f" | tr -d '"' | sort -u |
+    while read -r ref; do
+        [[ -e $ref ]] ||
+            warn "$(basename "$f") references missing $ref — audio filter will FAIL to load; re-sync the override"
+    done
+done
+
+# 2. Drift: the speakers override is the packaged graph plus a retuned
+#    woofer_lim (its al/cr/kn values). Ignoring those three lines, the files
+#    should be identical; a difference means upstream retuned the graph and
+#    the override now shadows a newer tuning.
+if [[ -f $SPEAKERS && -f $PACKAGED ]]; then
+    if ! diff -q <(grep -vE '"(al|cr|kn)":' "$PACKAGED") \
+                 <(grep -vE '"(al|cr|kn)":' "$SPEAKERS") >/dev/null; then
+        warn "packaged $(basename "$PACKAGED") changed; diff it against $SPEAKERS and re-apply the woofer_lim retune (see $OVERRIDE_DIR/j413-speakers.README)"
+    fi
+fi
+exit 0

@@ -1,0 +1,22 @@
+#!/bin/bash
+# Live microphone level meter. Ctrl-C to stop.
+TARGET="${1:-effect_output.j413-mic}"
+echo "Metering: $TARGET   (Ctrl-C to stop)"
+pw-record --target "$TARGET" --rate 48000 --channels 1 --format s16 - 2>/dev/null | python3 -u -c '
+import sys, struct, math
+CH=4800  # 0.1s blocks
+buf=b""
+peak_hold=0
+while True:
+    d=sys.stdin.buffer.read(CH*2)
+    if not d: break
+    s=struct.unpack("<%dh"%(len(d)//2), d)
+    rms=math.sqrt(sum((x/32768)**2 for x in s)/len(s)) if s else 0
+    db=20*math.log10(rms) if rms>0 else -99
+    n=max(0,min(50,int((db+60)/1.2)))
+    peak_hold=max(peak_hold*0.97, n)
+    bar="█"*n + "·"*(50-n)
+    mark="◄" if n>=int(peak_hold) else " "
+    sys.stdout.write(f"\r{db:6.1f} dBFS |{bar}|{mark}")
+    sys.stdout.flush()
+'
