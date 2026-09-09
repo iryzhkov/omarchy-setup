@@ -105,6 +105,60 @@ section "write_owned_file"
 )
 case $? in 0) ok "mode honoured, idempotent, rewritten on change" ;; *) bad "write_owned_file step $?" ;; esac
 
+# ---------------------------------------------------------------- lib/t3.sh --
+# The half of the T3 module that decides which versions to run: no network, no
+# npm, no GitHub -- just the text those sources return.
+section "lib/t3.sh"
+(
+  source "$ROOT/lib/t3.sh"
+  t3_ver_ge 0.0.40 0.0.38 || exit 1
+  t3_ver_ge 0.0.38 0.0.38 || exit 2
+  t3_ver_ge 0.0.9 0.0.10 && exit 3
+  t3_ver_gt 0.10.1 0.10.1 && exit 4
+  [[ $(t3_ver_max 0.9.3 0.10.1) == 0.10.1 ]] || exit 5
+
+  ver='t3-steward 0.10.1 (commit abc, built 2026-09-09T06:23:09Z, linux/amd64, tested with T3 0.0.38..0.0.41)'
+  [[ $(t3_steward_range <<<"$ver") == "0.0.38 0.0.41" ]] || exit 6
+  # A steward too old to declare a range must yield nothing, not a guess.
+  [[ -z $(t3_steward_range <<<'t3-steward 0.8.0 (commit abc, linux/amd64)') ]] || exit 7
+
+  versions=$'0.0.37\n0.0.38\n0.0.40\n0.0.41\n0.0.42\n0.0.43-rc.1'
+  [[ $(t3_pick_version 0.0.38 0.0.41 <<<"$versions") == 0.0.41 ]] || exit 8
+  [[ $(t3_pick_version 0.0.38 0.0.38 <<<"$versions") == 0.0.38 ]] || exit 9
+  [[ -z $(t3_pick_version 0.0.44 0.0.50 <<<"$versions") ]] || exit 10
+  [[ $(t3_pick_version 0.0.42 0.0.43 <<<"$versions") == 0.0.42 ]] || exit 11
+
+  check='ok    T3 server 0.0.38 (omarchy-pc, linux/x64): supported
+ok    shell snapshot: 11 threads, 2 running, provider instances: map[claudeAgent:11]'
+  [[ $(t3_server_version <<<"$check") == 0.0.38 ]] || exit 12
+  [[ $(t3_running_threads <<<"$check") == 2 ]] || exit 13
+  [[ -z $(t3_running_threads <<<'ok    server unreachable') ]] || exit 14
+  exit 0
+)
+case $? in 0) ok "version compare, tested range, pick, check parsing" ;; *) bad "lib/t3.sh step $?" ;; esac
+
+# A failed lookup must be an empty answer, not a failure: the module runs under
+# `set -e` with `set -o pipefail`, so a registry that is down or an npm that
+# cannot run would otherwise abort the whole update.
+section "lib/t3.sh: a broken lookup is empty, not fatal"
+printf '#!/bin/sh\nexit 1\n' >"$T/bin/npm"
+printf '#!/bin/sh\nexit 7\n' >"$T/bin/curl"
+chmod +x "$T/bin/npm" "$T/bin/curl"
+(
+  set -eo pipefail
+  source "$ROOT/lib/t3.sh"
+  [[ -z $(t3_npm_versions) ]] || exit 1
+  [[ -z $(t3_github_releases owner/repo 1) ]] || exit 2
+  # The shape the module uses: assignment from a pipeline, under set -e.
+  cand=$(t3_npm_versions | t3_pick_version 0.0.1 9.9.9)
+  [[ -z $cand ]] || exit 3
+  newest=$(t3_github_releases owner/repo 1 | tail -1)
+  [[ -z $newest ]] || exit 4
+  exit 0
+)
+case $? in 0) ok "npm and GitHub failures leave the caller running" ;; *) bad "lib/t3.sh lookup step $?" ;; esac
+rm -f "$T/bin/npm" "$T/bin/curl"
+
 # ------------------------------------------------------------------- hypr --
 section "30-hypr: first run"
 check "module exits 0" module client/30-hypr.sh

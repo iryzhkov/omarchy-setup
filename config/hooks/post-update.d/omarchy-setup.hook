@@ -6,6 +6,10 @@
 # migration displaced and picks up whatever the repo gained since. Package
 # removal is opt-in and never runs from here. Secrets need a terminal and are
 # skipped. Failure notifies and never fails the update itself.
+#
+# This is also what carries T3 Code and t3-steward forward: they are not mise
+# tools, so `omarchy update`'s mise step never sees them, and modules/common/
+# 26-t3.sh resolves and installs the newest compatible pair from here instead.
 
 state="$HOME/.local/state/omarchy-setup"
 root=$(cat "$state/root" 2>/dev/null) || exit 0

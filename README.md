@@ -313,12 +313,32 @@ policy rejects that downgrade. Declaring it in `config/mise-tools.txt` would
 mean recording a `trust_policy_excludes` entry for that package, so it stays an
 npm global inside mise's node instead, installed by `modules/common/26-t3.sh`.
 
-Both versions are pinned in `config/t3.conf`, and they move together: the
+Both versions are declared in `config/t3.conf`, and they move together: the
 steward is written against T3's undocumented control protocol and refuses to
 warn, stop or resume when the server version is outside the range it was built
 against. Floating either one alone silently disables the quota watchdog.
-`docs/t3-code-and-steward.md` has the whole story, including how to upgrade the
-pair and what to do on a host that has never run T3.
+
+Because mise never sees T3, neither `mup` nor the mise step of `omarchy update`
+could carry it forward, which left the pair stuck at whatever version it was
+last bumped to by hand. `T3_AUTO_UPDATE` closes that gap: on every run --
+including the run the post-update hook makes during `omarchy update`, one step
+before the mise tools are updated -- the module asks GitHub for the newest
+steward release, downloads it, and asks the binary itself which T3 versions it
+was tested with (`t3-steward version` ends with `tested with T3 <min>..<max>`).
+The newest npm `t3` inside that range is installed with it. The pair only moves
+forward, and only together: a steward whose range would step T3 back, or for
+which npm has no matching T3, is left alone. What a host resolved is recorded
+in `~/.local/state/omarchy-setup/t3-versions.conf` rather than committed here,
+so the checkout stays clean for the hook's `git pull --ff-only`; editing
+`config/t3.conf` overrides that record on the next run, which is how a
+fleet-wide bump or a rollback is made.
+
+Upgrading T3 changes nothing until `t3code.service` restarts, and a restart
+kills every agent thread in flight -- including, sometimes, the one that
+started the update. So the restart is gated: it happens when the steward
+reports the served version is behind *and* no thread is running, and otherwise
+says so and defers to the next run. `docs/t3-code-and-steward.md` has the whole
+story, including what to do on a host that has never run T3.
 
 ## Packages
 

@@ -92,6 +92,9 @@ remove_owned "$HOME/.claude/omarchy-setup"
 
 step "state"
 remove_owned "$OMARCHY_SETUP_STATE/root"
+# The T3 pair itself stays installed, like every other package this repo added;
+# only the record of which versions it resolved is ours to remove.
+remove_owned "$OMARCHY_SETUP_STATE/t3-versions.conf"
 
 hypr_reload
 ok "uninstalled what this repo manages; see the header of uninstall.sh for what it leaves"

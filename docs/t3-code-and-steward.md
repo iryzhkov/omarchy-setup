@@ -67,20 +67,27 @@ ok    T3 server 0.0.38 (omarchy-pc, linux/x64): supported
 
 So letting `mise up` float T3 to 0.0.40 — the change this work originally set
 out to make — would have quietly disabled the quota watchdog on every host.
-That is why `config/t3.conf` pins both versions and why they move together.
+That is why the two versions only ever move together, and why the automatic
+update described below asks a candidate steward binary what it supports before
+it touches T3.
 
 ## What was added
 
 | File | Role |
 |------|------|
-| `config/t3.conf` | the pinned pair: `T3_VERSION`, `T3_STEWARD_VERSION`, the steward repo, and the bind address used only when seeding a new `t3code.service` |
-| `modules/common/26-t3.sh` | installs the pinned T3 with npm, installs the pinned steward from its GitHub release, and handles the two user units |
+| `config/t3.conf` | the declared pair: `T3_VERSION`, `T3_STEWARD_VERSION`, the steward repo, the auto-update switches, and the bind address used only when seeding a new `t3code.service` |
+| `lib/t3.sh` | version comparison, the tested-range parser, the npm and GitHub lookups, and the parsers for `t3-steward check` output. Kept separate so `test/run.sh` can exercise the decision logic with no network |
+| `modules/common/26-t3.sh` | resolves the newest compatible pair, installs T3 with npm and the steward from its GitHub release, handles the two user units, and restarts T3 when it is idle |
 
 The module is idempotent and runs on both profiles. It sits at 26 so that
 mise (25) has installed node before npm is needed.
 
 What it does on each run:
 
+0. Resolves the pair, unless `T3_AUTO_UPDATE=0`. See "Following upstream"
+   below; the result raises `T3_VERSION` and `T3_STEWARD_VERSION` for the rest
+   of the run and is recorded in
+   `~/.local/state/omarchy-setup/t3-versions.conf`.
 1. Compares `npm ls -g t3` against `T3_VERSION`; on a mismatch runs
    `npm install -g t3@<version>` and then `mise reshim`, because
    `t3code.service` starts T3 through the mise shim.
@@ -97,15 +104,77 @@ What it does on each run:
    An existing unit is never rewritten: a host may have tuned its bind address,
    its `PATH`, or the credential files it reads, and none of that is
    recoverable from this repo.
-5. Never restarts `t3code.service` on its own. The server keeps every running
-   agent thread in its own process, so a restart kills work in progress. When
-   T3 was upgraded the module says a restart is due and leaves the moment to
-   you.
+5. Restarts `t3code.service` only when it is safe to. The server keeps every
+   running agent thread in its own process, so a restart kills work in
+   progress — possibly the thread of the agent that started the update. The
+   module asks `t3-steward check` for the version the server is actually
+   serving and for the number of running threads, and restarts only when the
+   served version is behind *and* that number is zero. Otherwise it says which
+   version is pending and defers to the next run, which is why nothing is lost
+   by the host being busy every time. `T3_RESTART_WHEN_IDLE=0` turns the
+   restart back into a message.
 
 `omarchy update` reaches all of this through the existing post-update hook
 (`config/hooks/post-update.d/omarchy-setup.hook`), which pulls this repo and
 re-runs `run.sh --yes --skip-secrets`. So an update re-asserts the pinned pair
 instead of drifting, which is the behaviour that was missing.
+
+## Following upstream
+
+The original version of this module kept the pair *pinned*: correct, but it
+meant the fleet stayed on whatever versions were last typed into
+`config/t3.conf`, which is the same problem in slower motion. `T3_AUTO_UPDATE`
+(on by default) makes the module resolve the pair itself, on every run and so
+on every `omarchy update` — one step before `omarchy-update-mise` updates the
+tools mise does own.
+
+The resolution never consults a table a human maintains:
+
+1. `t3_github_releases` lists the steward's release tags. Prereleases are
+   included while `T3_STEWARD_PRERELEASES=1`, because this fleet runs them
+   deliberately — the steward is ours and its fixes land there first.
+2. If the newest tag is above the current version, the archive is downloaded
+   and checksum-verified exactly as an install would, and the extracted binary
+   is asked what it supports: `t3-steward version` ends with
+   `tested with T3 <min>..<max>`. That is the same range its control actions
+   refuse to act outside of, so the candidate answers for itself. A steward too
+   old to print a range yields nothing, and nothing then moves.
+3. The newest npm `t3` inside that range is the candidate T3. Prereleases on
+   npm are never picked.
+4. The pair is taken only if it moves *forward*. A steward whose range would
+   step T3 back, or for which npm has no version at all, is refused and both
+   versions stay where they are — losing the watchdog is worse than running a
+   version behind.
+
+Today, on gaming-pc, that produces:
+
+```
+info   t3 0.0.38 with t3-steward 0.10.1 is the newest compatible pair
+```
+
+npm has `t3` 0.0.40, but steward 0.10.1 is tested with `0.0.38..0.0.38`, so the
+module holds. That is the whole point of the gate: the version that looks
+newest is not the version this fleet can run.
+
+### Where the resolved versions live
+
+Not in `config/t3.conf`. The post-update hook does `git pull --ff-only` before
+re-running `run.sh`, so the checkout has to stay clean, and four hosts
+committing to the same file would collide. Each host writes what it installed
+to `~/.local/state/omarchy-setup/t3-versions.conf`:
+
+```
+T3_BASE_VERSION=0.0.38
+T3_BASE_STEWARD_VERSION=0.10.1
+T3_LOCAL_VERSION=0.0.38
+T3_LOCAL_STEWARD_VERSION=0.10.1
+```
+
+`T3_BASE_*` records the `config/t3.conf` values the resolution started from.
+On the next run, the effective version is the higher of the repo value and the
+local one — but only while the bases still match. Editing `config/t3.conf`
+therefore wins in both directions: raise it for a fleet-wide bump, lower it to
+roll a host back, and the local record is discarded rather than fighting it.
 
 ## Replicating it on the other hosts
 
@@ -118,16 +187,22 @@ git pull --ff-only
 OMARCHY_SETUP_LIB=$PWD/lib DRY_RUN=1 bash modules/common/26-t3.sh
 ```
 
-Read the dry run before the real one. On a host that already matches the pinned
-pair it prints four `info` lines and changes nothing:
+Read the dry run before the real one. On a host that is already on the newest
+compatible pair it changes nothing:
 
 ```
+info   t3 0.0.38 with t3-steward 0.10.1 is the newest compatible pair
 info   t3 0.0.38 already installed
 info   t3-steward 0.10.1 already installed
 info   t3-steward.service present
 info   t3code.service present, left alone
+info   t3code is serving 0.0.38
 ok     T3 Code and steward ready
 ```
+
+The dry run resolves versions for real — it queries GitHub and npm and may
+download a steward archive to a temporary directory — so what it reports is the
+pair the real run would install. It writes nothing.
 
 If a host reports a different T3 version, decide before running for real. The
 module will install the pinned version, which may be a *downgrade* on that
@@ -153,22 +228,29 @@ credential file is missing rather than failing.
 
 ## Upgrading the pair
 
-Order matters, because the steward is the constraint:
+Normally nobody does: the module resolves the newest compatible pair on every
+`omarchy update` and installs it, and restarts T3 the first time it finds the
+host idle. `t3-steward check` is how you confirm it — the T3 server line must
+say `supported`.
 
-1. Look at the [t3-steward releases](https://github.com/iryzhkov/t3-steward/releases)
-   and find one whose compatibility table lists the T3 version you want.
-   `t3-steward version` prints the range a given binary was built against.
-2. Set both `T3_VERSION` and `T3_STEWARD_VERSION` in `config/t3.conf`, commit,
-   push.
-3. On each host: `git pull` and run the module. It installs both and restarts
-   the steward.
-4. Restart `t3code.service` on each host at a moment when no agent thread is
-   running — check with `t3-steward status` or the T3 UI. This is the only
-   disruptive step, and it is deliberately manual.
-5. Confirm with `t3-steward check`: the T3 server line must say `supported`.
+Three cases still need a person:
+
+- **Forcing a specific pair across the fleet.** Set both `T3_VERSION` and
+  `T3_STEWARD_VERSION` in `config/t3.conf`, commit, push. Every host takes the
+  new values on its next run and drops whatever it had resolved locally. This
+  is also how a **rollback** works: a lower value in `config/t3.conf` wins, and
+  the auto-update will not climb back past it until upstream offers a pair that
+  is genuinely newer than the values recorded there.
+- **A host that must not move.** `T3_AUTO_UPDATE=0`, and it stays on the
+  declared pair.
+- **A restart that keeps being deferred.** A host with a thread running around
+  the clock never hits the idle window; the module says which version is
+  pending on every run. Restart it yourself when convenient:
+  `systemctl --user restart t3code`.
 
 If no steward release supports the T3 version you want, the answer is to wait
-for one, not to upgrade T3 and lose the watchdog.
+for one, not to upgrade T3 and lose the watchdog — which is exactly what the
+module does on its own.
 
 ## Loose end worth a look
 
