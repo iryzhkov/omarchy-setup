@@ -304,6 +304,22 @@ typed -- use `mise exec node -- node` when the version matters. It is *not* fine
 for `bw`, where the version has to match the server, which is why the secrets
 step resolves that binary through mise explicitly (see Secrets).
 
+## T3 Code and t3-steward
+
+`t3` is the one agent tool that is **not** a mise tool. mise's npm backend
+refuses to resolve it: the transitive dependency `@pierre/theme` carried a
+provenance attestation up to 1.0.3 and none from 1.1.0 on, and mise's trust
+policy rejects that downgrade. Declaring it in `config/mise-tools.txt` would
+mean recording a `trust_policy_excludes` entry for that package, so it stays an
+npm global inside mise's node instead, installed by `modules/common/26-t3.sh`.
+
+Both versions are pinned in `config/t3.conf`, and they move together: the
+steward is written against T3's undocumented control protocol and refuses to
+warn, stop or resume when the server version is outside the range it was built
+against. Floating either one alone silently disables the quota watchdog.
+`docs/t3-code-and-steward.md` has the whole story, including how to upgrade the
+pair and what to do on a host that has never run T3.
+
 ## Packages
 
 **Check before adding anything to `packages/`** -- Omarchy's base install is
