@@ -58,7 +58,7 @@ section "bash -n over every script"
 while IFS= read -r f; do
   head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b' || continue   # python helpers, pacman hooks
   check "bash -n ${f#"$ROOT"/}" bash -n "$f"
-done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/config/bin/*' -o -path '*/hosts/*/bin/*' -o -path '*/root/usr/local/bin/*' \) | sort)
+done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/bin/*' -o -path '*/root/usr/local/bin/*' \) | sort)
 
 # -------------------------------------------------------- managed blocks --
 section "write_managed_block"

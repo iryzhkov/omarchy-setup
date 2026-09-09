@@ -337,8 +337,13 @@ Upgrading T3 changes nothing until `t3code.service` restarts, and a restart
 kills every agent thread in flight -- including, sometimes, the one that
 started the update. So the restart is gated: it happens when the steward
 reports the served version is behind *and* no thread is running, and otherwise
-says so and defers to the next run. `docs/t3-code-and-steward.md` has the whole
-story, including what to do on a host that has never run T3.
+says so and defers to the next run.
+
+homelab has no Omarchy and therefore no `omarchy update` to ride along with, so
+it runs `bin/t3-update` -- pull the checkout, run the module, no orchestrator --
+from a user timer of its own, kept in `hosts/homelab/systemd/user/`.
+`docs/t3-code-and-steward.md` has the whole story, including that timer's
+one-time install and what to do on a host that has never run T3.
 
 ## Packages
 

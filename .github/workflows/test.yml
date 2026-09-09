@@ -17,7 +17,7 @@ jobs:
           # the same way test/run.sh filters what it runs `bash -n` over.
           scripts=()
           for f in run.sh install.sh uninstall.sh lib/*.sh modules/*/*.sh \
-                   packages/*/*.sh config/bin/* config/hooks/*/*.hook test/run.sh; do
+                   packages/*/*.sh bin/* config/bin/* config/hooks/*/*.hook test/run.sh; do
             if head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b'; then
               scripts+=("$f")
             fi

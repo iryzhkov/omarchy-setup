@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Run the T3 module on a host that run.sh cannot serve.
+#
+# run.sh requires Omarchy: `omarchy pkg` for packages, the hook directories,
+# the theme and plugin commands. homelab is Debian and has none of it, so the
+# orchestrator refuses to start there -- but modules/common/26-t3.sh needs none
+# of that either. npm, curl, jq and the steward binary are its whole dependency
+# list, which is why it can be driven directly from here.
+#
+# On an Omarchy host this script is redundant: `omarchy update` runs the
+# post-update hook, the hook re-runs run.sh, and the module goes with it. It is
+# still the convenient way to ask for the check by hand on any host.
+#
+#   bin/t3-update [--no-pull] [--dry-run]
+#
+#     --no-pull   do not `git pull --ff-only` the checkout first
+#     --dry-run   report the pair it would install and change nothing
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PULL=1
+DRY_RUN=${DRY_RUN:-0}
+
+while (($#)); do
+  case $1 in
+  --no-pull) PULL=0; shift ;;
+  --dry-run) DRY_RUN=1; shift ;;
+  -h | --help)
+    sed -n 's/^# \{0,1\}//;14,17p' "${BASH_SOURCE[0]}" >&2
+    exit 0
+    ;;
+  *)
+    printf 'unknown option: %s (try --help)\n' "$1" >&2
+    exit 1
+    ;;
+  esac
+done
+
+# A pull that fails must not stop the update: the checkout as it stands is
+# still a working copy of the module, and a host that cannot reach the remote
+# is exactly the host that should carry on with what it has.
+if ((PULL)) && [[ -d $ROOT/.git ]]; then
+  git -C "$ROOT" pull --ff-only -q ||
+    printf 'note: git pull failed; running the checkout as it is\n' >&2
+fi
+
+export OMARCHY_SETUP_ROOT="$ROOT"
+export OMARCHY_SETUP_LIB="$ROOT/lib"
+export DRY_RUN
+export ASSUME_YES=1
+
+exec bash "$ROOT/modules/common/26-t3.sh"

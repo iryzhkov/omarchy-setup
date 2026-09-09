@@ -226,6 +226,46 @@ in this repo) and `~/.config/t3-steward/config.yaml`, which
 `t3-steward init` writes as a commented template. The module warns if the
 credential file is missing rather than failing.
 
+## homelab, which has no Omarchy
+
+homelab is Debian 12. `run.sh` refuses to start there — it requires Omarchy for
+`omarchy pkg`, the hook directories and the theme commands — and there is no
+`omarchy update`, so the post-update hook that carries the module on every
+other host can never fire. The module itself needs none of that: `npm`, `curl`,
+`jq` and the steward binary are its whole dependency list.
+
+`bin/t3-update` is the entry point for that case. It pulls the checkout (a
+failed pull is a note, not a stop: a host that cannot reach the remote should
+still run the module it has) and execs `modules/common/26-t3.sh` directly. It
+works on any host, and is the convenient way to ask for the check by hand.
+
+The trigger is homelab's own convention — a user timer, like
+`homelab-drift-check.timer` and the backup units next to it. Both units are
+tracked here, under `hosts/homelab/systemd/user/`, and installed by hand
+because the module that would install them (`29-host-files`) rides on the same
+`run.sh` that cannot run there:
+
+```bash
+ssh homelab
+cd ~/.local/share/omarchy-setup && git pull --ff-only
+install -Dm644 hosts/homelab/systemd/user/t3-update.service \
+  ~/.config/systemd/user/t3-update.service
+install -Dm644 hosts/homelab/systemd/user/t3-update.timer \
+  ~/.config/systemd/user/t3-update.timer
+systemctl --user daemon-reload
+systemctl --user enable --now t3-update.timer
+systemctl --user start t3-update.service   # once, to see it work
+journalctl --user -u t3-update -n 20 --no-pager
+```
+
+It runs daily at 09:15 with a 20-minute jitter, after the overnight backups and
+the 08:30 drift check. `Persistent=true` so a reboot does not skip a day. The
+units are `%h`-relative, so nothing in them is specific to that host beyond the
+choice of hour — a second non-Omarchy host can take the same pair.
+
+Editing either unit later means copying it across again; there is no installer
+on that host to do it.
+
 ## Upgrading the pair
 
 Normally nobody does: the module resolves the newest compatible pair on every
