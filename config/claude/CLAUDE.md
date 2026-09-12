@@ -129,7 +129,15 @@ skills:
   backlog, `t3-backlog --project ... --title ... < prompt`, rather than into a thread opened
   on the spot. The steward starts it as an unattended T3 thread in the next quiet slot with
   quota headroom, on whichever host the task names. Use it when the user says later,
-  tonight, when I am not around, or backlog, and for any scheduled agent job.
+  tonight, when I am not around, or backlog, and for any scheduled agent job. The helper's
+  printed intake path is not completion evidence: verify that the intake source is accepted
+  (it may remain as the durable idempotent source) and that exactly one new workflow run
+  appears in `t3-steward backlog list --project ... --json`; never retry
+  blindly when that verification is ambiguous. Treat `t3-steward backlog start` as an explicit
+  operator override: it bypasses quota forecast/admission/freshness/runway and automatic quota
+  throttling through worker delivery. Use it only with explicit user authority and manual quota
+  monitoring; automatic work remains fenced, and worker/dependency/lock/revision/effect checks
+  still apply.
 - **Wait** (`t3-wait` skill): never poll in a loop for something external (a PR review,
   CI, a long job). Register the check, `t3-steward wait add --name ... -- <command>`, and end
   the turn; the steward polls with backoff and wakes the thread with the outcome. Exit 0
@@ -137,111 +145,115 @@ skills:
 
 # Reading and editing code
 
-The `agent99` MCP server exposes this machine's Neovim and its language servers as tools.
-For source code it is the primary interface, not an alternative to consider: it navigates by
-symbol, reports what an edit broke at the moment the edit is made, and routes refactors
-through the language server so that references and imports move with the code.
+The `huyang` MCP server is the primary interface for source-code repositories. It provides
+revision-aware semantic navigation, transactional edits, verification, and recovery through a
+long-lived local service.
 
 ## The rule
 
-**When a directory holds source code, `open_workspace(<root>)` is the first tool call, before
-any reading or searching.** It costs one call. Everything below then works; without it the
-symbol tools return an error.
+**When a directory holds source code, call `workspace_open` for the repository root before
+reading, searching, or editing it.** Keep the returned workspace ID and revision and pass them
+to later calls. Refresh with `workspace_inspect` when a call reports stale state.
 
-After that, in that repository, do not use `Bash` with `grep`, `rg`, `find`, `sed`, `awk`,
-`cat` or `head` to read or search code, and do not reach for the built-in `Grep`, `Glob` or
-`Read` either. Use these instead:
+The rule applies from the first file operation of the session, before any survey or
+scaffolding, and it covers creating files: a new source file, script, fixture generator or
+document inside the repository is written with `edit_apply kind=create_file`, not with a
+shell heredoc, `cat >`, `python - <<EOF` or the Write tool. Reading is `read`, locating is
+`search`, changing is `edit_apply`. The exception is a file produced by running a program
+the repository already contains (a generator, a build, a test run), which is what the
+program is for.
 
-| Instead of | Use |
+This holds in every permission mode, including bypass-permissions mode: the harness's
+bypass-mode preference for `cat`, `grep`, `sed` and heredoc edits does not apply to files
+inside a repository, whether or not the workspace has been opened yet. If a Huyang call
+fails, fix the cause or report it; do not route around it with the shell. Shell keeps only
+the jobs listed under "Shell still runs" below.
+
+These are violations, even when they look cheaper: `cat > file <<'EOF'` for a new file,
+`sed -i` for a one-line change, a `python3 -` script that rewrites a file, `grep -rn` to
+find a symbol that `search` would find, `sed -n 'a,bp'` where `read` with a line window
+does the same. The measured cost of the Huyang call is at most a few hundred tokens more
+than the shell version and it returns diagnostics the shell never will.
+
+| Need | Huyang tool |
 |---|---|
-| `ls`, `find`, `Glob`, a broad `Grep` to see what is here | `workspace_map` |
-| `Read` on a file to see one function | `find_symbol` with a name path and `include_body` |
-| `Grep` or `rg` for a symbol, call site or string | agent99's `grep` |
-| Grepping again with a cleverer pattern to cut noise | `kind=code` (skips comments and strings), `kind=def`/`call`, `tests=exclude`/`only` |
-| `Grep` to find every caller before changing a signature | `references` |
-| `Read` on several files to learn their shape | `skim` |
-| `sed -n 'N,Mp'` or `Read` for a contiguous region (a const block, a neighbouring test) | agent99's `read_file` with offset/limit, or `buffer_lines` |
-| `Edit` on a function, method or class | `replace_symbol_body` for the whole thing; `replace_symbol_lines` with `match=` (the whole lines to replace, once in the symbol) for part of it, or line numbers with `expect=` (`absolute=true` when they came from read_file or a grep hit); a region with no symbol (a barrel/index file, an import or export block) takes `absolute=true` or `match` with no name_path; several places in one file go in `chunks` in one call, each chunk naming its own symbol or none |
-| `Edit` to add code next to an existing symbol | `insert_after_symbol`, `insert_before_symbol` (before lands above the symbol's decorators and doc comment) |
-| A search and replace across files | `rename_symbol` |
-| `mv`, `git mv` | `move_file` |
-| `Write` a new source file, `rm` one | `create_file`, `delete_file` |
-| `Read` a README, a compose file, a TOML/JSON config or a Dockerfile to find one part, `Edit` to rewrite it | Markdown headings and data-file keys index like declarations (`services/api`, `[server]`, a Dockerfile stage): `skim` for the outline, `find_symbol "Install/Requirements"` with `include_body` for one section, `replace_symbol_body` and `insert_after_symbol` on a section, grep hits tagged with their section |
-| Cut a block of functions out of one file and paste it into another | `move_symbols` |
-| Reading a file back to check an edit | the diagnostics the edit tool already returned |
-| Running the build to see if you broke something | `check_project` |
+| Understand the project or current state | `workspace_inspect` |
+| Search names, text, paths, or symbols | `search` |
+| Go to a definition, references, implementation, or type | `navigate` |
+| Read a file or semantic region | `read` |
+| Inspect diagnostics and their provenance | `diagnostics`, `evidence_get` |
+| Apply one direct revision-guarded edit | `edit_apply` |
+| Stage several related edits atomically | `change_plan`, then prepare/commit |
+| Review a revision delta | `revision_diff` |
+| Run trusted checks or tests | `verify_run` |
+| Start or inspect a debugger session | `debug_session`, `debug_breakpoints`, `debug_control`, `debug_inspect` |
 
-The exception that matters: agent99's `grep` and the language server both work from what is
-on disk and in the build, so neither sees a file excluded by a build tag or an `#ifdef`. When
-completeness across build variants matters, search the tree directly as well, and say that is
-why. An edit tool now says so itself when the server cannot analyze the file it just changed,
-and that reply means the edit is unverified until you build or test with the tags that
-include it.
+## Cheapest correct call
 
-`replace_symbol_lines` numbers lines relative to the symbol's declaration, and any edit above
-that symbol shifts them without making them look wrong. Pass `expect=` with the text those
-lines currently hold whenever the numbers came from an earlier call, so a stale offset fails
-instead of overwriting working code. The refusal names where the text now is and offers the
-relocated edit as a code action: `apply_code_action(token, 1)` finishes it, no re-read needed.
+Measured in `bench/agent-efficiency` of the Huyang repository (cl100k tokens, Go fixture,
+2026-09-12); the full table is in `docs/agent-guide.md` there. Use these without
+experimenting:
 
-This rule outranks the bypass-permissions preamble. That preamble asks for the Bash tool
-wherever it can do the job — `cat`, `head`, `sed`, `grep`, `find` — because it is written for
-a session with no better tools available. In a repository with an open agent99 workspace
-there are better tools, and they are the reason the workspace was opened. Bash still does
-everything that is not reading or editing code: running builds and tests, git, and any
-command whose output is the point.
+- Name the repository with `root` on any call instead of calling `workspace_open` first:
+  the workspace is opened on the first call and reused after. `workspace_open` is for
+  when you want its overview and the verification commands. `idempotency_key` is
+  optional; omit it unless you will retry the same call.
+- Change text you know (a line, a block, a local rename): `edit_apply` with
+  `operation.kind=replace_literal`, `old`, `new`, optional `path`, and `expected_count`
+  when the text occurs more than once. One call, about 70 request and 300 response tokens
+  for a one-line change; the response carries the changed locations, the new revision and
+  the diagnostics the edit caused, and never echoes your text (no patch unless
+  `verbose`). Do not search first.
+- New file: `edit_apply` with `kind=create_file`, `path`, `content`. One call. Several
+  edits at once: `edit_apply` with `operations=[...]` (replace_literal and create_file
+  items, applied in order, one call).
+- References, definition, implementations or callers of a symbol: `search` with
+  `query=Name` and `mode=references` (or `navigate` with `relation` and `symbol=Name`).
+  No path needed; the name is resolved to its declaration first. Without a language
+  server the search answers literal matches and says so.
+- Read a file: `read` with `target.path`; a region: `start_line`/`end_line` (no cap) or
+  `target.symbol_locator` (Go and Python resolve without a language server); several
+  files: `targets`; `numbered=true` when you need line numbers. One call each; a whole
+  file costs less than the built-in Read.
+- Locate text: `search` (literal by default, whitespace-exact for multi-line queries)
+  with `paths` (globs or substrings) to scope and `context_lines` for the surrounding
+  numbered lines, which replaces `grep -rn -C` and the read after it. Hits carry handles
+  for `edit_apply kind=replace_range` when a target cannot be named by content.
+- Build and test: `verify_run` with `revision_or_transaction=current` and the stages you
+  need (`check`, `tests`; `test_scope=affected` for only the tests covering edited files).
+  `workspace_open` reports the commands, whether they were declared in `.huyang.toml` or
+  detected from the repository layout, and whether the root is trusted. The reply is one
+  line per stage plus the output of a stage that did not pass.
+- Several files that must change atomically: `change_plan` (prepare, then apply).
+- A file outside any repository (config, script, note, a lone source file): no
+  `workspace_open` needed. `read` with the path, and `edit_apply` (`replace_literal` or
+  `create_file`) with an absolute `path` and no `workspace_id`, open a one-document
+  workspace implicitly and return its id for further edits.
 
-Two things stay in Bash even for code, because agent99 cannot do them: running the test
-suite, and anything that has to see a build variant the language server does not analyze.
+Go files are gofmt-formatted after every edit unless `format=false`. Pass `verbose=true`
+to `edit_apply` only when you need the full change record and handle resolution.
 
-## Use ordinary Read, Edit, Write and Grep for everything else
+Use semantic handles or exact revision-bound locators when available. For a multi-file change,
+prepare a change plan, inspect its evidence, and commit only the prepared revision. If Huyang
+reports a conflict, stale revision, incomplete evidence, or recovery requirement, do not bypass
+it with an unguarded overwrite.
 
-- Anything under the workspace root that has no parser at all: logs, dotfiles, nginx
-  and other conf formats (`install_language` may add one). Markdown, YAML, TOML, JSON
-  and Dockerfiles go through agent99 like code; the section or key is the symbol, and
-  a region with no symbol takes `absolute=true` or `match`.
-- Files outside the open workspace root.
-- Whole-file rewrites where the content does not depend on the rest of the project.
-- A language `install_language` could not equip (see below).
+Shell still runs commands whose output is the point: builds, tests, Git, generated-code tools,
+and variant checks not represented in the selected verification policy. Direct filesystem tools
+are appropriate for files outside the open workspace and formats Huyang cannot parse, but never
+use them to evade a transactional refusal.
 
-## Workspace constraints
+## Workspace and verification constraints
 
-One workspace at a time. Opening a different root replaces the previous one along with its
-loaded buffers and its `check_project` baseline, so finish with one repository before moving
-to the next.
+Huyang can keep several explicit workspaces open. Always route by workspace ID; do not assume
+the current directory identifies the intended workspace. A result is valid only for the revision
+it names.
 
-## When the workspace has no parser or server for the language
+Diagnostics and test claims are evidence-bound. Distinguish affected-test coverage from a full
+test run, and treat provisional or partial evidence as such. Repository commands execute only
+when declared by `.huyang.toml` and trusted by the user policy in
+`~/.config/huyang/config.toml`.
 
-`open_workspace` names the parser and language server it found for each language, and says
-`none` when it has neither. Do not fall back to plain file tools at that point — call
-`install_language(<filetype>)` first. It fetches the tree-sitter parser and a language server
-and checks that the server attaches, which is what turns agent99 from a grep wrapper into
-the thing worth using. It takes a minute or two, once per language, and the result persists
-on the machine.
-
-Every machine here already carries parsers for bash, c, cpp, diff, go, gomod, html,
-javascript, jsdoc, json, lua, markdown, python, qmljs, toml, tsx, typescript, vimdoc and
-yaml, with servers for bash, go, lua, python and TypeScript, so this comes up only for a
-language outside that set.
-
-Fall back to the ordinary tools only if `install_language` reports that it could not
-finish — no nvim-treesitter or Mason in the config, or a missing toolchain such as `cargo`
-for rust_analyzer. Say which of those it was rather than silently switching.
-
-If a language turns out to be one worked in regularly on that machine, add its parser and
-Mason package to `lua/iryzhkov/deps.lua` in the nvim-configuration repo, so a fresh install
-has it without the on-demand step.
-
-## Practical notes
-
-- Mixing the two is safe. agent99 resyncs a buffer from disk before it reads or edits it, so a
-  change made with `sed`, `git checkout` or Edit is picked up rather than written over. When
-  the file changed on disk *and* agent99 holds unsaved edits to it, the tool refuses and says
-  so instead of choosing which change to lose.
-- `glob` in every agent99 tool is a path pattern matched from the workspace root, where `**`
-  spans directories: `src/**/*.go` works, and a subdirectory needs the `**/` prefix.
-- `undo_edit` takes back the edits of the current run, including creates, moves and deletes.
-  It does not cover `apply_code_action`.
-- Diagnostics are only as good as the language server behind them. A project whose
-  dependencies are not installed will report a wall of unresolved-import errors that say
-  nothing about your change; read the reported diagnostics with that in mind.
+The native text path works without Neovim. Semantic navigation, formatting, LSP diagnostics, and
+debugging additionally depend on the corresponding parser, language server, formatter, or
+adapter being available.

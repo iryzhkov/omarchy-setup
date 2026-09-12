@@ -43,9 +43,22 @@ the target host, the provider instance must be enabled and signed in, the
 model must be one that instance offers, and the options must be ones the
 model knows. A failed check prints what is wrong and queues nothing.
 
-Without `t3-backlog` on PATH, write the file yourself into
-`~/.config/t3-steward/backlog/<id>.md` and run
-`t3-steward backlog check <file>`:
+The path printed by `t3-backlog` proves only that the task reached the
+configured intake directory. It does not prove that a workflow or T3 session
+was created. After queueing, verify that the intake source is accepted (it may
+remain as the durable idempotent source) and that
+`t3-steward backlog list --project "<project>" --json` contains exactly one new
+workflow run. Record its run id and, once dispatched, its thread id. If either
+check fails, inspect `t3-steward backlog status --json` and the service journal;
+do not blindly submit a duplicate.
+
+Without `t3-backlog` on PATH, do not guess an intake directory. Establish the
+active host's configured `backlog.dir`, write the file there only after
+`t3-steward backlog check <file>` passes, and perform the same acceptance and
+workflow-run verification. The old `~/.config/t3-steward/backlog/` directory may be a
+legacy archive and must not be treated as active merely because it exists.
+
+The compatibility input format is:
 
 ```markdown
 ---
@@ -92,17 +105,21 @@ homelab for things that must run on the server itself.
 ## Watch it
 
 ```sh
-t3-steward backlog list          # this host: status, estimate, why it waits
-t3-steward backlog list --all    # every host in report.remotes
-t3-steward backlog show <id>     # file and state
-t3-steward forecast              # when the user usually works, headroom now
-t3-steward backlog retry <id>    # re-queue after a fix; editing the file does the same
+t3-steward backlog status --json
+t3-steward backlog list --project "laptop home" --json
+t3-steward backlog show <workflow-run> --json
+t3-steward backlog commands <workflow-run> --json
 ```
 
-Statuses: `pending` (with the reason it waits), `running` (thread id shown),
-`needs-input` (answer it in T3, then `retry`), `done`, `failed` (reason
-shown; `invalid:` means the task itself is wrong), `forwarded` (another host
-owns it now).
+Use the revision-fenced admin controls shown by `t3-steward backlog --help`
+for recovery. A successful helper exit without a corresponding workflow run
+is an intake failure, not a completed queue operation.
+
+`t3-steward backlog start` is an explicit operator override. It bypasses quota
+forecast, admission, freshness, runway, and automatic quota throttling through
+worker delivery. Use it only under explicit user authority while the user is
+manually monitoring quota. Automatic backlog work must remain fenced; worker
+health, dependency, lock, revision, and effect-safety checks still apply.
 
 ## Scheduled jobs
 
