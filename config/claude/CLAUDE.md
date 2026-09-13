@@ -149,6 +149,29 @@ The `huyang` MCP server is the primary interface for source-code repositories. I
 revision-aware semantic navigation, transactional edits, verification, and recovery through a
 long-lived local service.
 
+## Publish validated agent-tooling changes
+
+When working on agent tooling (Huyang, t3-steward, UpKeeper, agent99, shared
+AGENTS.md/CLAUDE.md files, skills or MCP configuration), finish a validated fix by
+publishing it through UpKeeper without waiting for a separate request to push.
+
+Run the applicable checks, commit and push the source to its configured remotes,
+and confirm the exact source commit's required GitHub CI succeeds. Publish any
+required release artifact and validate the intended controller installation.
+For instruction changes, edit the owning sources and regenerate derived files.
+Then run `upkeeper push` from the Normandy capture controller to record and publish
+the validated pins and agent environment. A Git push alone does not update the
+UpKeeper release manifest. Verify the manifest diff contains only intended changes;
+preserve unrelated work, worker configuration and secret references. Do not capture
+unvalidated local builds or unrelated newer component versions.
+
+Confirm GitHub CI for the published UpKeeper release commit before convergence.
+Use UpKeeper for deployment; the laptop converges through its local
+`upkeeper pull --self` timer. Report the release commit, validation and any pending
+or blocked publication/convergence honestly. If capture or a gate is blocked,
+record the precise blocker and preserve the safeguards rather than declaring the
+fix distributed. An explicit user instruction to keep work local takes precedence.
+
 ## The rule
 
 **When a directory holds source code, call `workspace_open` for the repository root before
