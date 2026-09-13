@@ -159,8 +159,11 @@ Run the applicable checks, commit and push the source to its configured remotes,
 and confirm the exact source commit's required GitHub CI succeeds. Publish any
 required release artifact and validate the intended controller installation.
 For instruction changes, edit the owning sources and regenerate derived files.
-Then run `upkeeper push` from the Normandy capture controller to record and publish
-the validated pins and agent environment. A Git push alone does not update the
+Then run `upkeeper push` from the fleet host where the intended tooling and agent
+environment have been validated, using a clean, current UpKeeper checkout with
+push access to the configured remotes. Normandy is not required. Capture publishes
+that host's observed pins and agent environment, so review the whole candidate
+release and preserve unrelated pins before publication. A Git push alone does not update the
 UpKeeper release manifest. Verify the manifest diff contains only intended changes;
 preserve unrelated work, worker configuration and secret references. Do not capture
 unvalidated local builds or unrelated newer component versions.
