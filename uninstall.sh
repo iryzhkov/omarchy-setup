@@ -86,23 +86,7 @@ for f in "$OMARCHY_SETUP_ROOT"/config/hooks/*.d/*.hook; do
   [[ -f $f ]] && remove_owned "$HOME/.config/omarchy/hooks/$(basename "$(dirname "$f")")/$(basename "$f")"
 done
 
-step "agents"
-sweep_fences "$HOME/.claude/CLAUDE.md" '<!--' '-->'
-remove_owned "$HOME/.claude/omarchy-setup"
-
-step "t3 update timer"
-# t3code.service and t3-steward.service stay: they are the running system, not
-# file management. The timer that checks for a newer pair is ours, and a unit
-# left enabled after the checkout is gone would fail every morning.
-if command -v systemctl >/dev/null 2>&1 && [[ -f $HOME/.config/systemd/user/t3-update.timer ]]; then
-  if (( DRY_RUN )); then
-    printf '%s  would run:%s systemctl --user disable --now t3-update.timer\n' "$C_DIM" "$C_RESET" >&2
-  else
-    systemctl --user disable --now t3-update.timer >/dev/null 2>&1 || true
-  fi
-fi
-remove_owned "$HOME/.config/systemd/user/t3-update.timer"
-remove_owned "$HOME/.config/systemd/user/t3-update.service"
+# Fleet services and agent-environment files are owned by UpKeeper.
 
 step "state"
 remove_owned "$OMARCHY_SETUP_STATE/root"

@@ -262,28 +262,10 @@ again. Today:
 
 ## Agents
 
-`modules/common/45-agents.sh`, on both profiles:
-
-| What | How |
-|------|-----|
-| default agent | writes `claude` to `~/.config/omarchy/defaults/agent` (the command form would exec the agent) |
-| `CLAUDE.md` | `config/claude/CLAUDE.md` becomes the owned `~/.claude/omarchy-setup/CLAUDE.md`; `~/.claude/CLAUDE.md` gets one fenced `@~/.claude/omarchy-setup/CLAUDE.md` import line. Machine-specific instructions (a `# This machine` section) stay in `~/.claude/CLAUDE.md` outside the fence |
-| `settings.json` | keys in `config/claude/settings.json` are merged in with `jq`; `permissions.allow` is the union, so allows added on the machine survive |
-| skills written here | `config/claude/skills/<name>/` copied to `~/.claude/skills/<name>/` as owned files |
-| published skills | `config/claude/skills.txt` lists `owner/repo` plus skill names, installed with `npx skills add ... -g -a claude-code`; a name already present in `~/.claude/skills` is skipped |
-
-Skills follow the same rule as packages: the list only ever adds. A skill
-installed by hand with `npx skills add`, or one dropped from `skills.txt`, is
-left in place -- nothing here removes a skill. Updating published skills is
-`npx skills update -g`, deliberately not part of a run.
-| memory | clones `OV_MCP_REPO` to `~/.local/lib/ov-mcp`, builds its venv, seeds `~/.config/ov-mcp/config.toml` from `OV_BASE_URL` (once; a machine may keep its key there), registers it as the user-scope MCP server `ov-memory` |
-
-The OpenViking API key is never written by this repo: ov-mcp reads
-`OV_API_KEY` (put it in the secrets manifest if the vault holds it), then the
-config file, then the GNOME keyring (`service=openviking key=api`).
-
-The `local-file-llm` MCP server on the laptop points at a checkout with no
-remote (`~/src/mcp-local-file-llm`) and is not reproduced here.
+UpKeeper owns shared instructions, skills, harness settings and MCP registrations
+through its release manifest. The former 45-agents module is removed. Existing
+agent settings stay installed; omarchy-setup no longer rewrites or uninstalls them.
+The files under config/claude remain authoring inputs, not an installation path.
 
 ## Agent CLIs and dev tools
 
@@ -306,46 +288,13 @@ step resolves that binary through mise explicitly (see Secrets).
 
 ## T3 Code and t3-steward
 
-`t3` is the one agent tool that is **not** a mise tool. mise's npm backend
-refuses to resolve it: the transitive dependency `@pierre/theme` carried a
-provenance attestation up to 1.0.3 and none from 1.1.0 on, and mise's trust
-policy rejects that downgrade. Declaring it in `config/mise-tools.txt` would
-mean recording a `trust_policy_excludes` entry for that package, so it stays an
-npm global inside mise's node instead, installed by `modules/common/26-t3.sh`.
+UpKeeper owns the pinned T3/steward pair, T3 service seeding, and release rollback.
+The former 26-t3 module, t3-update entry point and timer creation are removed.
+A pull disables and deletes old updater units on each selected host. Neither the
+post-update hook nor omarchy-setup discovers or installs newer T3 releases.
 
-Both versions are declared in `config/t3.conf`, and they move together: the
-steward is written against T3's undocumented control protocol and refuses to
-warn, stop or resume when the server version is outside the range it was built
-against. Floating either one alone silently disables the quota watchdog.
-
-Because mise never sees T3, neither `mup` nor the mise step of `omarchy update`
-could carry it forward, which left the pair stuck at whatever version it was
-last bumped to by hand. `T3_AUTO_UPDATE` closes that gap: on every run --
-including the run the post-update hook makes during `omarchy update`, one step
-before the mise tools are updated -- the module asks GitHub for the newest
-steward release, downloads it, and asks the binary itself which T3 versions it
-was tested with (`t3-steward version` ends with `tested with T3 <min>..<max>`).
-The newest npm `t3` inside that range is installed with it. The pair only moves
-forward, and only together: a steward whose range would step T3 back, or for
-which npm has no matching T3, is left alone. What a host resolved is recorded
-in `~/.local/state/omarchy-setup/t3-versions.conf` rather than committed here,
-so the checkout stays clean for the hook's `git pull --ff-only`; editing
-`config/t3.conf` overrides that record on the next run, which is how a
-fleet-wide bump or a rollback is made.
-
-Upgrading T3 changes nothing until `t3code.service` restarts, and a restart
-kills every agent thread in flight -- including, sometimes, the one that
-started the update. So the restart is gated: it happens when the steward
-reports the served version is behind *and* no thread is running, and otherwise
-says so and defers to the next run.
-
-The hook only fires when someone runs `omarchy update`, so every host also
-carries `t3-update.timer`, written and enabled by the module itself: daily,
-jittered, `Persistent` so a sleeping laptop catches up. It runs `bin/t3-update`
--- pull the checkout, run the module, no orchestrator -- which is also what
-makes homelab work at all: that host is Debian, has no `omarchy update`, and
-`run.sh` refuses to start on it. `docs/t3-code-and-steward.md` has the whole
-story, including what to do on a host that has never run T3.
+See [the deployment handoff](docs/t3-code-and-steward.md). Bootstrap prerequisites
+remain here; the automatic UpKeeper bootstrap seam belongs to Citadel U2.
 
 ## Packages
 
