@@ -61,6 +61,20 @@ remembering to re-run. It logs to `~/.local/state/omarchy-setup/post-update.log`
 and notifies only on failure; package removal is opt-in and never happens
 from the hook.
 
+## UpKeeper handoff
+
+The final selected module is `27-upkeeper.sh`, after packages, toolchains, secrets
+and host files. It installs python3 (3.11+), git and uv, clones dev-fleet main to
+`~/.local/share/dev-fleet` and runs that checkout's `upkeeper pull --self`.
+An earlier module failure prevents the handoff. Existing checkouts must be clean,
+on main and have the expected origin; updates are fast-forward only.
+
+A dry run never clones or fetches: it describes a missing checkout, or invokes
+`pull --self --dry-run` when the checkout exists. Existing development command
+links are preserved. Git access and this machine's inventory identity must already
+be provisioned. UpKeeper retains component bootstrap prerequisites and reports
+missing prerequisites explicitly. No timer is installed by this seam.
+
 ## Uninstalling
 
 ```bash

@@ -132,6 +132,15 @@ for m in "${MODULES[@]}"; do
   SELECTED+=("$m")
 done
 
+# The fleet handoff runs after packages, toolchains, secrets and host files.
+# --only/--skip still apply, and an UpKeeper-driven 28-scripts run never recurses.
+declare -a ORDERED=() HANDOFF=()
+for m in "${SELECTED[@]}"; do
+  if [[ $(basename "$m") == 27-upkeeper.sh ]]; then HANDOFF+=("$m")
+  else ORDERED+=("$m"); fi
+done
+SELECTED=("${ORDERED[@]}" "${HANDOFF[@]}")
+
 printf '\n%sprofile%s %s   %shost%s %s   %sarch%s %s\n' \
   "$C_DIM" "$C_RESET" "$SETUP_PROFILE" "$C_DIM" "$C_RESET" "$SETUP_HOST" \
   "$C_DIM" "$C_RESET" "$SETUP_ARCH" >&2
@@ -150,6 +159,11 @@ fi
 declare -a FAILED=()
 for m in "${SELECTED[@]}"; do
   name=$(basename "$m" .sh)
+  if [[ $name == 27-upkeeper && ${#FAILED[@]} != 0 ]]; then
+    fail "skipping UpKeeper handoff because machine bootstrap failed"
+    FAILED+=("$name")
+    continue
+  fi
   step "$name"
   if bash "$m"; then
     mark_ran "$name"

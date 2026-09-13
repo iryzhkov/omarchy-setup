@@ -111,6 +111,48 @@ check "T3 module removed" test ! -e "$ROOT/modules/common/26-t3.sh"
 check "agent module removed" test ! -e "$ROOT/modules/common/45-agents.sh"
 check "updater entry point removed" test ! -e "$ROOT/bin/t3-update"
 
+# ----------------------------------------------------- UpKeeper bootstrap --
+section "27-upkeeper: clone, self handoff and no-write preview"
+origin="$T/fleet-origin"
+mkdir -p "$origin/scripts"
+git -C "$origin" init -q -b main
+git -C "$origin" config user.name Test
+git -C "$origin" config user.email test@example.com
+cat >"$origin/scripts/upkeeper" <<'PY'
+import os
+import sys
+with open(os.environ["UPKEEPER_TEST_LOG"], "a") as stream:
+    stream.write(" ".join(sys.argv[1:]) + "\n")
+PY
+git -C "$origin" add .
+git -C "$origin" commit -qm "Fixture self entry point"
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/uv"
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/omarchy"
+chmod +x "$T/bin/uv" "$T/bin/omarchy"
+export UPKEEPER_REPOSITORY="$origin" UPKEEPER_TEST_LOG="$T/self-calls"
+check "missing checkout preview" env DRY_RUN=1 bash "$ROOT/modules/common/27-upkeeper.sh"
+check "dry run did not clone" test ! -e "$HOME/.local/share/dev-fleet"
+check "dry run did not install command" test ! -e "$HOME/.local/bin/upkeeper"
+check "bootstrap clones and hands over" module common/27-upkeeper.sh
+check "bootstrap clone exists" test -d "$HOME/.local/share/dev-fleet/.git"
+check "command points at clone" test "$(readlink "$HOME/.local/bin/upkeeper")" = "$HOME/.local/share/dev-fleet/scripts/upkeeper"
+check "real self pull invoked" grep -qx 'pull --self' "$T/self-calls"
+check "existing checkout dry run" env DRY_RUN=1 bash "$ROOT/modules/common/27-upkeeper.sh"
+check "dry run reaches self" grep -qx 'pull --self --dry-run' "$T/self-calls"
+printf 'keep local work\n' >"$HOME/.local/share/dev-fleet/untracked.txt"
+check "dirty checkout refused" bash -c '! bash "$1"' _ "$ROOT/modules/common/27-upkeeper.sh"
+check "dirty work preserved" grep -qx 'keep local work' "$HOME/.local/share/dev-fleet/untracked.txt"
+rm "$HOME/.local/share/dev-fleet/untracked.txt"
+# The numeric name is stable, but execution order puts the seam after host setup.
+check "selected handoff listed last" bash -c '
+  out=$(bash "$1/run.sh" --profile remote --only 27-upkeeper --only 85-hooks --list 2>&1) || exit
+  [[ $(printf "%s\n" "$out" | tail -n 1) == *27-upkeeper* ]]
+' _ "$ROOT"
+# The list command records setup state; later hook tests require no recorded checkout.
+rm -f "$HOME/.local/state/omarchy-setup/root" "$HOME/.local/state/omarchy-setup/profile"
+unset UPKEEPER_REPOSITORY UPKEEPER_TEST_LOG
+rm "$T/bin/uv" "$T/bin/omarchy"
+
 # ------------------------------------------------------------------- hypr --
 section "30-hypr: first run"
 check "module exits 0" module client/30-hypr.sh
