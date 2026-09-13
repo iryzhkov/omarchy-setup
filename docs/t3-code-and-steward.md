@@ -1,6 +1,6 @@
 # T3 Code and steward deployment
 
-UpKeeper in [dev-fleet](https://github.com/iryzhkov/dev-fleet) owns the pair and the
+UpKeeper in [dev-fleet](https://github.com/iryzhkov/UpKeeper) owns the pair and the
 agent environment. desired/release.json records exact versions and the steward's
 T3 compatibility range. Capture and publish with upkeeper push; converge selected
 inventory hosts with upkeeper pull.

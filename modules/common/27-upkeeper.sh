@@ -3,7 +3,7 @@
 source "${OMARCHY_SETUP_LIB:?}/common.sh"
 
 checkout="$HOME/.local/share/dev-fleet"
-repository=${UPKEEPER_REPOSITORY:-https://github.com/iryzhkov/dev-fleet.git}
+repository=${UPKEEPER_REPOSITORY:-https://github.com/iryzhkov/UpKeeper.git}
 export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10"
 
