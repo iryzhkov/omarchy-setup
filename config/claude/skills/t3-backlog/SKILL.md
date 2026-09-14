@@ -19,6 +19,10 @@ thread in its project when no interactive session has run for 30 minutes and
 the watchdog's forecast of the user's own usage leaves room before the next
 reset. The agent that runs it gets no input from anyone.
 
+One task, one outcome: that is what this skill is for. Work that is more than
+one task, or whose tasks depend on each other or pass files between them, is a
+campaign; see the `t3-campaign` skill.
+
 ## Queue a task
 
 Write the prompt to stdin of `t3-backlog`:
@@ -115,11 +119,58 @@ Use the revision-fenced admin controls shown by `t3-steward backlog --help`
 for recovery. A successful helper exit without a corresponding workflow run
 is an intake failure, not a completed queue operation.
 
-`t3-steward backlog start` is an explicit operator override. It bypasses quota
-forecast, admission, freshness, runway, and automatic quota throttling through
-worker delivery. Use it only under explicit user authority while the user is
-manually monitoring quota. Automatic backlog work must remain fenced; worker
-health, dependency, lock, revision, and effect-safety checks still apply.
+```sh
+t3-steward backlog start <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
+```
+
+`backlog start` is an explicit operator override. It bypasses quota forecast,
+admission, freshness, runway, and automatic quota throttling through worker
+delivery. Use it only under explicit user authority while the user is manually
+monitoring quota. Automatic backlog work must remain fenced; worker health,
+dependency, lock, revision, and effect-safety checks still apply.
+
+## Talking to the coordinator
+
+The legacy task-file helpers (`backlog new`, `path`, `check`, `receive`,
+`list --all`) are offline. Everything else above reaches the coordinator:
+through its owner-only socket on the coordinator host, and on any other host
+through an SSH session to its restricted `coordinator-exchange` command,
+selected by a coordinator client in `backlog_v2.coordinator_client` or in the
+UpKeeper-owned `~/.config/t3-steward/coordinator-client.json` (mode 0600), whose
+credential is a `secretref:f03-admin/<client>` reference resolved at use.
+
+**Never run `ssh <coordinator> t3-steward ...`.** The client transport is the
+authority boundary; opening a shell on the coordinator host goes around it.
+
+```sh
+t3-steward coordinator identity --json   # which coordinator answers, and how
+```
+
+Branch on the exit code, not on the message: 0 answered, 3 client
+configuration, 4 authentication, 5 unavailable, 6 timeout, 7 protocol, 8 refused
+by the coordinator, 1 anything else. 3, 4 and 8 are permanent until something
+changes; 5 and 6 are usually temporary. With `--json`, a failure that reached
+the transport also prints
+`{"version":"backlog.admin/v1","kind":"error","class":"...","operation":"...","message":"..."}`
+on standard output. Re-running with the same `--idempotency-key`, `--request-id`
+or `--command-id` is always safe: it returns the first answer rather than doing
+the work twice.
+
+## Waiting inside a backlog task
+
+A running task that has to wait for something external — CI, a review, a long
+build — must not poll and must not finish. It registers a task-bound wait, which
+parks the attempt, and ends the turn:
+
+```sh
+t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" \
+  --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
+  sh -c 'gh run view --json status --jq ".status == \"completed\"" | grep -q true'
+```
+
+While that wait is live the task is not complete, not verified and not failed:
+no output is collected, no verification runs, and the run cannot settle. **End
+the turn as soon as it registers.** Read the `t3-wait` skill before using it.
 
 ## Scheduled jobs
 
