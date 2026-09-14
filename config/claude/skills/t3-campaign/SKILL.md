@@ -221,10 +221,17 @@ Where it shows up:
 `plan` cannot print the ref: it contains the run and task IDs, which are
 assigned at ingestion.
 
-Lifetime: the refs of a run are released together once the run has settled, and
-a run carrying a commit into a rerun holds its source. Since a rerun may only be
-created from a finished run, create one that must carry a declared commit while
-the source run's refs are still there.
+Lifetime: a declared commit stays reachable for as long as its provenance record
+is retained, not until the run settles. A rerun that carries the commit pins the
+source run's artifact, so the ref survives for as long as the new run needs it
+and there is no timing for you to get right. A rerun authored after the record
+has been pruned is refused by the rerun itself, before it creates anything.
+
+One honest limitation, worth knowing if the campaign is long-lived: nothing in
+production prunes coordinator artifacts yet. There is no scheduled retention
+pass and no configured retention window, so campaign refs persist for as long as
+their provenance records do, which today is indefinitely. The bound arrives when
+a retention pass is configured, and needs no change on the campaign side.
 
 For the simple case, declaring a plain text file that contains a SHA is still a
 legitimate pattern, and it is what the shipped examples do: `single-lead`

@@ -156,6 +156,39 @@ on standard output. Re-running with the same `--idempotency-key`, `--request-id`
 or `--command-id` is always safe: it returns the first answer rather than doing
 the work twice.
 
+## When a queued task never appears
+
+A task file the coordinator can never accept — one naming a project no alias
+maps, or one whose content changed after its key was accepted — is recorded as
+quarantined, reported once, and then skipped silently on every later cycle. The
+symptom is exactly the one this skill tells you to check for: a queued file and
+no new workflow run, with nothing being logged any more.
+
+```sh
+t3-steward backlog quarantine [--json]
+```
+
+That is a read. It reports every marker with its intake key, the namespaced key
+its record is stored under, the content digest it was recorded for, when it was
+quarantined, the reason, and the retry rule. The quarantine names no workflow
+run, so `backlog events` cannot show it.
+
+Usually the fix is the file: change its content, the digest changes, the marker
+is released and intake tries again. For a refusal the file cannot fix — adding
+the missing project alias changes no byte of it, so intake would stay silent
+forever — clear it deliberately after fixing the configuration:
+
+```sh
+t3-steward backlog quarantine release <key> --reason TEXT [--json]
+```
+
+Pass the intake key, not the namespaced record key. `--reason` is required and
+audited, because the operator and not the file is what changed. The release
+creates nothing: the next cycle reads the file again and refuses it again if it
+is still impossible. Releasing a key that holds no marker reports exactly that
+instead of failing, so an ambiguous response is safe to retry. Both verbs work
+from a host that is not the coordinator.
+
 ## Waiting inside a backlog task
 
 A running task that has to wait for something external — CI, a review, a long
