@@ -165,7 +165,7 @@ parks the attempt, and ends the turn:
 ```sh
 t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" \
   --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
-  sh -c 'gh run view --json status --jq ".status == \"completed\"" | grep -q true'
+  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
 
 While that wait is live the task is not complete, not verified and not failed:

@@ -42,7 +42,7 @@ t3-steward wait add --task current \
   --name "CI on $(git rev-parse --short HEAD)" \
   --every 60s --max-every 10m --timeout 2h \
   --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
-  sh -c 'gh run view --json status --jq ".status == \"completed\"" | grep -q true'
+  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
 
 On success the command prints `This task is now parked.` **That is an

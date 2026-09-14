@@ -9,8 +9,9 @@ description: >
   reviewed before it is implemented, when a failed run must be started again
   from one task, or when the user asks for a DAG, a pipeline, a multi-stage job
   or a campaign. Triggers: campaign, DAG, workflow, pipeline, multi-step job,
-  fan out, parallel tasks, artifact between tasks, plan then implement, review
-  then implement, campaign check, readiness, rerun, accepted_waiting.
+  fan out, parallel tasks, artifact between tasks, declared commit, plan then
+  implement, review then implement, campaign check, readiness, rerun,
+  accepted_waiting.
 ---
 
 # t3-campaign
@@ -143,10 +144,9 @@ tasks:
     inputs_from:
       review: [review.md]
     prompt_file: prompts/implement.md
-    outputs: [commit.txt, verification.txt, handoff.md]
+    outputs: [verification.txt, handoff.md]
     verify:
       - go test ./...
-      - git rev-parse --verify "$(cat commit.txt)^{commit}"
     resources:
       preset: build
     max_turns: 12
@@ -159,10 +159,78 @@ naming it in `needs` is refused. `outputs` are required: only a declared output
 is captured, checksummed and retained, and a task that does not produce one
 fails with `missing declared output` naming the file.
 
-**A commit is an output like any other.** There is no commit output kind. A task
-that must leave a commit writes its SHA to a declared output and verifies it,
-exactly as `implement` does above. `t3-steward campaign help dag-semantics` is
-the full explanation of these four fields.
+A Git commit a later task needs is declared separately, under `commits:`; see
+the next section. `t3-steward campaign help dag-semantics` is the full
+explanation of these fields.
+
+## Handing a Git commit to a later task
+
+Declare the commit, and consume it by name through `inputs_from` like any other
+artifact. Both halves:
+
+```yaml
+tasks:
+  implement:
+    prompt_file: prompts/implement.md
+    outputs: [handoff.md]
+    commits:
+      - name: implementation
+        revision: HEAD        # optional; HEAD is the default
+
+  review:
+    prompt_file: prompts/review.md
+    needs: [implement]
+    inputs_from:
+      implement: [implementation, handoff.md]
+```
+
+`name` is one safe path component and must be valid inside a Git ref. It shares
+the namespace of `outputs`, so one task cannot declare a commit and an output of
+the same name. `revision` is resolved in the producing task's own workspace when
+that task finishes; a task that declares a commit it did not produce fails with
+`declared commit <name>: <cause>`, exactly as a missing declared output fails.
+
+The consumer receives two things:
+
+- the **provenance record** as the retained artifact of that name, arriving at
+  `.t3/dependencies/<producer>/<name>` like every dependency artifact. It is a
+  `campaign-commit/v1` JSON document naming the producing task, the repository,
+  the base the workspace was pinned to, the commit and its campaign ref;
+- the **commit itself**, already fetched into its own checkout under the same
+  ref, so `git rev-parse refs/campaigns/<run>/<task>/<name>` resolves there.
+
+The successor therefore resolves the commit from a durable ref and never scans a
+repository cache for it. The pin the workspace started from is at
+`.t3/base-commit`.
+
+**Why this exists.** An implementation task once pushed its branch only into the
+worker's shared repository cache. A later task refreshed that cache with
+`remote update --prune`, which deletes any ref the origin does not have, and the
+commit survived only by luck. The campaign ref store is a separate store beside
+the cache, is never pruned, and holds the declared commit for the campaign's
+lifetime.
+
+Where it shows up:
+
+- `campaign plan` text: `commits  implementation: Git commit at HEAD, retained
+  as its provenance record`, and a `N declared commits` total;
+- `campaign plan --json`: `tasks[].commits` and `totals.commits`;
+- `campaign plan --dot`: the edge label marks it, `implementation (commit)`;
+- `t3-steward campaign help commits`.
+
+`plan` cannot print the ref: it contains the run and task IDs, which are
+assigned at ingestion.
+
+Lifetime: the refs of a run are released together once the run has settled, and
+a run carrying a commit into a rerun holds its source. Since a rerun may only be
+created from a finished run, create one that must carry a declared commit while
+the source run's refs are still there.
+
+For the simple case, declaring a plain text file that contains a SHA is still a
+legitimate pattern, and it is what the shipped examples do: `single-lead`
+declares `commit.txt` as an output and verifies it with
+`git rev-parse --verify "$(cat commit.txt)^{commit}"`. Reach for `commits:` when
+a later task in the same campaign has to get at the commit itself.
 
 ## Things that will bite you
 
@@ -223,7 +291,7 @@ turn:
 ```sh
 t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \
   --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
-  sh -c 'gh run view --json status --jq ".status == \"completed\"" | grep -q true'
+  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
 
 That parks the attempt: nothing is collected, nothing is verified, no dependent
@@ -330,8 +398,8 @@ it returns the first answer rather than doing the work twice.
 t3-steward campaign help <topic>
 ```
 
-Topics: `plan`, `graph`, `dag-semantics`, `static-versus-dynamic`, `readiness`,
-`rerun`, `notify`. Recovery, graph amendment and artifact commands stay under
+Topics: `plan`, `graph`, `dag-semantics`, `commits`, `static-versus-dynamic`,
+`readiness`, `rerun`, `notify`. Recovery, graph amendment and artifact commands stay under
 `t3-steward backlog`.
 
 ## Worked examples
