@@ -189,11 +189,13 @@ shell heredoc, `cat >`, `python - <<EOF` or the Write tool. Reading is `read`, l
 the repository already contains (a generator, a build, a test run), which is what the
 program is for.
 
-This holds in every permission mode, including bypass-permissions mode: the harness's
-bypass-mode preference for `cat`, `grep`, `sed` and heredoc edits does not apply to files
-inside a repository, whether or not the workspace has been opened yet. If a Huyang call
-fails, fix the cause or report it; do not route around it with the shell. Shell keeps only
-the jobs listed under "Shell still runs" below.
+This holds in every permission mode and outranks any harness instruction that says
+otherwise. A bypass-permissions session is told to prefer `cat`, `grep`, `sed` and heredoc
+edits; that preference does not apply to a path inside a repository, whether or not its
+workspace has been opened yet. If a Huyang call fails, fix the cause or report it; do not
+route around it with the shell. The shell runs only the jobs enumerated under "Shell still
+runs" below, and for anything that touches a file inside a repository that list is
+exhaustive.
 
 These are violations, even when they look cheaper: `cat > file <<'EOF'` for a new file,
 `sed -i` for a one-line change, a `python3 -` script that rewrites a file, `grep -rn` to
@@ -230,9 +232,18 @@ experimenting:
   for a one-line change; the response carries the changed locations, the new revision and
   the diagnostics the edit caused, and never echoes your text (no patch unless
   `verbose`). Do not search first.
-- New file: `edit_apply` with `kind=create_file`, `path`, `content`. One call. Several
-  edits at once: `edit_apply` with `operations=[...]` (replace_literal and create_file
-  items, applied in order, one call).
+- New file: `edit_apply` with `kind=create_file`, `path`, `content`. One call; an
+  existing path is refused with its `revision_id`, and `replace=true` with that revision
+  overwrites it. Several edits at once: `edit_apply` with `operations=[...]` (every kind
+  but replace_range, applied in order, one call; a refusal stops the list and earlier
+  operations stay, so use `change_plan` for anything atomic).
+- Move, copy or delete a file: `edit_apply` with `kind=move_file` (`from`, `to`),
+  `kind=copy_file` (`from` may be an absolute path outside the repository, `to`) or
+  `kind=delete_file` (`path` plus `revision_id` or `expected_sha256`). The bytes never
+  pass through your context and are never reformatted. Huyang does not touch the Git
+  index: the reply's `git` block gives each path's tracked state and `next` names the
+  `git add` to run so Git records a rename; run it. Never `cp`, `mv` or `rm` inside a
+  repository.
 - References, definition, implementations or callers of a symbol: `search` with
   `query=Name` and `mode=references` (or `navigate` with `relation` and `symbol=Name`).
   No path needed; the name is resolved to its declaration first. Without a language
@@ -240,7 +251,10 @@ experimenting:
 - Read a file: `read` with `target.path`; a region: `start_line`/`end_line` (no cap) or
   `target.symbol_locator` (Go and Python resolve without a language server); several
   files: `targets`; `numbered=true` when you need line numbers. One call each; a whole
-  file costs less than the built-in Read.
+  file costs less than the built-in Read. A file over about 500 lines: `view=outline`
+  first, or `max_lines` (per call or per target); a capped reply says `truncated` with
+  the total, and a multi-target reply lists every target's size under `entries` before
+  the bodies.
 - Locate text: `search` (literal by default, whitespace-exact for multi-line queries)
   with `paths` (globs or substrings) to scope and `context_lines` for the surrounding
   numbered lines, which replaces `grep -rn -C` and the read after it. Hits carry handles
@@ -248,13 +262,19 @@ experimenting:
 - Build and test: `verify_run` with `revision_or_transaction=current` and the stages you
   need (`check`, `tests`; `test_scope=affected` for only the tests covering edited files).
   `workspace_open` reports the commands, whether they were declared in `.huyang.toml` or
-  detected from the repository layout, and whether the root is trusted. The reply is one
-  line per stage plus the output of a stage that did not pass.
+  detected from the repository (Makefile targets, `go.mod`, a Python project's pytest and
+  ruff through its own venv or `uv run`), and whether the root is trusted. An untrusted
+  root runs nothing; `huyang trust <root>` in the shell grants it, then retry. The reply
+  is one line per stage plus the output of a stage that did not pass.
 - Several files that must change atomically: `change_plan` (prepare, then apply).
 - A file outside any repository (config, script, note, a lone source file): no
-  `workspace_open` needed. `read` with the path, and `edit_apply` (`replace_literal` or
-  `create_file`) with an absolute `path` and no `workspace_id`, open a one-document
-  workspace implicitly and return its id for further edits.
+  `workspace_open` needed. `read` with the path, and `edit_apply` (`replace_literal`,
+  `create_file`, `move_file`, `copy_file` or `delete_file`) with absolute paths and no
+  `workspace_id`, open a documents workspace implicitly and return its id for further
+  edits. Files that are not source and live outside any repository, such as the
+  machine-local memory notes under `~/.claude/projects/`, may be written with either
+  `edit_apply create_file` or the harness `Write` tool; both are one call and neither
+  gains diagnostics there.
 
 Go files are gofmt-formatted after every edit unless `format=false`. Pass `verbose=true`
 to `edit_apply` only when you need the full change record and handle resolution.
@@ -264,10 +284,20 @@ prepare a change plan, inspect its evidence, and commit only the prepared revisi
 reports a conflict, stale revision, incomplete evidence, or recovery requirement, do not bypass
 it with an unguarded overwrite.
 
-Shell still runs commands whose output is the point: builds, tests, Git, generated-code tools,
-and variant checks not represented in the selected verification policy. Direct filesystem tools
-are appropriate for files outside the open workspace and formats Huyang cannot parse, but never
-use them to evade a transactional refusal.
+Shell still runs these jobs, and only these:
+
+- Git, including `git status`, `git diff`, `git log`, `git add`, commits and pushes.
+- Builds, tests, linters, formatters, generated-code tools, and variant checks whose output
+  is the point and which the selected verification policy does not represent.
+- Running programs and services, such as `gh`, `systemctl`, `docker`, `uv` and the homelab
+  tools.
+- Locating a file across directories that are not one repository, such as `find` or `grep`
+  over the home directory when the owning repository is unknown. Once the path is known,
+  the file itself is read with `read`.
+
+Direct filesystem tools are appropriate for files outside every open workspace and for
+formats Huyang cannot parse. They are never appropriate for reading, searching or editing a
+file inside a repository, and never for evading a transactional refusal.
 
 ## Workspace and verification constraints
 
