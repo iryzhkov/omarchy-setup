@@ -56,9 +56,10 @@ collected, nothing is verified and the run cannot settle until the steward resum
 thread. End the turn the moment it registers. An interactive wait, registered outside a task,
 only wakes a thread and changes no workflow state.
 
-An interactive wait needs the T3 thread id when the agent is not Claude Code: pass
-`--thread <id>`; the id is in the thread URL shown by the T3 app. Inside a task the identity
-is injected and `--task current` resolves it.
+An interactive wait can resolve the current T3 thread from supported Claude Code, Codex
+and OpenCode session metadata. If resolution is unavailable, pass `--thread <id>` using
+the thread URL shown by the T3 app. A provider-local session id is not a T3 thread id.
+Inside a task the execution identity is injected and `--task current` resolves it.
 
 HDR
   strip_frontmatter "$HOME/.claude/skills/t3-backlog/SKILL.md"
