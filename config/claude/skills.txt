@@ -12,6 +12,13 @@
 # Add-only, like the package lists: a skill installed by hand or dropped from
 # this file is never removed by a run.
 
-mattpocock/skills      code-review codebase-design diagnosing-bugs domain-modeling grill-me grill-with-docs grilling handoff implement improve-codebase-architecture prototype resolving-merge-conflicts setup-matt-pocock-skills tdd to-spec to-tickets triage wayfinder
+# Dropped on 2026-09-16, because a skill costs its description line in every
+# session: grill-me and grill-with-docs (grilling covers both), handoff and
+# implement (thin wrappers over ordinary work and over Jocasta handoffs),
+# setup-matt-pocock-skills (a one-time installer) and the issue-tracker suite
+# to-spec, to-tickets, triage and wayfinder, unused since it was installed.
+# This file is add-only, so dropping a name here stops a reinstall but removes
+# nothing; the directories were deleted by hand on the hosts that had them.
+mattpocock/skills      code-review codebase-design diagnosing-bugs domain-modeling grilling improve-codebase-architecture prototype resolving-merge-conflicts tdd
 juliusbrussee/caveman  caveman
 vercel-labs/skills     find-skills
