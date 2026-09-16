@@ -1,22 +1,121 @@
 #!/usr/bin/env bash
 # Regenerate the shared agent instruction files under ~/.config/agents/ from their sources.
 #
+#   AGENTS.md     <- the pointer text embedded below; installed for Codex and OpenCode
 #   ov-memory.md  <- ~/.claude/skills/ov-memory/SKILL.md + ~/.claude/skills/ov-memory-curation/SKILL.md
 #   huyang.md     <- the "# Reading and editing code" section of ~/.claude/omarchy-setup/CLAUDE.md
+#                    + ~/.claude/skills/huyang/SKILL.md
 #   t3-steward.md <- ~/.claude/skills/t3-backlog/SKILL.md + ~/.claude/skills/t3-campaign/SKILL.md
 #                    + ~/.claude/skills/t3-wait/SKILL.md
+#   jocasta.md    <- the "# Working documents: Jocasta" section of the same CLAUDE.md
 #
-# These files are what OpenCode (and any other non-Claude-Code agent) loads as instructions,
-# because those tools do not read ~/.claude/CLAUDE.md. Run after editing a source.
+# Only AGENTS.md is loaded into every session of the harnesses that do not read
+# ~/.claude/CLAUDE.md: it is written into ~/.codex/AGENTS.md inside a managed block and is
+# the single entry of OpenCode's instructions list. The other files are references those
+# summaries point at, read when a task needs them, the way a skill is. OpenCode also loads
+# the skills themselves from ~/.claude/skills, so the reference files are the fallback for
+# a harness without skill support rather than a second always-on copy.
 #
-# The installed skills read below are copies of this repository's own
-# config/claude/skills/<name>/SKILL.md, which is where a skill is edited. Editing the
-# installed copy loses the change the next time the host converges.
+# Run after editing a source. The installed skills read below are copies of this
+# repository's own config/claude/skills/<name>/SKILL.md, which is where a skill is edited.
+# Editing the installed copy loses the change the next time the host converges.
 set -euo pipefail
 out="$HOME/.config/agents"
 mkdir -p "$out"
 
 strip_frontmatter() { awk 'NR==1 && /^---$/ {skip=1; next} skip && /^---$/ {skip=0; next} !skip' "$1"; }
+
+cat >"$out/AGENTS.md" <<'AGENTS'
+# Global agent instructions
+
+The shared instructions for the harnesses that do not read ~/.claude/CLAUDE.md. Generated
+by `agents-instructions-gen` from omarchy-setup's config/bin/agents-instructions-gen; edit
+it there and regenerate rather than editing an installed copy.
+
+Each section below is a summary. The full guidance lives in a skill, loaded on demand from
+~/.claude/skills, and in the generated reference files under ~/.config/agents/, which are
+read when a task needs them rather than loaded into every session.
+
+## OV memory
+
+This machine's agents share a long-term memory store (OpenViking on homelab), reached
+through the `ov-memory` MCP server. Search it before answering questions about past work,
+infrastructure or decisions; write to it only when asked. Record the fact and why it is
+true; store a pointer to a credential, never the secret.
+
+Namespaces, document shape and curation: the `ov-memory` and `ov-memory-curation` skills,
+or **~/.config/agents/ov-memory.md**.
+
+## Reading and editing code
+
+The `huyang` MCP server is the primary interface for source-code repositories. Call
+`workspace_open` for the repository root first, retain its workspace ID and revision, then
+use Huyang's semantic reads and transactional edits. No harness preference for shell file
+tools overrides this for a path inside a repository. The shell runs only Git, builds and
+tests, other programs whose output is the point, and searches across directories that are
+not one repository.
+
+A result is valid only for the revision it names. Fix a refusal for a stale revision,
+conflict or incomplete evidence rather than bypassing it with an unguarded overwrite.
+
+Tool mapping, the cheapest correct call for each need, and the evidence rules: the
+`huyang` skill, or **~/.config/agents/huyang.md**.
+
+## Publish validated agent-tooling changes
+
+When working on agent tooling (Huyang, t3-steward, UpKeeper, agent99, shared
+AGENTS.md/CLAUDE.md files, skills or MCP configuration), finish a validated fix by
+publishing it through UpKeeper without waiting for a separate request to push: run the
+checks, push the source and confirm its GitHub CI, then `upkeeper push` from a host where
+the change is validated, using a clean, current UpKeeper checkout. A Git push alone does
+not update the release manifest, and capture publishes the whole observed environment of
+that host, so review the manifest diff and preserve unrelated pins, worker configuration
+and secret references. For an instruction change, edit the owning sources and regenerate
+the derived files. Report the release commit, the validation and anything still pending or
+blocked honestly, rather than declaring a fix distributed. An explicit user instruction to
+keep work local takes precedence.
+
+The whole procedure: the `publish-agent-tooling` skill.
+
+## Local file LLM
+
+The `local-file-llm` MCP server delegates bulk file reading and summarising to a local
+model on gaming-pc (ollama at 192.168.90.212). Use it for work that is large but not
+subtle: scanning many files for a pattern, first-pass summaries, log triage. Keep
+judgement calls here.
+
+## T3 steward: backlog, campaigns and wait
+
+The `t3-steward` daemon runs on every T3 host and does three things for agents. Read the
+matching skill, or ~/.config/agents/t3-steward.md, before the first command.
+
+- **Backlog** (`t3-backlog` skill): work that does not need the user now is queued with
+  `t3-backlog --project "<T3 project>" --title "<title>" < prompt` rather than started on
+  the spot, and runs as an unattended T3 thread in the next quiet slot with quota
+  headroom. The printed intake path is not proof that a workflow was created: verify that
+  exactly one new run appears in `t3-steward backlog list --project "<T3 project>" --json`,
+  and never blindly submit a duplicate. `t3-steward backlog start` is an operator override
+  that bypasses quota forecast, admission, freshness and runway; use it only with explicit
+  user authority and manual quota monitoring.
+- **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks
+  depend on each other or pass files between them, is written as a directory and submitted
+  with `t3-steward campaign submit <dir> --idempotency-key KEY`, creating exactly one
+  workflow run. Run `campaign validate` and `campaign plan` first; neither touches the
+  coordinator. Declare only routes the fleet offers, give each task `outputs`, and let
+  `resources.preset` choose the host rather than pinning one.
+- **Wait** (`t3-wait` skill): never poll in a loop for something external (a PR review,
+  CI, a long job). Register the check with `t3-steward wait add --name "<what>" --
+  <command>` and end the turn; the steward polls with backoff and wakes the thread with
+  the outcome. Exit 0 means done, exit 2 means give up, anything else means not yet.
+  Inside a running backlog or campaign task, `--task current` parks the task attempt
+  itself, so the turn must end there.
+
+## Shared working documents
+
+Use Jocasta for shared plans, handoffs and research. Search with `jocasta search`, fetch
+the full document before an update, and use `--if-revision N`. Read
+**~/.config/agents/jocasta.md** before creating or changing documents.
+AGENTS
 
 {
   cat <<'HDR'
@@ -40,15 +139,6 @@ Generated from ~/.claude/skills/t3-backlog/SKILL.md, ~/.claude/skills/t3-campaig
 and ~/.claude/skills/t3-wait/SKILL.md, which are installed copies of
 omarchy-setup's config/claude/skills/<name>/SKILL.md. Edit the skill in that repository,
 then regenerate with `agents-instructions-gen`; do not edit this file directly.
-
-Three things the t3-steward daemon does for agents on these machines. Backlog: one piece of
-work that does not need the user now is queued with `t3-backlog` and runs as an unattended
-T3 thread in a quiet slot with quota headroom. Campaign: work that is more than one task, or
-whose tasks depend on each other or pass files between them, is written as a directory and
-submitted with `t3-steward campaign submit`, which creates exactly one workflow run. Wait:
-never poll in a loop for something external; register the check with
-`t3-steward wait add -- <command>`, end the turn, and the steward wakes the thread with the
-outcome.
 
 One rule is worth reading twice. Inside a running backlog or campaign task,
 `t3-steward wait add --task current -- <command>` parks the task attempt itself: nothing is
@@ -74,13 +164,16 @@ HDR
 # Huyang: reading and editing code (shared agent instructions)
 
 Generated from the "Reading and editing code" section of
-~/.claude/omarchy-setup/CLAUDE.md, which is the source of truth. Regenerate with
-`agents-instructions-gen` after editing it; do not edit this file directly.
+~/.claude/omarchy-setup/CLAUDE.md and from ~/.claude/skills/huyang/SKILL.md, which are the
+sources of truth. Regenerate with `agents-instructions-gen` after editing either; do not
+edit this file directly.
 
 Tool names below are Huyang's modern MCP surface and are shared by every harness.
 
 HDR
   awk '/^# Reading and editing code$/ {p=1} p' "$HOME/.claude/omarchy-setup/CLAUDE.md"
+  echo; echo '---'; echo
+  strip_frontmatter "$HOME/.claude/skills/huyang/SKILL.md"
 } > "$out/huyang.md"
 
 {
@@ -89,27 +182,40 @@ HDR
   echo 'Generated from the Working documents: Jocasta section of ~/.claude/omarchy-setup/CLAUDE.md.'
   echo 'Edit omarchy-setup/config/claude/CLAUDE.md and run agents-instructions-gen.'
   echo
-  awk '/^# Working documents: Jocasta$/ {p=1; next} p && /^# / {exit} p' "$HOME/.claude/omarchy-setup/CLAUDE.md"
+  # The source paragraph points readers at this file; inside it that pointer is noise.
+  # The pattern omits the leading tilde so that no shell expansion is implied.
+  awk '/^# Working documents: Jocasta$/ {p=1; next} p && /^# / {exit} p' \
+    "$HOME/.claude/omarchy-setup/CLAUDE.md" | grep -v '/.config/agents/jocasta.md' || true
 } > "$out/jocasta.md"
 
-# The managed pointer is generated, while unrelated global instructions remain intact.
+# The managed pointer block is generated, while unrelated global instructions remain intact,
+# and OpenCode is pointed at the one shared file instead of the reference set.
 python3 - <<'PY'
 import json
 import os
 from pathlib import Path
 home = Path.home()
+shared = home / ".config/agents/AGENTS.md"
 path = home / ".codex/AGENTS.md"
-start, end = "<!-- jocasta:start -->", "<!-- jocasta:end -->"
-block = start + "\n## Shared working documents\n\nUse Jocasta for shared plans, handoffs and research. Search with `jocasta search`;\nread **~/.config/agents/jocasta.md** before creating or changing documents.\n" + end
+start, end = "<!-- fleet:start -->", "<!-- fleet:end -->"
+block = start + "\n" + shared.read_text().strip() + "\n" + end
 text = path.read_text() if path.exists() else ""
+legacy_start, legacy_end = "<!-- jocasta:start -->", "<!-- jocasta:end -->"
+if legacy_start in text and legacy_end in text:
+    if text.count(legacy_start) != 1 or text.count(legacy_end) != 1:
+        raise SystemExit("malformed legacy instruction block")
+    if text.index(legacy_end) < text.index(legacy_start):
+        raise SystemExit("malformed legacy instruction block")
+    text = (text[:text.index(legacy_start)].rstrip()
+            + "\n" + text[text.index(legacy_end) + len(legacy_end):].lstrip())
 if start in text:
     if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
-        raise SystemExit("malformed Jocasta instruction block")
+        raise SystemExit("malformed fleet instruction block")
     text = text[:text.index(start)] + block + text[text.index(end) + len(end):]
 else:
     if end in text:
-        raise SystemExit("malformed Jocasta instruction block")
-    text = text.rstrip() + "\n\n" + block + "\n"
+        raise SystemExit("malformed fleet instruction block")
+    text = (text.rstrip() + "\n\n" + block + "\n").lstrip()
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(text)
 opencode = home / ".config/opencode/opencode.json"
@@ -118,17 +224,21 @@ if opencode.exists():
     instructions = config.setdefault("instructions", [])
     if not isinstance(instructions, list):
         raise SystemExit("OpenCode instructions must be a list")
-    pointer = str(home / ".config/agents/jocasta.md")
-    if pointer not in instructions:
-        instructions.append(pointer)
-    mode = opencode.stat().st_mode & 0o777
-    temporary = opencode.with_suffix(".jocasta.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(config, handle, indent=2)
-        handle.write("\n")
-    temporary.replace(opencode)
+    # The reference files are read on demand, so only the shared pointer is loaded into
+    # every session. Entries from elsewhere are the user's own and are preserved.
+    generated = str(home / ".config/agents")
+    kept = [entry for entry in instructions if not str(entry).startswith(generated)]
+    wanted = [str(shared)] + kept
+    if instructions != wanted:
+        config["instructions"] = wanted
+        mode = opencode.stat().st_mode & 0o777
+        temporary = opencode.with_suffix(".agents.tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(config, handle, indent=2)
+            handle.write("\n")
+        temporary.replace(opencode)
 PY
 
 rm -f "$out/agent99.md"
-echo "wrote $out/ov-memory.md $out/huyang.md $out/t3-steward.md $out/jocasta.md"
+echo "wrote $out/AGENTS.md $out/ov-memory.md $out/huyang.md $out/t3-steward.md $out/jocasta.md"

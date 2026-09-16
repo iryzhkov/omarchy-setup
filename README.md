@@ -281,6 +281,16 @@ through its release manifest. The former 45-agents module is removed. Existing
 agent settings stay installed; omarchy-setup no longer rewrites or uninstalls them.
 The files under config/claude remain authoring inputs, not an installation path.
 
+`config/claude/CLAUDE.md` carries what every Claude Code session must already know;
+anything a session only needs for one kind of task lives in a skill under
+`config/claude/skills/`, which is loaded on demand. `config/bin/agents-instructions-gen`
+turns those same sources into the files the other harnesses read: one shared
+`~/.config/agents/AGENTS.md`, written into `~/.codex/AGENTS.md` inside a managed block
+and named as OpenCode's only instruction file, plus the reference files beside it
+(`huyang.md`, `ov-memory.md`, `t3-steward.md`, `jocasta.md`) that those summaries point
+at. OpenCode loads the skills themselves from `~/.claude/skills`, so the reference files
+are the fallback for a harness without skill support, not a second always-on copy.
+
 ## Agent CLIs and dev tools
 
 `claude`, `codex`, `agy` (antigravity-cli), `pi`, `opencode`, `crush` are **not

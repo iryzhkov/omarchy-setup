@@ -27,5 +27,5 @@ jobs:
           shellcheck -x -e SC1090,SC1091,SC2094,SC2016 "${scripts[@]}"
       - name: Module tests against a throwaway HOME
         run: test/run.sh
-      - name: Shared Jocasta instruction generation
-        run: python3 test/jocasta-instructions.py
+      - name: Shared agent instruction generation
+        run: python3 test/agents-instructions.py
