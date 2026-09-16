@@ -83,5 +83,52 @@ HDR
   awk '/^# Reading and editing code$/ {p=1} p' "$HOME/.claude/omarchy-setup/CLAUDE.md"
 } > "$out/huyang.md"
 
+{
+  echo '# Jocasta: shared working documents'
+  echo
+  echo 'Generated from the Working documents: Jocasta section of ~/.claude/omarchy-setup/CLAUDE.md.'
+  echo 'Edit omarchy-setup/config/claude/CLAUDE.md and run agents-instructions-gen.'
+  echo
+  awk '/^# Working documents: Jocasta$/ {p=1; next} p && /^# / {exit} p' "$HOME/.claude/omarchy-setup/CLAUDE.md"
+} > "$out/jocasta.md"
+
+# The managed pointer is generated, while unrelated global instructions remain intact.
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+home = Path.home()
+path = home / ".codex/AGENTS.md"
+start, end = "<!-- jocasta:start -->", "<!-- jocasta:end -->"
+block = start + "\n## Shared working documents\n\nUse Jocasta for shared plans, handoffs and research. Search with `jocasta search`;\nread **~/.config/agents/jocasta.md** before creating or changing documents.\n" + end
+text = path.read_text() if path.exists() else ""
+if start in text:
+    if text.count(start) != 1 or text.count(end) != 1 or text.index(end) < text.index(start):
+        raise SystemExit("malformed Jocasta instruction block")
+    text = text[:text.index(start)] + block + text[text.index(end) + len(end):]
+else:
+    if end in text:
+        raise SystemExit("malformed Jocasta instruction block")
+    text = text.rstrip() + "\n\n" + block + "\n"
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(text)
+opencode = home / ".config/opencode/opencode.json"
+if opencode.exists():
+    config = json.loads(opencode.read_text())
+    instructions = config.setdefault("instructions", [])
+    if not isinstance(instructions, list):
+        raise SystemExit("OpenCode instructions must be a list")
+    pointer = str(home / ".config/agents/jocasta.md")
+    if pointer not in instructions:
+        instructions.append(pointer)
+    mode = opencode.stat().st_mode & 0o777
+    temporary = opencode.with_suffix(".jocasta.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(config, handle, indent=2)
+        handle.write("\n")
+    temporary.replace(opencode)
+PY
+
 rm -f "$out/agent99.md"
-echo "wrote $out/ov-memory.md $out/huyang.md $out/t3-steward.md"
+echo "wrote $out/ov-memory.md $out/huyang.md $out/t3-steward.md $out/jocasta.md"

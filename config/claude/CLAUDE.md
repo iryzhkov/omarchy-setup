@@ -143,6 +143,37 @@ skills:
   the turn; the steward polls with backoff and wakes the thread with the outcome. Exit 0
   means done, exit 2 means give up, anything else means not yet.
 
+# Working documents: Jocasta
+
+Jocasta stores shared plans, handoffs, research and prompts. Use its CLI on any
+fleet host: `jocasta search 'rough plan name' --json`, inspect the candidates,
+then `jocasta get PROJECT/plans/FILE.md --output /tmp/plan.md --json`.
+Use exact `jocasta:DOCUMENT_ID@REVISION` references in handoffs. Search is lexical,
+including approximate title/path matches; it does not guarantee conceptual matches.
+
+Create with `jocasta put PROJECT/handoffs/FILE.md --file /tmp/handoff.md --create`.
+For updates, fetch the full document, reconcile changes, and use
+`--if-revision N`. Never write back a partial line range, guess a mutation target
+from search, or retry a conflict by replacing the newer revision. Preserve
+continuation cursors and completeness flags; a bounded search is not proof of absence.
+
+After 30 days without a read or update, documents are automatically archived.
+Archived documents remain searchable by title/path and retrievable; use
+`--include-archived` to search their content. Reads refresh activity without
+silently unarchiving a document. History is retained.
+
+Jocasta is the shared working-document store. Repository source remains in Git and
+is read/edited through Huyang. OV remains curated long-term memory, written only
+when asked. Steward owns task execution and scheduling. Do not automatically
+mirror working documents into OV. If Jocasta is unavailable, report the failure;
+do not fall back to writing mutable copies in Normandy's old plans directory.
+After verified migration that directory is a read-only legacy snapshot.
+
+CLI configuration is `~/.config/jocasta/config.json`; UpKeeper owns the binary
+and configuration references. Credentials are per-host and must not be copied into
+prompts, logs, source or handoffs. Homelab hosts the server; the NAS holds backups.
+Full guidance: `~/.config/agents/jocasta.md`.
+
 # Reading and editing code
 
 The `huyang` MCP server is the primary interface for source-code repositories. It provides
