@@ -2,14 +2,16 @@
 name: t3-wait
 description: >
   Park a thread until something external happens, instead of polling in a loop:
-  register a check with the t3-steward, end the turn, and the steward wakes the
-  thread with the outcome when the check succeeds, gives up or times out. Inside
-  a backlog or campaign task, `--task current` parks the task attempt itself, so
-  the turn must end there. Use whenever you would otherwise sleep and re-check:
-  waiting for PR reviews or comments, CI or a deploy to finish, a long job or
-  build, a file or service to appear, a human on another channel. Triggers: wait
-  for, poll, check back later, until CI passes, when the PR is reviewed, once
-  the job finishes, sleep and retry, park the task, waiting-external.
+  register a wait with the t3-steward (a time, a GitHub run or pull request, a
+  workflow node, a quota pool, or a shell check), end the turn, and the steward
+  wakes the thread with a parseable outcome line when it is met, fails, gives
+  up, is cancelled or times out. Inside a backlog or campaign task, `--task
+  current` parks the task attempt itself, so the turn must end there. Use
+  whenever you would otherwise sleep and re-check: waiting for PR reviews or
+  CI, a deploy or a long build, a time of day, another campaign, a quota window,
+  a file or service to appear. Triggers: wait for, poll, check back later, until
+  CI passes, when the PR is reviewed, once the job finishes, wait until, sleep
+  and retry, park the task, waiting-external, quota reset.
 ---
 
 # t3-wait
@@ -35,14 +37,40 @@ task that is verified against work it has not done.
 `--task current` outside a task is an error that says so; it never silently
 degrades into an interactive wait.
 
+## Then pick the kind
+
+Every wait has one condition, its kind. Both forms take every kind. Use the
+primitive; do not rebuild it from `date`, `gh ... --jq` or `backlog show` in a
+shell loop.
+
+| Kind | Registration | Met when | Settled by |
+| --- | --- | --- | --- |
+| `time` | `--at 2026-09-18T22:00:00Z` or `--for 2h30m` | the instant passes | this host |
+| `github` | `--github run <id>` (default `--state completed`), `--github pr <n> --state merged\|reviewed\|checks-passed`, `[--repo owner/name]` | a run completes with conclusion success (any other conclusion is `failed`); a PR is merged (`failed` when closed unmerged); every check succeeded (`failed` when any failed); the first review lands | this host, reading `gh` with fixed arguments |
+| `node` | `--node <run>` (its sink) or `--node <run>/<task>`, `--state terminal\|succeeded\|paused\|waiting-external\|active` (default `terminal`) | the node reaches the state; `terminal` is met on any terminal progress except cancelled, `succeeded` is `failed` on a failed run | the coordinator, from its own records; no local check |
+| `quota` | `--quota <pool> --below 50`, `--quota <pool> --phase normal`, `--quota <pool> --reset` | the pool is under the percent, every bucket is normal, or the window current at registration has reset | the coordinator, from the merged bucket observations |
+| `shell` | `-- <command>` | the command exits 0 (exit 2 gives up, anything else is not yet) | this host |
+
+`--timeout` bounds every kind (default 24h; a time wait's default covers its
+instant). Add `--or-timeout` when the deadline is an acceptable end rather
+than a failure: the wake still says `outcome=timed-out`, with
+`or-timeout=true`, and nothing calls it a failure.
+
 ## Task-bound wait: registering it parks the task
 
 ```sh
-t3-steward wait add --task current \
-  --name "CI on $(git rev-parse --short HEAD)" \
-  --every 60s --max-every 10m --timeout 2h -- \
-  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
+t3-steward wait add --task current --github run "$(gh run list --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId')" --timeout 2h
+t3-steward wait add --task current --github pr 123 --state reviewed --timeout 24h
+t3-steward wait add --task current --for 30m --or-timeout
+t3-steward wait add --task current --node run-abc/implement --state succeeded
+t3-steward wait add --task current --quota claude-main --phase normal
+t3-steward wait add --task current --name "deploy finished" -- ./scripts/deployed.sh
 ```
+
+A `node` or `quota` wait registered this way parks the attempt with no check
+on the worker at all: the coordinator settles it. A task cannot wait for its
+own run's sink (the run cannot settle while the attempt is parked); wait for a
+sibling task instead.
 
 No `--request-id` is needed: it defaults to `park-<attempt>-<revision>` from the
 task's identity, which is stable for a retry of the same park and different for
@@ -116,20 +144,60 @@ the end of the turn that ends with no live wait.
 A failed or timed-out wait still wakes the task, with structured evidence: which
 wait, which condition, which exit status, how long it ran. Silence is not an
 outcome. A timeout releases the attempt to finish or fail honestly; it never
-leaves the task parked. Handle the failure or produce an honest final failure —
-do not treat a wake as proof the condition was met.
+leaves the task parked. Cancelling the task settles its live wait as
+`cancelled`. Handle the failure or produce an honest final failure — do not
+treat a wake as proof the condition was met: read the trailer.
 
 Re-read the current state before continuing; other things may have moved while
 the thread was parked.
 
+## Reading the wake: the trailer
+
+The first line of every wake message, every kind, interactive and task-bound,
+is one parseable line:
+
+```text
+t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value> ...
+```
+
+`outcome` is one of `met`, `failed`, `gave-up`, `cancelled`, `timed-out`.
+Branch on `outcome`, then read the kind's pairs:
+
+| Kind | Pairs |
+| --- | --- |
+| `shell` | `exit=` |
+| `time` | `at=` (RFC 3339) |
+| `github` | `target=run:<id>\|pr:<n> state= conclusion= url=` |
+| `node` | `run= task= attempt= revision= progress=`, `control=` and `pauseReason=` for the attempt states, and for a terminal run `failed=<comma list>` and `result="t3-steward result <run>"` (the command to fetch the run's result) |
+| `quota` | `pool= phase= percent=` (and `resetsAt=` when known) |
+
+Values with a space are quoted; ignore keys you do not know; do not depend on
+the order of the pairs after the first three. A wake that carries several
+waits (a `--wake all` group) names the earliest and adds `count=`. A blank
+line and the prose follow. Examples:
+
+```text
+t3-steward-wait kind=github outcome=met wait=tw-park-a1-9 conclusion=success state=completed target=run:123 url=https://github.com/o/r/actions/runs/123
+t3-steward-wait kind=node outcome=met wait=nw-campaign-k1 failed=implement progress=failed result="t3-steward result run-abc" revision=14 run=run-abc task=sink:run-abc
+t3-steward-wait kind=time outcome=timed-out wait=w-1a2b or-timeout=true
+```
+
+The second line is a campaign notification for a run that failed: `--state
+terminal` is met because the run ended, and `progress=` and `failed=` say
+how. A `--state succeeded` wait on the same run would say `outcome=failed`.
+
 ## Interactive wait
 
-For an ordinary session, unchanged: it wakes the selected thread and creates or
-alters nothing else.
+For an ordinary session: it wakes the selected thread and creates or alters
+nothing else. Every kind is available.
 
 ```sh
-t3-steward wait add --name "PR 123 reviewed" --every 5m --timeout 24h -- \
-  gh pr view 123 --json reviewDecision --jq 'select(.reviewDecision != "") | .reviewDecision'
+t3-steward wait add --github pr 123 --state reviewed --name "PR 123 reviewed"
+t3-steward wait add --at 2026-09-19T06:00:00Z --name "morning"
+t3-steward wait add --node run-abc --name "campaign settled"      # the run's sink
+t3-steward wait add --node run-abc/review --state paused
+t3-steward wait add --quota claude-main --reset
+t3-steward wait add --name "deploy finished" -- ./scripts/deployed.sh
 ```
 
 Then finish the turn with a short note of what is parked and what you will do
@@ -138,13 +206,10 @@ when woken. The thread is resolved from the caller's provider session
 provider session ID is an input to that resolution and never a thread ID; if it
 is ambiguous the candidates are named and `--thread <T3 thread id>` is required.
 
-Two more interactive forms wait on workflow nodes rather than on a shell check,
-and take no command:
-
-```sh
-t3-steward wait add --run <run> [--thread ID] [--name TEXT] [--timeout 24h] [--request-id ID]
-t3-steward wait add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 24h]
-```
+`--run <run>` and `--task <run>/<task>` are the older spellings of `--node`
+and still work. A node or quota wait is held by the coordinator (`wait list
+--native`); a time, github or shell wait is a local check on this host (`wait
+list`).
 
 ## `each` versus `all`
 
@@ -152,42 +217,55 @@ t3-steward wait add --task <run>/<task> [--thread ID] [--name TEXT] [--timeout 2
 until every member has settled.
 
 - Interactive: `--wake all` requires `--group NAME`, and the group is the set.
-- Task-bound: there is no `--group`; `all` is scoped to the attempt. Mixing the
-  two on one attempt is defined — any `each` that settles wakes the attempt.
+- Task-bound: there is no `--group`; `all` is scoped to the attempt. Mixing
+  `each` and `all` on one attempt is defined — any `each` that settles wakes
+  the attempt.
+- A group, and a task's `all` set, is all local kinds (`shell`, `time`,
+  `github`) or all coordinator kinds (`node`, `quota`). A registration that
+  would mix the two is refused and names both members; use another group or
+  `--wake each`.
 
 ```sh
-t3-steward wait add --group deploy --wake all --name "CI green"   -- ./scripts/ci-passed.sh
+t3-steward wait add --group deploy --wake all --github run 123
 t3-steward wait add --group deploy --wake all --name "image built" -- ./scripts/image-ready.sh
+t3-steward wait add --group fanout --wake all --node run-a
+t3-steward wait add --group fanout --wake all --node run-b
 ```
 
-## The check protocol
+## The shell check protocol
+
+For the `shell` kind only; the other kinds carry their own mapping.
 
 - `0`: condition met. The steward wakes the thread.
-- `2`: give up. The steward wakes the thread with the failure.
+- `2`: give up. The steward wakes the thread with `outcome=gave-up`.
 - anything else: not yet, keep polling.
-- `--timeout` elapsed: the steward wakes the thread with "timed out".
+- `--timeout` elapsed: the steward wakes the thread with `outcome=timed-out`.
 
 The check is run once at registration and refused if it cannot run, already
 exits 0 (nothing to park for) or exits 2. Write it so a "not yet" is a non-zero,
-non-2 exit; `test`, `grep -q`, `jq -e` and `gh ... --jq 'select(...)'` all do
-that naturally. Put anything longer in a script under the project and call it.
+non-2 exit; `test`, `grep -q` and `jq -e` all do that naturally. Put anything
+longer in a script under the project and call it. Reach for a shell check only
+when no other kind fits: a time, a GitHub run or PR, a workflow node and a
+quota pool are kinds of their own, and a github or time wait registered as a
+shell idiom wakes late and reports nothing structured.
 
 Flags on `add`: `--name`, `--every` (default 30s, minimum 30s; doubles after
-each "not yet"), `--max-every` (default 10m), `--timeout` (default 24h; for
-`--task current` it is the maximum duration the coordinator enforces),
-`--run-timeout` (default 1m, bounds one run), `--dir`, `--wake each|all`,
-`--request-id`, and `--json` for `--task current`. Interactive `add` also takes
-`--thread` and `--group`.
+each "not yet"; a time wait polls from the remaining time instead),
+`--max-every` (default 10m), `--timeout` (default 24h; for `--task current` it
+is the maximum duration the coordinator enforces), `--or-timeout`,
+`--run-timeout` (default 1m, bounds one shell run), `--dir`, `--wake each|all`,
+`--request-id`, and `--json`. Interactive `add` also takes `--thread` and
+`--group`.
 
 ## Inspect
 
 ```sh
-t3-steward wait list            # this thread's waits
+t3-steward wait list [--json]   # this thread's local checks, with kind and outcome
 t3-steward wait list --all      # every thread
-t3-steward wait list --native [--json]   # coordinator-side waits and delivery state
-t3-steward wait run-now <id>    # run a check immediately and show its output
+t3-steward wait list --native [--json]   # coordinator-held waits (node, quota, task-bound) and delivery state
+t3-steward wait run-now <id>    # run a shell check immediately and show its output
 t3-steward wait cancel <id>
-t3-steward wait cancel <nw-id>  # a native wait, through the admin transport
+t3-steward wait cancel <nw-id>  # a coordinator-held wait, through the admin transport
 ```
 
 ## Exit codes

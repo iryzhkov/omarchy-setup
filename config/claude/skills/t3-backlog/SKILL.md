@@ -194,13 +194,20 @@ from a host that is not the coordinator.
 ## Waiting inside a backlog task
 
 A running task that has to wait for something external — CI, a review, a long
-build — must not poll and must not finish. It registers a task-bound wait, which
-parks the attempt, and ends the turn:
+build, a time, a quota window — must not poll and must not finish. It registers
+a task-bound wait of the matching kind, which parks the attempt, and ends the
+turn:
 
 ```sh
-t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" -- \
-  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
+t3-steward wait add --task current --github run "$(gh run list --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId')" --timeout 2h
+t3-steward wait add --task current --github pr 123 --state reviewed
+t3-steward wait add --task current --for 30m --or-timeout
+t3-steward wait add --task current --quota claude-main --phase normal
 ```
+
+The wake begins with `t3-steward-wait kind=... outcome=... wait=...`; branch on
+`outcome` (`met`, `failed`, `gave-up`, `cancelled`, `timed-out`). A shell
+check (`-- <command>`) is for what no kind covers.
 
 `--request-id` defaults to `park-<attempt>-<revision>` from the task's identity;
 a custom one may use `$(t3-steward task env --get revision)`. The

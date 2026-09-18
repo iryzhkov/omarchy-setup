@@ -294,14 +294,20 @@ own replaces the inherited list entirely.
 
 ## Waiting inside a campaign task
 
-A task that has to wait for something external — CI, a review, a long build —
-must not poll and must not finish. It registers a task-bound wait and ends the
-turn:
+A task that has to wait for something external — CI, a review, a long build,
+another campaign, a quota window — must not poll and must not finish. It
+registers a task-bound wait of the matching kind and ends the turn:
 
 ```sh
-t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" -- \
-  sh -c 'test "$(gh run view --json status --jq .status)" = completed'
+t3-steward wait add --task current --github run "$(gh run list --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId')" --timeout 2h
+t3-steward wait add --task current --node <other-run>/<task> --state succeeded   # campaign B waits for campaign A
+t3-steward wait add --task current --quota claude-main --phase normal
+t3-steward wait add --task current --for 20m --or-timeout
 ```
+
+The wake begins with `t3-steward-wait kind=... outcome=... wait=...`; branch on
+`outcome` (`met`, `failed`, `gave-up`, `cancelled`, `timed-out`) and read the
+kind's pairs. A task cannot wait for its own run's sink.
 
 `--request-id` defaults to `park-<attempt>-<revision>` from the task's identity;
 a custom one may use `$(t3-steward task env --get revision)`. The
@@ -320,16 +326,24 @@ task has not done.
 t3-steward campaign submit ./campaign --idempotency-key KEY --notify-thread current
 ```
 
-`--notify-thread` registers a durable wait on the new run's sink and wakes that
-T3 thread with the terminal outcome. `current` is the calling agent's own
-canonical thread, resolved before anything is submitted: an unresolvable thread
-leaves no run behind. Pass `--notify-thread <id>` when resolution is ambiguous.
+`--notify-thread` registers a durable node wait (`--state terminal`) on the
+new run's sink and wakes that T3 thread when the run ends. `current` is the
+calling agent's own canonical thread, resolved before anything is submitted: an
+unresolvable thread leaves no run behind. Pass `--notify-thread <id>` when
+resolution is ambiguous.
+
+The wake's first line is the node trailer, for example
+`t3-steward-wait kind=node outcome=met wait=nw-campaign-KEY progress=failed
+failed=implement result="t3-steward result <run>" run=<run> ...`: `outcome=met`
+means the run ended, `progress=` says how, `failed=` lists the failed tasks,
+and `result=` is the command that fetches the run's result. A cancelled run
+wakes `outcome=cancelled`.
 
 The registration ID is derived from the idempotency key, so re-running the same
 submit registers the same wait rather than a second one. After a successful
 registration, end the turn. If submission succeeded and registration then
 failed, the error names the run; register it separately with
-`t3-steward wait add --run <run> --thread <id>`.
+`t3-steward wait add --node <run> --thread <id>`.
 
 There is no SSH helper and no polling loop for this. Full explanation:
 `t3-steward campaign help notify`.
