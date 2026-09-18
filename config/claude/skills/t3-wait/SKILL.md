@@ -40,10 +40,13 @@ degrades into an interactive wait.
 ```sh
 t3-steward wait add --task current \
   --name "CI on $(git rev-parse --short HEAD)" \
-  --every 60s --max-every 10m --timeout 2h \
-  --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
+  --every 60s --max-every 10m --timeout 2h -- \
   sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
+
+No `--request-id` is needed: it defaults to `park-<attempt>-<revision>` from the
+task's identity, which is stable for a retry of the same park and different for
+every later park.
 
 On success the command prints `This task is now parked.` **That is an
 instruction. End the turn there.** The task is not complete, not verified and
@@ -65,17 +68,25 @@ nobody owns.
 
 ### How `current` knows which task it is
 
-The worker injects the execution identity, and the command reads it from the
-process environment first and from `.t3-steward/task.env` (mode 0600, searched
-upward from the working directory) second:
+The worker writes the execution identity into the prepared workspace as
+`.t3-steward/task.env` (mode 0600), and the command finds that file by searching
+upward from the working directory. The six variables it holds are:
 
 ```text
 T3_STEWARD_WORKFLOW_RUN_ID  T3_STEWARD_TASK_ID     T3_STEWARD_ATTEMPT_ID
 T3_STEWARD_ATTEMPT_REVISION T3_STEWARD_ASSIGNMENT_ID T3_STEWARD_THREAD_ID
 ```
 
-The registration is fenced on `T3_STEWARD_ATTEMPT_REVISION`. Two refusals are
-ordinary command errors: report them, do not retry blindly.
+They are **not in the shell environment**: `$T3_STEWARD_ATTEMPT_REVISION` expands
+to nothing, and a command line built with it silently loses the value. To read
+the identity, run `t3-steward task env`, which prints `export NAME=value` lines
+from the file (`eval "$(t3-steward task env)"` exports them), or
+`t3-steward task env --get revision` for one value (`revision`, `attempt`,
+`task`, `run`, `assignment`, `thread`, or the full variable name). Outside a
+task it exits 1 and says so.
+
+The registration is fenced on the attempt revision in that file. Two refusals
+are ordinary command errors: report them, do not retry blindly.
 
 - `attempt is terminal (<progress>); task-bound waits are refused` — the turn
   already completed. The task is over; do not keep working.
@@ -86,8 +97,11 @@ ordinary command errors: report them, do not retry blindly.
 Repeating a request ID while that wait is still live and holding this attempt
 returns the same wait, which is what makes a retried registration safe.
 Repeating it after that wait settled is **refused**: the ID names one park.
-Include `$T3_STEWARD_ATTEMPT_REVISION` in it so every park of the same task gets
-its own ID. A repeated ID with different contents is also refused.
+The default, `park-<attempt>-<revision>`, already gives every park of the same
+task its own ID. A custom ID that must differ per park can include
+`$(t3-steward task env --get revision)`; an ID that ends in `-` is warned about,
+because it almost always means an empty variable was interpolated. A repeated ID
+with different contents is also refused.
 
 ### What happens on wake
 

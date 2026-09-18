@@ -296,10 +296,13 @@ must not poll and must not finish. It registers a task-bound wait and ends the
 turn:
 
 ```sh
-t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" \
-  --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
+t3-steward wait add --task current --name "CI on $(git rev-parse HEAD)" -- \
   sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
+
+`--request-id` defaults to `park-<attempt>-<revision>` from the task's identity;
+a custom one may use `$(t3-steward task env --get revision)`. The
+`T3_STEWARD_*` variables are not in the shell environment.
 
 That parks the attempt: nothing is collected, nothing is verified, no dependent
 task is released and the run sink cannot settle until the steward resumes the

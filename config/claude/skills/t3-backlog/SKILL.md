@@ -198,10 +198,13 @@ build — must not poll and must not finish. It registers a task-bound wait, whi
 parks the attempt, and ends the turn:
 
 ```sh
-t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" \
-  --request-id ci-$T3_STEWARD_ATTEMPT_REVISION -- \
+t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" -- \
   sh -c 'test "$(gh run view --json status --jq .status)" = completed'
 ```
+
+`--request-id` defaults to `park-<attempt>-<revision>` from the task's identity;
+a custom one may use `$(t3-steward task env --get revision)`. The
+`T3_STEWARD_*` variables are not in the shell environment.
 
 While that wait is live the task is not complete, not verified and not failed:
 no output is collected, no verification runs, and the run cannot settle. **End
