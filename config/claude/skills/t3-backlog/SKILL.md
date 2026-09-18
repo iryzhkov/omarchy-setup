@@ -13,72 +13,88 @@ description: >
 
 # t3-backlog
 
-Every T3 host runs `t3-steward`, which watches the Codex and Claude
-quota windows and keeps a backlog of markdown tasks. A task becomes a new T3
-thread in its project when no interactive session has run for 30 minutes and
-the watchdog's forecast of the user's own usage leaves room before the next
-reset. The agent that runs it gets no input from anyone.
+Every T3 host runs `t3-steward`. The fleet's coordinator dispatches a task to a
+worker as a new T3 session in the project's checkout, when the quota of the
+route it is to run on has room. The agent that runs it gets no input from
+anyone.
 
-One task, one outcome: that is what this skill is for. Work that is more than
-one task, or whose tasks depend on each other or pass files between them, is a
-campaign; see the `t3-campaign` skill.
+The way to start one is `t3-steward task run`; `t3-backlog` is a compatibility
+wrapper over it. One task, one outcome: that is what this skill is for. Work
+that is more than one task, or whose tasks depend on each other or pass files
+between them, is a campaign; see the `t3-campaign` skill.
 
-## Queue a task
+## Start a task
 
-Write the prompt to stdin of `t3-backlog`:
+From a checkout, one call:
 
 ```sh
-t3-backlog --project "laptop home" --title "Refactor the auth module" \
-  --importance 4 --difficulty 3 --deadline 2d <<'PROMPT'
+t3-steward task run --model claude-haiku-4-5 -- "...the prompt..."
+t3-steward task run --model t3-primary/opus --prompt-file plan.md --json
+t3-steward task run --model opus --fan-out prompts/*.md      # one run, one task per file
+```
+
+It derives what you would otherwise invent, and prints every derived value:
+the fleet project from this checkout's origin remote, the ref from the current
+branch, the route from `--model`, the idempotency key from a digest of all of
+them plus the prompt, and the wake. The run id is printed, so nothing has to
+poll to find out whether the task exists.
+
+Flags: `--project NAME` (when the remote matches no project or several),
+`--ref REF`, `--fresh`, `--model [INSTANCE/]MODEL`, `--worker WORKER`,
+`--name TEXT`, `--outputs a.md,b.md`, `--verify "CMD"` (repeatable),
+`--class surplus|required`, `--max-turns N`, `--idempotency-key KEY`,
+`--no-notify`, `--json`. The prompt is exactly one of an argument after `--`,
+`--prompt-file FILE`, `--prompt-file -`, or stdin.
+
+What the fleet can run right now:
+
+```sh
+t3-steward models [--project NAME]    # instance/model, pool, quota phase, workers
+t3-steward backlog projects           # projects, their repositories, eligible workers
+```
+
+Refusals are the point of the derivation and each says what to pass instead: a
+remote no project matches, a model several instances offer, a detached HEAD or
+an unpushed branch ("push first or pass --ref"), more than one prompt source,
+and no route with no `defaults.model` configured. A dirty tree is a warning,
+not a refusal: uncommitted changes are not sent, the worker fetches the ref.
+
+The calling thread is woken when the run ends, so **end the turn after
+starting a task**. On wake, collect the result in one call:
+
+```sh
+t3-steward task result <run>            # writes ./.t3/results/<run>/<task>/
+t3-steward task result <run> --json     # the final message inlined
+```
+
+It exits 0 when the task succeeded, 2 when it failed or was cancelled (writing
+whatever exists), and 1 when it is not terminal yet.
+
+### The t3-backlog wrapper
+
+`t3-backlog` still exists for the scripts that call it and is a thin wrapper
+over `t3-steward task run`:
+
+```sh
+t3-backlog --project steward --title "Refactor the auth module" \
+  --model claude-haiku-4-5 <<'PROMPT'
 ...the prompt...
 PROMPT
 ```
 
-Options: `--project` (T3 project title or id: the workspace; required),
-`--title` (required), `--importance 1-5` (higher runs first), `--difficulty
-1-5` (seeds the quota estimate: 5/10/20/35/50% of a window), `--deadline`
-(`12h`, `2d` or RFC 3339; inside 24 h the task runs regardless of the
-forecast), `--not-before`, `--model` with `--instance` (default: the
-project's default model), `--max-turns` (default 3), `--host` (which
-machine's T3 runs it), `--ungated` (run as soon as quota is healthy).
+`--title` and `--name` become `--name`, `--instance` is folded into `--model
+INSTANCE/MODEL` and is refused without one, `--host` is the worker it always
+was and is passed as `--worker`, `--ungated` becomes `--class required`, and
+the prompt still comes from stdin. There is no default provider instance any
+more. `--importance`, `--difficulty`, `--deadline` and `--not-before` are
+accepted and reported as ignored: the fleet no longer schedules by them. Prefer
+`t3-steward task run` in anything you write now.
 
-The script checks the task before queueing it: the project must exist on
-the target host, the provider instance must be enabled and signed in, the
-model must be one that instance offers, and the options must be ones the
-model knows. A failed check prints what is wrong and queues nothing.
-
-The path printed by `t3-backlog` proves only that the task reached the
-configured intake directory. It does not prove that a workflow or T3 session
-was created. After queueing, verify that the intake source is accepted (it may
-remain as the durable idempotent source) and that
-`t3-steward backlog list --project "<project>" --json` contains exactly one new
-workflow run. Record its run id and, once dispatched, its thread id. If either
-check fails, inspect `t3-steward backlog status --json` and the service journal;
-do not blindly submit a duplicate.
-
-Without `t3-backlog` on PATH, do not guess an intake directory. Establish the
-active host's configured `backlog.dir`, write the file there only after
-`t3-steward backlog check <file>` passes, and perform the same acceptance and
-workflow-run verification. The old `~/.config/t3-steward/backlog/` directory may be a
-legacy archive and must not be treated as active merely because it exists.
-
-The compatibility input format is:
-
-```markdown
----
-project: laptop home
-title: Refactor the auth module
-importance: 4
-difficulty: 3
-model: claude-opus-5        # optional, with instance
-instance: claudeAgent
-options: {effort: high, contextWindow: 1m}
-deadline: 2026-09-12T00:00:00-07:00
-max_turns: 3
-host: normandy              # optional
----
-prompt
-```
+There is nothing to verify afterwards. Both commands submit synchronously and
+print the run id, and a refusal is a non-zero exit with the reason; a start
+that printed a run is a run that exists. Re-running the same command replays
+the same run and says `replayed: true`, so a retry after an ambiguous failure
+is safe and never starts a second run.
 
 ## Write the prompt for nobody
 
@@ -97,14 +113,15 @@ line. Your prompt still has to make that possible:
   `--importance` expressing the order; the runner runs one per provider at
   a time.
 
-## Choose the host
+## Choose the worker
 
-`--host` names the machine (SSH alias) whose T3 server runs the task; the
-project must exist there. Omit it to use the watchdog's `default_host`,
-which is the local machine unless configured otherwise. Pick the host that
-holds the workspace and the tools the task needs: normandy for the homelab
-Docker stacks and OpenViking curation, the laptop for its own projects,
-homelab for things that must run on the server itself.
+A worker is a fleet host the coordinator dispatches to, named by its worker id
+and not by an SSH alias. Leave it unset and the coordinator picks any eligible
+worker that advertises the project and the route, which is what you want unless
+the task needs one machine's own state: normandy for the homelab Docker stacks
+and OpenViking curation, homelab for things that must run on the server itself.
+`t3-steward backlog projects` lists each project's eligible workers and what
+they advertise; `--worker NAME` (`--host` in the wrapper) pins one.
 
 ## Watch it
 
@@ -116,8 +133,9 @@ t3-steward backlog commands <workflow-run> --json
 ```
 
 Use the revision-fenced admin controls shown by `t3-steward backlog --help`
-for recovery. A successful helper exit without a corresponding workflow run
-is an intake failure, not a completed queue operation.
+for recovery. To stop a run, `t3-steward campaign cancel <run> --reason TEXT`
+cancels every non-terminal task of it with one command; the `<run>/<task>`
+form cancels one task and its dependents.
 
 ```sh
 t3-steward backlog start <workflow-run>/<task> --reason TEXT [--command-id ID] [--json]
@@ -160,11 +178,13 @@ the work twice.
 
 ## When a queued task never appears
 
-A task file the coordinator can never accept — one naming a project no alias
-maps, or one whose content changed after its key was accepted — is recorded as
-quarantined, reported once, and then skipped silently on every later cycle. The
-symptom is exactly the one this skill tells you to check for: a queued file and
-no new workflow run, with nothing being logged any more.
+This is about the file-based intake only. `t3-steward task run` and the
+`t3-backlog` wrapper submit synchronously and a refusal is their exit code, so
+they cannot leave this behind. A task file the coordinator can never accept —
+one naming a project no alias maps, one naming no provider route at all, or one
+whose content changed after its key was accepted — is recorded as quarantined,
+reported once, and then skipped silently on every later cycle. The symptom is a
+queued file and no new workflow run, with nothing being logged any more.
 
 ```sh
 t3-steward backlog quarantine [--json]
@@ -221,6 +241,6 @@ the turn as soon as it registers.** Read the `t3-wait` skill before using it.
 ## Scheduled jobs
 
 A `t3-job` file with `gated: true` is queued by its timer instead of run, so
-weekly agent jobs take the next quiet slot. Scripts that used to open a
-thread with `t3-run` use `t3-backlog` when the work can wait; keep `t3-run`
+weekly agent jobs take the next quiet slot. Scripts that used to open a thread
+with `t3-run` use `t3-steward task run` when the work can wait; keep `t3-run`
 only for something the user is waiting on right now.

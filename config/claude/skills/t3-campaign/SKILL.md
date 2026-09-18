@@ -21,9 +21,13 @@ and one workflow run; there is no separate campaign record, schedule or state.
 Every lifecycle command below is the existing backlog operation with the same
 JSON and exit codes.
 
-Use `t3-backlog` for a single unattended task. Use a campaign when there is more
-than one task, when tasks depend on each other, or when one task's output is
-another's input.
+Use `t3-steward task run` for a single unattended task: it derives the project,
+the ref, the route, the idempotency key and the wake from the checkout and
+needs no directory at all (`t3-backlog` is a compatibility wrapper over it; the
+`t3-backlog` skill has the contract). Use a campaign when there is more than one
+task, when tasks depend on each other, or when one task's output is another's
+input. `task run --fan-out GLOB` is the exception that stays a single start: one
+run with one independent task per prompt file, no edges to declare.
 
 ## The shortest correct path
 
@@ -81,7 +85,13 @@ Permanent reason codes, which waiting can never fix: `unknown-project`,
 `cpu-class-impossible`, `resources-impossible`, `directory-impossible`,
 `credential-missing`, `repository-syntax-invalid`,
 `repository-authentication-failed`, `repository-not-found`, `ref-not-found`,
-`no-configured-route`, `timing-window-closed`, `message-limit-exceeded`.
+`no-route`, `no-configured-route`, `timing-window-closed`,
+`message-limit-exceeded`.
+
+`no-route` means a task declares no `routes` at all. The coordinator never
+chooses one, so declare `routes: [{instance, model}]` in `workflow.yaml`; the
+refusal lists the instance/model pairs the project's eligible workers advertise,
+and `t3-steward models` shows them with their quota state.
 
 Temporary reason codes, which submission proceeds through: `quota-closed`,
 `worker-at-capacity`, `worker-offline`, `worker-stale`, `network-unavailable`,
@@ -356,7 +366,12 @@ t3-steward campaign graph <run> [--json|--dot]          # the persisted graph
 t3-steward campaign explain <run>/<task> [--json]       # why a task is not running
 t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--json]
 t3-steward campaign cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
+t3-steward campaign cancel <run> --reason TEXT [--command-id ID] [--json]
 ```
+
+Naming no task cancels every non-terminal task of the run with one command,
+one revision fence per attempt, which is what a fan-out run needs: cancelling
+one of its tasks cascades to nothing, because they need each other for nothing.
 
 `plan` is static and says what the manifest means; `explain` is dynamic and says
 what the coordinator decided. `check` is dynamic too, before there is a run.

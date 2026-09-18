@@ -91,12 +91,15 @@ The `t3-steward` daemon does three things for agents on these machines, each des
 by its skill. Read the skill before the first command; the summary here only says when to reach
 for which.
 
-- **Backlog** (`t3-backlog` skill): work that does not need the user now goes into the backlog,
-  `t3-backlog --project ... --title ... < prompt`, rather than into a thread opened on the spot.
-  Use it when the user says later, tonight, when I am not around, or backlog, and for any
-  scheduled agent job. The printed intake path is not completion evidence: verify that exactly
-  one new workflow run appears in `t3-steward backlog list --project ... --json`, and never
-  retry blindly when that verification is ambiguous.
+- **One task** (`t3-backlog` skill): work that does not need the user now is started on the
+  fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout,
+  rather than in a thread opened on the spot. Use it when the user says later, tonight, when I
+  am not around, or backlog, and for any scheduled agent job. It derives the project, the ref,
+  the route, the idempotency key and the wake, prints the run id, and wakes this thread when
+  the run ends, so end the turn after starting it and collect the result with `t3-steward task
+  result <run>`. `t3-steward models` lists the routes the fleet can run now. There is nothing
+  to verify afterwards: the start is synchronous and a refusal is its exit code. `t3-backlog`
+  is the compatibility wrapper over the same command.
 - **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks depend on
   each other or pass files between them, is written as a directory and submitted with
   `t3-steward campaign submit`, which creates exactly one workflow run.
