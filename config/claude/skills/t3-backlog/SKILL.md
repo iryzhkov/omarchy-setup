@@ -131,10 +131,14 @@ they advertise; `--worker NAME` (`--host` in the wrapper) pins one.
 
 ```sh
 t3-steward backlog status --json
-t3-steward backlog list --project "laptop home" --json
+t3-steward backlog list --project steward --json
 t3-steward backlog show <workflow-run> --json
 t3-steward backlog commands <workflow-run> --json
 ```
+
+`--project` here is the fleet project name, the one `t3-steward backlog
+projects` lists and `task run --project` takes, never a T3 project title. A
+name no project has is not refused: the list comes back empty.
 
 Use the revision-fenced admin controls shown by `t3-steward backlog --help`
 for recovery. To stop a run, `t3-steward campaign cancel <run> --reason TEXT`
