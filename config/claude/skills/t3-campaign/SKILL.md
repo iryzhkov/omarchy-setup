@@ -155,9 +155,12 @@ tasks:
 `needs` builds the DAG. `inputs_from` mounts a named output of a finished
 dependency into this task's workspace, read-only, at
 `.t3/dependencies/<producer>/<artifact>`; naming a task there without also
-naming it in `needs` is refused. `outputs` are required: only a declared output
-is captured, checksummed and retained, and a task that does not produce one
-fails with `missing declared output` naming the file.
+naming it in `needs` is refused. `outputs` is optional: the task's final
+message is always collected as `final-message.md`, and a task whose only result
+is that message is a legitimate task. Declare an output when a later task or a
+reader needs a file: only a declared output is captured, checksummed and
+retained, and a task that does not produce a declared output fails with
+`missing declared output` naming the file.
 
 A Git commit a later task needs is declared separately, under `commits:`; see
 the next section. `t3-steward campaign help dag-semantics` is the full
