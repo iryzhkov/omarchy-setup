@@ -204,7 +204,8 @@ t3-steward wait add --task current --name "CI on $(git rev-parse --short HEAD)" 
 
 `--request-id` defaults to `park-<attempt>-<revision>` from the task's identity;
 a custom one may use `$(t3-steward task env --get revision)`. The
-`T3_STEWARD_*` variables are not in the shell environment.
+`T3_STEWARD_*` variables are not in the shell environment unless
+`t3.send_thread_environment` is on (off by default).
 
 While that wait is live the task is not complete, not verified and not failed:
 no output is collected, no verification runs, and the run cannot settle. **End

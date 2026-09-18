@@ -77,8 +77,10 @@ T3_STEWARD_WORKFLOW_RUN_ID  T3_STEWARD_TASK_ID     T3_STEWARD_ATTEMPT_ID
 T3_STEWARD_ATTEMPT_REVISION T3_STEWARD_ASSIGNMENT_ID T3_STEWARD_THREAD_ID
 ```
 
-They are **not in the shell environment**: `$T3_STEWARD_ATTEMPT_REVISION` expands
-to nothing, and a command line built with it silently loses the value. To read
+They are **not in the shell environment** unless `t3.send_thread_environment`
+is on in the steward configuration (off by default):
+`$T3_STEWARD_ATTEMPT_REVISION` expands to nothing, and a command line built
+with it silently loses the value. To read
 the identity, run `t3-steward task env`, which prints `export NAME=value` lines
 from the file (`eval "$(t3-steward task env)"` exports them), or
 `t3-steward task env --get revision` for one value (`revision`, `attempt`,
