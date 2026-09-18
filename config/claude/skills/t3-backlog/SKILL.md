@@ -140,7 +140,9 @@ UpKeeper-owned `~/.config/t3-steward/coordinator-client.json` (mode 0600), whose
 credential is a `secretref:f03-admin/<client>` reference resolved at use.
 
 **Never run `ssh <coordinator> t3-steward ...`.** The client transport is the
-authority boundary; opening a shell on the coordinator host goes around it.
+authority boundary; opening a shell on the coordinator host goes around it. The
+one exception is `t3-steward worker enroll`, an operator action that must run on
+the coordinator host; the `t3-campaign` skill describes it.
 
 ```sh
 t3-steward coordinator identity --json   # which coordinator answers, and how

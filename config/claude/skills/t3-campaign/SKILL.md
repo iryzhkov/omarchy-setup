@@ -92,7 +92,7 @@ Recovery for the common permanent ones:
 
 ```sh
 t3-steward backlog workers --json                 # unknown-project, no-configured-route
-t3-steward worker enroll <host> --catalog-revision <desired>   # catalog-digest-mismatch
+t3-steward worker enroll <host> --current-catalog   # catalog-digest-mismatch; on the coordinator host
 ```
 
 `t3-steward campaign help readiness` has the full table, including what the
@@ -374,6 +374,24 @@ credential is a `secretref:f03-admin/<client>` reference resolved at use.
 
 **Never run `ssh <coordinator> t3-steward ...`.** The client transport is the
 authority boundary; opening a shell on the coordinator host goes around it.
+
+The one exception is worker enrollment. `t3-steward worker enroll` binds a
+worker to the coordinator's identity and epoch, so it is an operator action on
+the coordinator itself and is refused to the remote-admin role by design. Run
+it on the coordinator host, at its console or through a plain `ssh <coordinator>`
+shell, never through the client transport:
+
+```sh
+t3-steward worker enroll <worker> --current-catalog --reason "why"   # one worker
+t3-steward worker enroll --all --current-catalog --reason "why"      # every stale worker
+```
+
+`--current-catalog` reads the required catalog digest and the worker's current
+enrollment revision from the coordinator itself, so nothing has to be copied out
+of `backlog workers --json`. A project published through UpKeeper without a
+local `backlog_v2.projects` binding loads with default local bindings and shows
+as `project-binding-defaulted` in `check` and `explain`; its eligible workers
+still need this re-enrollment before they are offered the project.
 
 Prove which coordinator will answer before you submit anything:
 
