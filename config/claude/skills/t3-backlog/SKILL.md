@@ -109,9 +109,13 @@ line. Your prompt still has to make that possible:
   matters.
 - Decide the decisions now. Anything you leave open becomes `needs-input`
   and parks the task until the user answers in T3.
-- One task, one outcome. Split big work into several tasks with
-  `--importance` expressing the order; the runner runs one per provider at
-  a time.
+- One task, one outcome. Split big work into several tasks, each with its own
+  prompt and its own finish. Nothing here expresses an order between them:
+  what decides when a task runs is `--class`, which is `surplus` by default
+  and consumes only forecast headroom, against `required`, which draws on
+  reserved capacity and still waits for a quota pool that has closed. Work
+  where one task must finish before another starts is a campaign with a
+  `needs` edge, not two starts in the order you happened to send them.
 
 ## Choose the worker
 
