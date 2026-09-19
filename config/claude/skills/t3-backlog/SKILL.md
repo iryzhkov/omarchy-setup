@@ -169,8 +169,10 @@ and not by an SSH alias. Leave it unset and the coordinator picks any eligible
 worker that advertises the project and the route, which is what you want unless
 the task needs one machine's own state: normandy for the homelab Docker stacks
 and OpenViking curation, homelab for things that must run on the server itself.
-`t3-steward backlog projects` lists each project's eligible workers and what
-they advertise; `--worker NAME` (`--host` in the wrapper) pins one.
+`t3-steward backlog projects` lists the projects with a worker and route count
+each; add `--project NAME` for one project's eligible workers and everything
+they advertise, or `--verbose` for all of them. `--worker NAME` (`--host` in
+the wrapper) pins one.
 
 ## Watch it
 
