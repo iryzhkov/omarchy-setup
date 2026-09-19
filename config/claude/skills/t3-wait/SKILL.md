@@ -207,9 +207,10 @@ provider session ID is an input to that resolution and never a thread ID; if it
 is ambiguous the candidates are named and `--thread <T3 thread id>` is required.
 
 `--run <run>` and `--task <run>/<task>` are the older spellings of `--node`
-and still work. A node or quota wait is held by the coordinator (`wait list
---native`); a time, github or shell wait is a local check on this host (`wait
-list`).
+and still work. A node or quota wait is held by the coordinator; a time, github
+or shell wait is a local check on this host. That is where each one lives, not
+where you look for it: plain `wait list` now reads both places and joins them,
+and `wait list --native` asks the coordinator alone.
 
 ## `each` versus `all`
 
@@ -257,20 +258,42 @@ is the maximum duration the coordinator enforces), `--or-timeout`,
 `--request-id`, and `--json`. Interactive `add` also takes `--thread` and
 `--group`.
 
+Registering a coordinator kind (`--node`, `--run`, `--quota`) prints text, like
+every other kind. It used to print a JSON document with no `--json` asked for,
+so anything that pipes a registration into `jq` has to pass `--json` now.
+
 ## Inspect
 
 ```sh
-t3-steward wait list [--json]   # this thread's local checks, with kind and outcome
-t3-steward wait list --all      # every thread
-t3-steward wait list --native [--json]   # coordinator-held waits (node, quota, task-bound) and delivery state
+t3-steward wait list [--thread ID] [--host HOST] [--all] [--json]
+t3-steward wait list --native [--thread ID] [--host HOST] [--json]
 t3-steward wait run-now <id>    # run a shell check immediately and show its output
 t3-steward wait cancel <id>
 t3-steward wait cancel <nw-id>  # a coordinator-held wait, through the admin transport
 ```
 
+`wait list` answers what a thread is waiting for from both places a wait lives:
+this host's local checks and the node, quota and task-bound waits the
+coordinator holds, joined into one row shape with kind, subject, state,
+`delivery=`, `host=`, `registered=`, `deadline=` and the coordinator wait a
+local check is bound to. It answers for the calling thread by default.
+`--thread` names another thread, `--host` keeps only the waits one host would
+deliver, and `--all` widens to every thread *and* every state, because settled
+and delivered waits are hidden otherwise and counted at the end. `--native`
+asks the coordinator for its own inventory instead of the joined answer, scoped
+and printed the same way.
+
+Under `--json` both forms print one document — `waits`, `sources`,
+`unavailable`, `hidden` — and not an array of checks. Read `unavailable` before
+reading an empty `waits`: a source that could not be read is a different zero
+from nothing pending, and only the first is a failure.
+
 ## Exit codes
 
-Registering or listing exits 0; a refused or failed wait exits 1.
+Registering exits 0; a refused or failed wait exits 1. Listing exits 0 when
+every source answered, and non-zero when one could not be read: the transport
+class below when that source's failure carried one, and 1 when it did not. A
+shorter list is never returned silently.
 
 Native and task-bound waits reach the coordinator, so they can also exit with a
 transport class: 3 client configuration, 4 authentication, 5 unavailable, 6

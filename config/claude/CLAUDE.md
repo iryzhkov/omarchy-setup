@@ -95,16 +95,21 @@ for which.
   fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout,
   rather than in a thread opened on the spot. Use it when the user says later, tonight, when I
   am not around, or backlog, and for any scheduled agent job. It derives the project, the ref,
-  the route, the idempotency key and the wake, and wakes this thread when the run ends, so end
-  the turn after starting it and collect the result with `t3-steward task result <run>`. It
-  prints a record whose first line is `run <id>` and whose last is the result command, so take
-  the id from the first line or from `--json`, never the last. `t3-steward models` lists the
-  routes the fleet can run now. Nothing needs verifying: the start is synchronous and a refusal
-  is its exit code. `t3-backlog` is a compatibility wrapper that becomes exactly that command;
-  prefer `t3-steward task run` in anything new.
+  the route, the idempotency key and the wake, and normally wakes this thread when the run
+  ends. Do what the record's closing line says rather than ending the turn by habit: it says
+  to end the turn only when a wait exists that will fire, and otherwise says that no wake is
+  attached, or that the run has already ended and the result is there to collect with
+  `t3-steward task result <run>`. It prints a record whose first line is `run <id>` and whose
+  last is the result command, so take the id from the first line or from `--json`, never the
+  last. `t3-steward models` lists the routes the fleet can run now. Nothing needs verifying:
+  the start is synchronous and a refusal is its exit code. `t3-backlog` is a compatibility
+  wrapper that becomes exactly that command; prefer `t3-steward task run` in anything new.
 - **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks depend on
   each other or pass files between them, is written as a directory and submitted with
-  `t3-steward campaign submit`, which creates exactly one workflow run.
+  `t3-steward campaign submit`, which creates exactly one workflow run and notifies the calling
+  thread by default. A caller with no thread to be woken passes `--no-notify` or names one with
+  `--notify-thread <id>`; a submission for which no thread resolves is refused and nothing is
+  submitted.
 - **Wait** (`t3-wait` skill): never poll in a loop for something external. Register a wait with
   `t3-steward wait add`, end the turn, and the steward wakes the thread with the outcome. Five
   kinds: `--at`/`--for` a time, `--github` a run or pull request, `--node` a workflow run or

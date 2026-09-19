@@ -40,17 +40,25 @@ them plus the prompt, and the wake. The run exists as soon as the command
 exits 0, so nothing has to poll to find out whether it does.
 
 What it prints is a record, not a bare id. Its **first** line is `run <id>`;
-then `tasks`, `project`, `ref`, `route`, `idempotency-key ... (replayed: ...)`,
-`check` and `notify`; its **last** line is the indented `t3-steward task result
-<run>` command under `next:`. Take the id from the first line, or pass `--json`
-and read `.run`. A caller that took the last line took the hint, not the id.
+then `tasks`, `project`, `ref`, `route` and `idempotency-key ... (replayed:
+...)`; its **last** line is the indented `t3-steward task result <run>` command
+under `next:`. Take the id from the first line, or pass `--json` and read
+`.run`. A caller that took the last line took the hint, not the id.
+
+What comes between depends on what the start did. A fresh start says `check
+<outcome>` and then `notify thread ... (wait ...) delivery= host=`. A start
+whose key replayed onto an existing run says `progress <state> (this run
+already exists; nothing new was started)` instead of `check`, or `progress
+unknown: <cause>` when the coordinator could not be asked, and it carries no
+`notify` line at all when that run has already ended.
 
 Flags: `--project NAME` (when the remote matches no project or several),
 `--ref REF`, `--fresh`, `--model [INSTANCE/]MODEL`, `--worker WORKER`,
 `--name TEXT`, `--outputs a.md,b.md`, `--verify "CMD"` (repeatable),
 `--class surplus|required` (default `surplus`), `--max-turns N` (default 3),
-`--idempotency-key KEY`, `--no-notify`, `--json`. The prompt is exactly one of
-an argument after `--`, `--prompt-file FILE`, `--prompt-file -`, or stdin.
+`--idempotency-key KEY`, `--notify-thread current|THREAD-ID` (default
+`current`), `--no-notify`, `--json`. The prompt is exactly one of an argument
+after `--`, `--prompt-file FILE`, `--prompt-file -`, or stdin.
 
 What the fleet can run right now:
 
@@ -65,13 +73,22 @@ an unpushed branch ("push first or pass --ref"), more than one prompt source,
 and no route with no `defaults.model` configured. A dirty tree is a warning,
 not a refusal: uncommitted changes are not sent, the worker fetches the ref.
 
-The calling thread is woken when the run ends, so **end the turn after
-starting a task**. On wake, collect the result in one call:
+The calling thread is normally woken when the run ends, so the usual thing to
+do after a start is to end the turn. **Do what the record's closing line says**
+rather than ending it by habit: it says `End this turn now` only when a wait
+exists that will fire for this thread, and otherwise it says that no wake is
+attached, or that this run has already ended and the result is there to collect
+now, and names the command to run instead. On wake, or on being told to collect,
+it is one call:
 
 ```sh
-t3-steward task result <run>            # writes ./.t3/results/<run>/<task>/
+t3-steward task result <run>            # writes <state>/results/<run>/<task>/
 t3-steward task result <run> --json     # the final message inlined
+t3-steward task result <run> --output . # under the working directory instead
 ```
+
+The default is outside every checkout, so collecting a result never dirties a
+working tree, and the absolute path it wrote to is printed.
 
 It exits 0 when the task succeeded, 2 when it failed or was cancelled (writing
 whatever exists), and 1 when it is not terminal yet.
@@ -101,19 +118,25 @@ default is `--class surplus`, and the prompt still comes from stdin.
 `--project` is a fleet project name, never a T3 project title. `--ref`,
 `--outputs`, `--max-turns`, `--idempotency-key`, `--no-notify` and `--json`
 pass straight through with their `task run` meanings; anything else is refused
-as an unknown option. There is no default provider instance any more.
+as an unknown option, and that includes `--notify-thread`. A caller that has to
+name the thread to wake calls `t3-steward task run` directly. There is no
+default provider instance any more.
 `--importance`, `--difficulty`, `--deadline` and `--not-before` are accepted
 and reported as ignored: the fleet no longer schedules by them. Prefer
 `t3-steward task run` in anything you write now.
 
-A caller that runs unattended, with no thread to be woken, has to pass
-`--no-notify`, because `task run` refuses a start nobody would hear about.
+A caller that runs unattended, with no thread of its own to be woken, has two
+answers, because `task run` refuses a start nobody would hear about:
+`--no-notify` when nobody is meant to be woken, and `--notify-thread <id>` when
+somebody is. A script on another host, in cron or in CI wants the second.
 
 There is nothing to verify afterwards. Both commands submit synchronously, both
 print the same record whose first line is `run <id>`, and a refusal is a
 non-zero exit with the reason; a start that printed a run is a run that exists.
 Re-running the same command replays the same run and says `replayed: true`, so
-a retry after an ambiguous failure is safe and never starts a second run. The
+a retry after an ambiguous failure is safe and never starts a second run. A
+replay also reports that run's own progress, and when the run has already
+ended it tells you to collect the result rather than to end the turn. The
 idempotency key does not include `--name` or `--host`, so two starts that
 differ only in those are refused as one key with two contents; pass a distinct
 `--idempotency-key` when they are meant to be two runs.

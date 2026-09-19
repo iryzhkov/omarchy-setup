@@ -72,8 +72,9 @@ requirements, never the bundle, and gets back a per-task, per-worker matrix.
 | `impossible` | no worker can ever run it as written | fix the manifest or the fleet; submit is refused |
 
 `accepted_waiting` is a success, not a warning. The run is created and queued,
-so you may end your turn on it, or pass `--notify-thread` to be woken when it
-settles.
+and the calling thread is notified when it settles, because `submit` notifies
+by default. End your turn when the record says to; it is the record, not this
+page, that knows whether a wait was actually attached.
 
 `check` exits 0 for `ready` and `accepted_waiting`, and 8 for `impossible`; an
 impossible campaign is reported as transport class `rejected` with the permanent
@@ -112,8 +113,14 @@ repository and ref probe does.
 
 ```sh
 t3-steward campaign submit ./campaign --idempotency-key KEY [--json] \
-  [--notify-thread <current|id>]
+  [--notify-thread <current|id>] [--no-notify]
 ```
+
+`--notify-thread` defaults to `current`: a submission notifies the calling
+thread unless you say otherwise. A caller with no thread to be woken — a plain
+shell, an ssh session, cron, CI — has to pass `--no-notify`, or name a thread
+with `--notify-thread <id>`; otherwise the submission is refused and nothing is
+submitted.
 
 The idempotency key is required and never generated. The same key with the same
 bytes returns the same run; the same key with different bytes is refused.
@@ -333,26 +340,43 @@ task has not done.
 ## Being woken when the run settles
 
 ```sh
-t3-steward campaign submit ./campaign --idempotency-key KEY --notify-thread current
+t3-steward campaign submit ./campaign --idempotency-key KEY   # notifies by default
+t3-steward campaign submit ./campaign --idempotency-key KEY --no-notify
 ```
 
-`--notify-thread` registers a durable node wait (`--state terminal`) on the
-new run's sink and wakes that T3 thread when the run ends. `current` is the
-calling agent's own canonical thread, resolved before anything is submitted: an
-unresolvable thread leaves no run behind. Pass `--notify-thread <id>` when
-resolution is ambiguous.
+Notification is the default, not an opt-in. Every submission registers a
+durable node wait (`--state terminal`) on the new run's sink and wakes the
+calling agent's own canonical thread when the run ends. `--no-notify` is the
+only opt-out. `--notify-thread <id>` names a thread other than the caller's,
+which is what a script on another host wants.
+
+The thread is resolved before anything is submitted, so a submission for which
+no thread resolves is **refused with nothing submitted** rather than left
+running with nobody listening. Pass `--notify-thread <id>` when resolution is
+ambiguous, or `--no-notify` when nobody is meant to be woken.
 
 The wake's first line is the node trailer, for example
 `t3-steward-wait kind=node outcome=met wait=nw-campaign-KEY progress=failed
-failed=implement result="t3-steward result <run>" run=<run> ...`: `outcome=met`
+failed=implement result="t3-steward task result <run>" run=<run> ...`: `outcome=met`
 means the run ended, `progress=` says how, `failed=` lists the failed tasks,
 and `result=` is the command that fetches the run's result. A cancelled run
 wakes `outcome=cancelled`.
 
 The registration ID is derived from the idempotency key, so re-running the same
-submit registers the same wait rather than a second one. After a successful
-registration, end the turn. If submission succeeded and registration then
-failed, the error names the run; register it separately with
+submit asks for the same wait rather than a second one. That is where the ID
+comes from and not a promise that one wait is all you ever get: when the
+coordinator answers that the derived wait is spent — already delivered,
+cancelled, or held for another thread — both `campaign submit` and `task run`
+register a fresh one under a new ID rather than report a wake that will not
+arrive. The same rule applies when the key replays onto a run that has already
+ended: nothing is registered, because there is nothing left to wait for.
+
+So do what the record's closing line says rather than ending the turn by habit.
+It says `End this turn now` only when a wait exists that will fire for this
+thread. Otherwise it says plainly that no wake is attached, or that the run has
+already ended and the result is there to collect, and names the command to run
+instead. If submission succeeded and registration then failed, the error names
+the run; register it separately with
 `t3-steward wait add --node <run> --thread <id>`.
 
 There is no SSH helper and no polling loop for this. Full explanation:
