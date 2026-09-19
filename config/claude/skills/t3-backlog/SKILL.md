@@ -36,15 +36,21 @@ t3-steward task run --model opus --fan-out prompts/*.md      # one run, one task
 It derives what you would otherwise invent, and prints every derived value:
 the fleet project from this checkout's origin remote, the ref from the current
 branch, the route from `--model`, the idempotency key from a digest of all of
-them plus the prompt, and the wake. The run id is printed, so nothing has to
-poll to find out whether the task exists.
+them plus the prompt, and the wake. The run exists as soon as the command
+exits 0, so nothing has to poll to find out whether it does.
+
+What it prints is a record, not a bare id. Its **first** line is `run <id>`;
+then `tasks`, `project`, `ref`, `route`, `idempotency-key ... (replayed: ...)`,
+`check` and `notify`; its **last** line is the indented `t3-steward task result
+<run>` command under `next:`. Take the id from the first line, or pass `--json`
+and read `.run`. A caller that took the last line took the hint, not the id.
 
 Flags: `--project NAME` (when the remote matches no project or several),
 `--ref REF`, `--fresh`, `--model [INSTANCE/]MODEL`, `--worker WORKER`,
 `--name TEXT`, `--outputs a.md,b.md`, `--verify "CMD"` (repeatable),
-`--class surplus|required`, `--max-turns N`, `--idempotency-key KEY`,
-`--no-notify`, `--json`. The prompt is exactly one of an argument after `--`,
-`--prompt-file FILE`, `--prompt-file -`, or stdin.
+`--class surplus|required` (default `surplus`), `--max-turns N` (default 3),
+`--idempotency-key KEY`, `--no-notify`, `--json`. The prompt is exactly one of
+an argument after `--`, `--prompt-file FILE`, `--prompt-file -`, or stdin.
 
 What the fleet can run right now:
 
@@ -82,19 +88,35 @@ t3-backlog --project steward --title "Refactor the auth module" \
 PROMPT
 ```
 
-`--title` and `--name` become `--name`, `--instance` is folded into `--model
-INSTANCE/MODEL` and is refused without one, `--host` is the worker it always
-was and is passed as `--worker`, `--ungated` becomes `--class required`, and
-the prompt still comes from stdin. There is no default provider instance any
-more. `--importance`, `--difficulty`, `--deadline` and `--not-before` are
-accepted and reported as ignored: the fleet no longer schedules by them. Prefer
+It becomes exactly one `t3-steward task run --prompt-file - --class
+surplus|required ...`, carrying only the options you passed, and execs it: the
+output and the exit code are t3-steward's own, and there is no second call.
+
+`--title` and `--name` become `--name` (default: the prompt's first line),
+`--instance` is folded into `--model INSTANCE/MODEL` and is refused both
+without `--model` and when `--model` already names an instance, `--host` is the
+worker it always was and is passed as `--worker` (which the wrapper also
+accepts under its own name), `--ungated` becomes `--class required` where the
+default is `--class surplus`, and the prompt still comes from stdin.
+`--project` is a fleet project name, never a T3 project title. `--ref`,
+`--outputs`, `--max-turns`, `--idempotency-key`, `--no-notify` and `--json`
+pass straight through with their `task run` meanings; anything else is refused
+as an unknown option. There is no default provider instance any more.
+`--importance`, `--difficulty`, `--deadline` and `--not-before` are accepted
+and reported as ignored: the fleet no longer schedules by them. Prefer
 `t3-steward task run` in anything you write now.
 
-There is nothing to verify afterwards. Both commands submit synchronously and
-print the run id, and a refusal is a non-zero exit with the reason; a start
-that printed a run is a run that exists. Re-running the same command replays
-the same run and says `replayed: true`, so a retry after an ambiguous failure
-is safe and never starts a second run.
+A caller that runs unattended, with no thread to be woken, has to pass
+`--no-notify`, because `task run` refuses a start nobody would hear about.
+
+There is nothing to verify afterwards. Both commands submit synchronously, both
+print the same record whose first line is `run <id>`, and a refusal is a
+non-zero exit with the reason; a start that printed a run is a run that exists.
+Re-running the same command replays the same run and says `replayed: true`, so
+a retry after an ambiguous failure is safe and never starts a second run. The
+idempotency key does not include `--name` or `--host`, so two starts that
+differ only in those are refused as one key with two contents; pass a distinct
+`--idempotency-key` when they are meant to be two runs.
 
 ## Write the prompt for nobody
 

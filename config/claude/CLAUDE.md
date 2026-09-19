@@ -95,18 +95,21 @@ for which.
   fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout,
   rather than in a thread opened on the spot. Use it when the user says later, tonight, when I
   am not around, or backlog, and for any scheduled agent job. It derives the project, the ref,
-  the route, the idempotency key and the wake, prints the run id, and wakes this thread when
-  the run ends, so end the turn after starting it and collect the result with `t3-steward task
-  result <run>`. `t3-steward models` lists the routes the fleet can run now. There is nothing
-  to verify afterwards: the start is synchronous and a refusal is its exit code. `t3-backlog`
-  is the compatibility wrapper over the same command.
+  the route, the idempotency key and the wake, and wakes this thread when the run ends, so end
+  the turn after starting it and collect the result with `t3-steward task result <run>`. It
+  prints a record whose first line is `run <id>` and whose last is the result command, so take
+  the id from the first line or from `--json`, never the last. `t3-steward models` lists the
+  routes the fleet can run now. Nothing needs verifying: the start is synchronous and a refusal
+  is its exit code. `t3-backlog` is a compatibility wrapper that becomes exactly that command;
+  prefer `t3-steward task run` in anything new.
 - **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks depend on
   each other or pass files between them, is written as a directory and submitted with
   `t3-steward campaign submit`, which creates exactly one workflow run.
-- **Wait** (`t3-wait` skill): never poll in a loop for something external (a PR review, CI, a
-  long job). Register the check, `t3-steward wait add --name ... -- <command>`, and end the
-  turn; the steward polls with backoff and wakes the thread with the outcome. Exit 0 means done,
-  exit 2 means give up, anything else means not yet.
+- **Wait** (`t3-wait` skill): never poll in a loop for something external. Register a wait with
+  `t3-steward wait add`, end the turn, and the steward wakes the thread with the outcome. Five
+  kinds: `--at`/`--for` a time, `--github` a run or pull request, `--node` a workflow run or
+  task, `--quota` a pool, `-- <command>` a shell check for what no kind covers (exit 0 met,
+  exit 2 give up, else not yet). `--or-timeout` makes the deadline an outcome, not a failure.
 
 # Working documents: Jocasta
 
