@@ -85,8 +85,17 @@ machine that is deliberately behind reads the report and decides.
 When it reports a difference, decide which side is right before touching anything.
 
 - **The host is behind.** Converge it: `run.sh`, or
-  `modules/common/31-agent-instructions.sh` on its own. For a skill, which this repository
-  authors but UpKeeper installs, `upkeeper self-pull` is the converging command.
+  `modules/common/31-agent-instructions.sh` on its own. A skill is the exception, and it is
+  worth understanding rather than memorising. This repository authors the seven skills under
+  `config/claude/skills/`, but nothing on a host installs them from here: module 31
+  deliberately leaves `~/.claude/skills/` alone, and `upkeeper self-pull` writes the skill
+  bytes recorded in the current release manifest, which were captured from some host's
+  `~/.claude/skills/` in the first place. So when a skill changes in this repository, the
+  only way it reaches a host is that someone copies it from a checkout into
+  `~/.claude/skills/<name>/SKILL.md` on the machine the next release is captured from, and
+  that capture then carries it to the fleet. Copy it from the checkout; never retype or edit
+  the installed file, because that is authoring on a host, which is the thing this document
+  exists to stop.
 - **The host holds an improvement nobody committed.** Copy the text into the authoritative
   file in this repository, review it, commit it, and then converge the host so that its
   copy is derived rather than original. Never publish from the host to keep the change.
