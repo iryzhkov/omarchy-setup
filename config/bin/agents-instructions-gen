@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Regenerate the shared agent instruction files under ~/.config/agents/ from their sources.
+# Regenerate the shared agent instruction files under ~/.config/agents/ from this
+# repository.
 #
 #   AGENTS.md     <- the pointer text embedded below; installed for Codex and OpenCode
-#   ov-memory.md  <- ~/.claude/skills/ov-memory/SKILL.md + ~/.claude/skills/ov-memory-curation/SKILL.md
-#   huyang.md     <- the "# Reading and editing code" section of ~/.claude/omarchy-setup/CLAUDE.md
-#                    + ~/.claude/skills/huyang/SKILL.md
-#   t3-steward.md <- ~/.claude/skills/t3-backlog/SKILL.md + ~/.claude/skills/t3-campaign/SKILL.md
-#                    + ~/.claude/skills/t3-wait/SKILL.md
+#   ov-memory.md  <- config/claude/skills/ov-memory/SKILL.md
+#                    + config/claude/skills/ov-memory-curation/SKILL.md
+#   huyang.md     <- the "# Reading and editing code" section of config/claude/CLAUDE.md
+#                    + config/claude/skills/huyang/SKILL.md
+#   t3-steward.md <- config/claude/skills/t3-backlog/SKILL.md
+#                    + config/claude/skills/t3-campaign/SKILL.md
+#                    + config/claude/skills/t3-wait/SKILL.md
 #   jocasta.md    <- the "# Working documents: Jocasta" section of the same CLAUDE.md
 #
 # Only AGENTS.md is loaded into every session of the harnesses that do not read
@@ -16,16 +19,112 @@
 # the skills themselves from ~/.claude/skills, so the reference files are the fallback for
 # a harness without skill support rather than a second always-on copy.
 #
-# Run after editing a source. The installed skills read below are copies of this
-# repository's own config/claude/skills/<name>/SKILL.md, which is where a skill is edited.
-# Editing the installed copy loses the change the next time the host converges.
+# Every source is read from the checkout and never from $HOME. Reading the installed
+# copies is how a hand-edit on one host used to be laundered into these generated files,
+# captured into an UpKeeper release and published to the fleet without anyone reviewing
+# it. There is therefore no fallback to $HOME: when the checkout cannot be found this
+# script fails and changes nothing.
+#
+# Which file is authoritative for which installed artifact, which module installs it, and
+# what to do when a host has diverged: docs/agent-instruction-ownership.md.
 set -euo pipefail
-out="$HOME/.config/agents"
-mkdir -p "$out"
+
+program=${0##*/}
+die() {
+  printf '%s: %s\n' "$program" "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: agents-instructions-gen [--root DIR] [--check]
+
+Generate ~/.config/agents/ from an omarchy-setup checkout. The checkout is the only
+source; nothing is ever read back out of $HOME.
+
+  --root DIR  The checkout to read. Default: $OMARCHY_SETUP_ROOT, else the checkout this
+              script is running from. A copy installed in ~/.local/bin is not in a
+              checkout, so it needs one of the two.
+  --check     Change nothing. Compare the installed copies against what this checkout
+              says they should be, and report every path that differs and in which
+              direction. Exit 0 when the host matches, 3 when it has diverged, 1 on an
+              error, so a person can read the report on a host that is deliberately
+              behind while CI can treat any divergence as a failure.
+  -h, --help  Show this help.
+USAGE
+}
+
+root=''
+root_source=''
+mode=install
+while (($#)); do
+  case $1 in
+  --root)
+    (($# >= 2)) || die "--root needs a value"
+    root=$2
+    root_source='--root'
+    shift 2
+    ;;
+  --root=*)
+    root=${1#--root=}
+    root_source='--root'
+    shift
+    ;;
+  --check)
+    mode=check
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+# ------------------------------------------------------------------- root --
+# Three ways to name the checkout, tried in order, and no fourth. The failure names every
+# path it looked for, because the alternative -- guessing at $HOME -- is the defect this
+# script was rewritten to remove.
+if [[ -z $root ]]; then
+  if [[ -n ${OMARCHY_SETUP_ROOT:-} ]]; then
+    root=$OMARCHY_SETUP_ROOT
+    root_source='$OMARCHY_SETUP_ROOT'
+  else
+    self=$(readlink -f "${BASH_SOURCE[0]}")
+    root=$(cd "$(dirname "$self")/../.." >/dev/null 2>&1 && pwd) || root=''
+    root_source="the checkout containing $self"
+  fi
+fi
+
+root=${root%/}
+claude_source="$root/config/claude/CLAUDE.md"
+skills_source="$root/config/claude/skills"
+if [[ -z $root || ! -f $claude_source || ! -d $skills_source ]]; then
+  die "no omarchy-setup checkout at '$root' (from $root_source): expected $claude_source
+and $skills_source. Pass --root DIR or set OMARCHY_SETUP_ROOT. This script never falls
+back to reading \$HOME, because a host-local copy is not a source."
+fi
+
+# The skills this script concatenates. A checkout missing one of them would silently
+# produce a reference file with a hole in it.
+required_skills=(ov-memory ov-memory-curation huyang t3-backlog t3-campaign t3-wait)
+missing=()
+for name in "${required_skills[@]}"; do
+  [[ -f "$skills_source/$name/SKILL.md" ]] || missing+=("$skills_source/$name/SKILL.md")
+done
+((${#missing[@]} == 0)) || die "the checkout at $root is missing: ${missing[*]}"
 
 strip_frontmatter() { awk 'NR==1 && /^---$/ {skip=1; next} skip && /^---$/ {skip=0; next} !skip' "$1"; }
 
-cat >"$out/AGENTS.md" <<'AGENTS'
+# ------------------------------------------------------------- generation --
+# Everything is written into a staging directory first, so --check can compare without
+# touching anything and an install is a copy of a complete set rather than five
+# half-finished writes.
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+
+cat >"$stage/AGENTS.md" <<'AGENTS'
 # Global agent instructions
 
 The shared instructions for the harnesses that do not read ~/.claude/CLAUDE.md. Generated
@@ -89,14 +188,18 @@ judgement calls here.
 The `t3-steward` daemon runs on every T3 host and does three things for agents. Read the
 matching skill, or ~/.config/agents/t3-steward.md, before the first command.
 
-- **Backlog** (`t3-backlog` skill): work that does not need the user now is queued with
-  `t3-backlog --project "<T3 project>" --title "<title>" < prompt` rather than started on
-  the spot, and runs as an unattended T3 thread in the next quiet slot with quota
-  headroom. The printed intake path is not proof that a workflow was created: verify that
-  exactly one new run appears in `t3-steward backlog list --project "<T3 project>" --json`,
-  and never blindly submit a duplicate. `t3-steward backlog start` is an operator override
-  that bypasses quota forecast, admission, freshness and runway; use it only with explicit
-  user authority and manual quota monitoring.
+- **One task** (`t3-backlog` skill): work that does not need the user now is started on
+  the fleet from a checkout with `t3-steward task run --model [INSTANCE/]MODEL --
+  "<prompt>"`, rather than in a thread opened on the spot. It derives the project, the
+  ref, the route, the idempotency key and the wake, and wakes the calling thread when the
+  run ends, so end the turn after starting it and collect the outcome with `t3-steward
+  task result <run>`. The output is a record whose first line is `run <id>` and whose last
+  line is the result command, so take the id from the first line or from `--json`, never
+  the last. Nothing needs verifying afterwards: the start is synchronous and a refusal is
+  its exit code. `t3-steward models` lists the routes the fleet can run now and
+  `t3-steward backlog projects` lists the fleet project names, which is what `--project`
+  takes, never a T3 project title. `t3-backlog` is a compatibility wrapper that becomes
+  exactly that command.
 - **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks
   depend on each other or pass files between them, is written as a directory and submitted
   with `t3-steward campaign submit <dir> --idempotency-key KEY`, creating exactly one
@@ -104,11 +207,13 @@ matching skill, or ~/.config/agents/t3-steward.md, before the first command.
   coordinator. Declare only routes the fleet offers, give each task `outputs`, and let
   `resources.preset` choose the host rather than pinning one.
 - **Wait** (`t3-wait` skill): never poll in a loop for something external (a PR review,
-  CI, a long job). Register the check with `t3-steward wait add --name "<what>" --
-  <command>` and end the turn; the steward polls with backoff and wakes the thread with
-  the outcome. Exit 0 means done, exit 2 means give up, anything else means not yet.
-  Inside a running backlog or campaign task, `--task current` parks the task attempt
-  itself, so the turn must end there.
+  CI, a long job, a time, a quota window). Register a wait with `t3-steward wait add` and
+  end the turn; the steward settles it and wakes the thread with the outcome. Five kinds:
+  `--at`/`--for` a time, `--github` a run or pull request, `--node` a workflow run or
+  task, `--quota` a pool, and `-- <command>` a shell check for what no kind covers (exit 0
+  met, exit 2 give up, anything else not yet). `--or-timeout` makes the deadline an
+  outcome rather than a failure. Inside a running backlog or campaign task, `--task
+  current` parks the task attempt itself, so the turn must end there.
 
 ## Shared working documents
 
@@ -121,24 +226,25 @@ AGENTS
   cat <<'HDR'
 # OV memory (shared agent instructions)
 
-Generated from ~/.claude/skills/ov-memory{,-curation}/SKILL.md, which are the
-source of truth. Regenerate with `agents-instructions-gen` after editing those;
-do not edit this file directly.
+Generated from omarchy-setup's config/claude/skills/ov-memory{,-curation}/SKILL.md,
+which are the source of truth. Edit the skill in that repository and regenerate
+with `agents-instructions-gen`; do not edit this file directly.
 
 HDR
-  strip_frontmatter "$HOME/.claude/skills/ov-memory/SKILL.md"
+  strip_frontmatter "$skills_source/ov-memory/SKILL.md"
   echo; echo '---'; echo
-  strip_frontmatter "$HOME/.claude/skills/ov-memory-curation/SKILL.md"
-} > "$out/ov-memory.md"
+  strip_frontmatter "$skills_source/ov-memory-curation/SKILL.md"
+} >"$stage/ov-memory.md"
 
 {
   cat <<'HDR'
 # T3 steward: backlog, campaigns and wait (shared agent instructions)
 
-Generated from ~/.claude/skills/t3-backlog/SKILL.md, ~/.claude/skills/t3-campaign/SKILL.md
-and ~/.claude/skills/t3-wait/SKILL.md, which are installed copies of
-omarchy-setup's config/claude/skills/<name>/SKILL.md. Edit the skill in that repository,
-then regenerate with `agents-instructions-gen`; do not edit this file directly.
+Generated from omarchy-setup's config/claude/skills/t3-backlog/SKILL.md,
+config/claude/skills/t3-campaign/SKILL.md and config/claude/skills/t3-wait/SKILL.md,
+which are the source of truth and are also what ~/.claude/skills/ holds. Edit the
+skill in that repository, then regenerate with `agents-instructions-gen`; do not
+edit this file directly.
 
 One rule is worth reading twice. Inside a running backlog or campaign task,
 `t3-steward wait add --task current -- <command>` parks the task attempt itself: nothing is
@@ -152,41 +258,123 @@ the thread URL shown by the T3 app. A provider-local session id is not a T3 thre
 Inside a task the execution identity is injected and `--task current` resolves it.
 
 HDR
-  strip_frontmatter "$HOME/.claude/skills/t3-backlog/SKILL.md"
+  strip_frontmatter "$skills_source/t3-backlog/SKILL.md"
   echo; echo '---'; echo
-  strip_frontmatter "$HOME/.claude/skills/t3-campaign/SKILL.md"
+  strip_frontmatter "$skills_source/t3-campaign/SKILL.md"
   echo; echo '---'; echo
-  strip_frontmatter "$HOME/.claude/skills/t3-wait/SKILL.md"
-} > "$out/t3-steward.md"
+  strip_frontmatter "$skills_source/t3-wait/SKILL.md"
+} >"$stage/t3-steward.md"
 
 {
   cat <<'HDR'
 # Huyang: reading and editing code (shared agent instructions)
 
-Generated from the "Reading and editing code" section of
-~/.claude/omarchy-setup/CLAUDE.md and from ~/.claude/skills/huyang/SKILL.md, which are the
-sources of truth. Regenerate with `agents-instructions-gen` after editing either; do not
-edit this file directly.
+Generated from the "Reading and editing code" section of omarchy-setup's
+config/claude/CLAUDE.md and from its config/claude/skills/huyang/SKILL.md, which are
+the sources of truth. Edit them in that repository and regenerate with
+`agents-instructions-gen`; do not edit this file directly.
 
 Tool names below are Huyang's modern MCP surface and are shared by every harness.
 
 HDR
-  awk '/^# Reading and editing code$/ {p=1} p' "$HOME/.claude/omarchy-setup/CLAUDE.md"
+  awk '/^# Reading and editing code$/ {p=1} p' "$claude_source"
   echo; echo '---'; echo
-  strip_frontmatter "$HOME/.claude/skills/huyang/SKILL.md"
-} > "$out/huyang.md"
+  strip_frontmatter "$skills_source/huyang/SKILL.md"
+} >"$stage/huyang.md"
 
 {
   echo '# Jocasta: shared working documents'
   echo
-  echo 'Generated from the Working documents: Jocasta section of ~/.claude/omarchy-setup/CLAUDE.md.'
-  echo 'Edit omarchy-setup/config/claude/CLAUDE.md and run agents-instructions-gen.'
+  echo "Generated from the Working documents: Jocasta section of omarchy-setup's"
+  echo 'config/claude/CLAUDE.md. Edit it there and run agents-instructions-gen.'
   echo
   # The source paragraph points readers at this file; inside it that pointer is noise.
   # The pattern omits the leading tilde so that no shell expansion is implied.
   awk '/^# Working documents: Jocasta$/ {p=1; next} p && /^# / {exit} p' \
-    "$HOME/.claude/omarchy-setup/CLAUDE.md" | grep -v '/.config/agents/jocasta.md' || true
-} > "$out/jocasta.md"
+    "$claude_source" | grep -v '/.config/agents/jocasta.md' || true
+} >"$stage/jocasta.md"
+
+# ------------------------------------------------------------------ check --
+# A report, not a repair: --check writes nothing anywhere. It answers one question, "does
+# this host still hold what the repository says it should", for every artifact a capture
+# would publish, and names the direction of each difference so the reader knows whether
+# the host is behind or holds something the repository has never seen.
+if [[ $mode == check ]]; then
+  diverged=0
+  report() {
+    printf '  %s\n' "$*"
+    diverged=1
+  }
+  # Installed paths are printed home-relative, which is how a person refers to them.
+  tilde='~'
+  pretty() { printf '%s' "${1/#$HOME/$tilde}"; }
+  compare() { # compare <wanted file> <installed file> [what produces the wanted file]
+    local want=$1 have=$2 origin=${3:-${1#"$root"/}} label
+    label=$(pretty "$have")
+    if [[ ! -f $have ]]; then
+      report "$label: absent on this host; $origin would install it"
+    elif ! cmp -s "$want" "$have"; then
+      report "$label: the host copy differs from $origin"
+    fi
+  }
+
+  printf '%s: checking this host against %s\n' "$program" "$root"
+
+  compare "$claude_source" "$HOME/.claude/omarchy-setup/CLAUDE.md"
+
+  # Only the skills this repository owns. A host carries plenty of others, from plugins
+  # and from UpKeeper, and this repository has nothing to say about those.
+  for skill in "$skills_source"/*/SKILL.md; do
+    [[ -f $skill ]] || continue
+    name=$(basename "$(dirname "$skill")")
+    compare "$skill" "$HOME/.claude/skills/$name/SKILL.md"
+  done
+
+  # ~/.config/agents is generated whole, so a file in it that nothing generates is a
+  # leftover and is reported as one.
+  for generated in "$stage"/*.md; do
+    name=$(basename "$generated")
+    compare "$generated" "$HOME/.config/agents/$name" "what this checkout generates"
+  done
+  for installed in "$HOME"/.config/agents/*.md; do
+    [[ -f $installed ]] || continue
+    name=$(basename "$installed")
+    [[ -f "$stage/$name" ]] ||
+      report "$(pretty "$installed"): present on this host and generated by nothing"
+  done
+
+  # The Codex copy is the same bytes inside a fence, so it diverges on its own.
+  codex="$HOME/.codex/AGENTS.md"
+  if [[ -f $codex ]]; then
+    have_block=$(awk '/^<!-- fleet:start -->$/ {p=1; next} /^<!-- fleet:end -->$/ {p=0} p' "$codex")
+    want_block=$(cat "$stage/AGENTS.md")
+    if [[ -z $have_block ]]; then
+      report "$(pretty "$codex"): no <!-- fleet:start --> block, so Codex reads none of this"
+    elif [[ $have_block != "$want_block" ]]; then
+      report "$(pretty "$codex"): the fleet block differs from the generated AGENTS.md"
+    fi
+  fi
+
+  if ((diverged)); then
+    cat <<EOF
+$program: this host has diverged from $root.
+The repository is authoritative. Converge the host with
+  $root/run.sh   (or: $program --root $root)
+and never by editing an installed copy: the next convergence overwrites it, and an
+UpKeeper capture taken from this host would publish it to the whole fleet.
+EOF
+    exit 3
+  fi
+  printf '%s: the installed agent instructions match %s\n' "$program" "$root"
+  exit 0
+fi
+
+# ---------------------------------------------------------------- install --
+out="$HOME/.config/agents"
+mkdir -p "$out"
+for generated in "$stage"/*.md; do
+  install -m 0644 "$generated" "$out/$(basename "$generated")"
+done
 
 # The managed pointer block is generated, while unrelated global instructions remain intact,
 # and OpenCode is pointed at the one shared file instead of the reference set.
@@ -241,4 +429,4 @@ if opencode.exists():
 PY
 
 rm -f "$out/agent99.md"
-echo "wrote $out/AGENTS.md $out/ov-memory.md $out/huyang.md $out/t3-steward.md $out/jocasta.md"
+echo "wrote $out/AGENTS.md $out/ov-memory.md $out/huyang.md $out/t3-steward.md $out/jocasta.md (from $root)"

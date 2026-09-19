@@ -276,10 +276,11 @@ again. Today:
 
 ## Agents
 
-UpKeeper owns shared instructions, skills, harness settings and MCP registrations
-through its release manifest. The former 45-agents module is removed. Existing
+UpKeeper owns harness settings, MCP registrations and the distribution of skills
+through its release manifest. The former 45-agents module is removed and existing
 agent settings stay installed; omarchy-setup no longer rewrites or uninstalls them.
-The files under config/claude remain authoring inputs, not an installation path.
+What this repository does own is the text itself, and `modules/common/31-agent-instructions.sh`
+installs it, because a source nothing installs is a source a host silently stops matching.
 
 `config/claude/CLAUDE.md` carries what every Claude Code session must already know;
 anything a session only needs for one kind of task lives in a skill under
@@ -290,6 +291,13 @@ and named as OpenCode's only instruction file, plus the reference files beside i
 (`huyang.md`, `ov-memory.md`, `t3-steward.md`, `jocasta.md`) that those summaries point
 at. OpenCode loads the skills themselves from `~/.claude/skills`, so the reference files
 are the fallback for a harness without skill support, not a second always-on copy.
+
+The generator reads the checkout and never `$HOME`, so it needs `--root DIR` or
+`$OMARCHY_SETUP_ROOT` when it is run from `~/.local/bin`. `agents-instructions-gen --check`
+writes nothing and reports every installed copy that no longer matches the checkout, which
+is what a host must pass before an UpKeeper capture is taken from it. Which file is
+authoritative for which installed artifact, and what to do when a host has diverged:
+[docs/agent-instruction-ownership.md](docs/agent-instruction-ownership.md).
 
 ## Agent CLIs and dev tools
 

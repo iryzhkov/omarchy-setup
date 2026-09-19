@@ -258,6 +258,62 @@ check "unit enabled" grep -q 'enable --now hosttool.service' "$T/systemctl.log"
 check "second run rewrites nothing" module common/29-host-files.sh && ! log_has ': written'
 rm -f "$T/bin/systemctl"
 
+# -------------------------------------------------- resident instructions --
+# The layer every agent session holds before it reads anything. Nothing used to
+# install it, and the generator used to read the installed copies back, so a
+# host-local edit became the fleet's instructions. These two sections assert the
+# replacement: a module derives the host copies from the checkout, and a check
+# reports every installed copy that no longer matches it.
+section "31-agent-instructions"
+mkdir -p "$HOME/.codex"
+check "module runs" module common/31-agent-instructions.sh
+check "CLAUDE.md installed from the checkout" cmp -s "$ROOT/config/claude/CLAUDE.md" "$HOME/.claude/omarchy-setup/CLAUDE.md"
+check "shared pointer generated" test -f "$HOME/.config/agents/AGENTS.md"
+check "reference files generated" test -f "$HOME/.config/agents/t3-steward.md"
+check "codex block written" grep -q '<!-- fleet:start -->' "$HOME/.codex/AGENTS.md"
+check "second run rewrites nothing" module common/31-agent-instructions.sh && ! log_has ': written'
+
+# A host whose copy drifted is brought back, and a dry run in that state still
+# changes nothing.
+printf 'stale\n' >"$HOME/.claude/omarchy-setup/CLAUDE.md"
+before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
+check "dry run exits 0" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instructions.sh"
+check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
+check "a drifted copy is rewritten" module common/31-agent-instructions.sh
+check "and matches the checkout again" cmp -s "$ROOT/config/claude/CLAUDE.md" "$HOME/.claude/omarchy-setup/CLAUDE.md"
+
+section "agents-instructions-gen: the checkout is the only source"
+GEN="$ROOT/config/bin/agents-instructions-gen"
+check "no checkout is a loud failure" env -u OMARCHY_SETUP_ROOT bash -c '! bash "$1" >"$2" 2>&1' _ "$HOME/.local/bin/agents-instructions-gen" "$T/gen.log"
+check "the failure names what it looked for" grep -q 'config/claude/CLAUDE.md' "$T/gen.log"
+check "and refuses to read \$HOME" grep -q 'never falls' "$T/gen.log"
+
+section "agents-instructions-gen --check"
+# ~/.claude/skills is UpKeeper's to install, not this repository's, so the check
+# only has something to compare once the skills are in place.
+for d in "$ROOT"/config/claude/skills/*/; do
+  n=$(basename "$d")
+  mkdir -p "$HOME/.claude/skills/$n"
+  cp "$d/SKILL.md" "$HOME/.claude/skills/$n/SKILL.md"
+done
+check "a converged host passes" bash "$GEN" --root "$ROOT" --check
+printf '\nhand-edited on this host\n' >>"$HOME/.claude/skills/t3-wait/SKILL.md"
+printf 'stale\n' >"$HOME/.claude/omarchy-setup/CLAUDE.md"
+rm -f "$HOME/.config/agents/jocasta.md"
+printf 'leftover\n' >"$HOME/.config/agents/agent99.md"
+before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
+bash "$GEN" --root "$ROOT" --check >"$T/check.log" 2>&1
+check_rc=$?
+check "a diverged host exits 3" [ "$check_rc" = 3 ]
+check "the check changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
+check "the hand-edited skill is named" grep -q 'skills/t3-wait/SKILL.md: the host copy differs' "$T/check.log"
+check "the stale CLAUDE.md is named" grep -q 'omarchy-setup/CLAUDE.md: the host copy differs' "$T/check.log"
+check "the missing reference file is named" grep -q 'agents/jocasta.md: absent on this host' "$T/check.log"
+check "the file nothing generates is named" grep -q 'agents/agent99.md: present on this host' "$T/check.log"
+cp "$ROOT/config/claude/skills/t3-wait/SKILL.md" "$HOME/.claude/skills/t3-wait/SKILL.md"
+module common/31-agent-instructions.sh
+check "converging clears every difference" bash "$GEN" --root "$ROOT" --check
+
 # ---------------------------------------------------------------- dry run --
 section "dry run changes nothing"
 rm -rf "$HOME/.config/hypr/omarchy-setup"
