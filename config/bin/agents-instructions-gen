@@ -166,16 +166,17 @@ Tool mapping, the cheapest correct call for each need, and the evidence rules: t
 ## Publish validated agent-tooling changes
 
 When working on agent tooling (Huyang, t3-steward, UpKeeper, agent99, shared
-AGENTS.md/CLAUDE.md files, skills or MCP configuration), finish a validated fix by
-publishing it through UpKeeper without waiting for a separate request to push: run the
-checks, push the source and confirm its GitHub CI, then `upkeeper push` from a host where
-the change is validated, using a clean, current UpKeeper checkout. A Git push alone does
-not update the release manifest, and capture publishes the whole observed environment of
-that host, so review the manifest diff and preserve unrelated pins, worker configuration
-and secret references. For an instruction change, edit the owning sources and regenerate
-the derived files. Report the release commit, the validation and anything still pending or
-blocked honestly, rather than declaring a fix distributed. An explicit user instruction to
-keep work local takes precedence.
+AGENTS.md/CLAUDE.md files, skills or MCP configuration), finish a validated fix through
+UpKeeper without waiting for a separate request to push: validate and publish the source,
+confirm exact source CI, then review and publish the full release. Use ordinary
+`upkeeper push` only when intentionally capturing the validated host. For a prepared
+release, obtain its canonical digest from read-only `upkeeper fleet-plan --json` and use
+`upkeeper push --authored --expect-head SHA --expect-release-sha256 DIGEST`; authored
+mode preserves reviewed bytes and does not recapture the host. Confirm release CI before
+convergence, and gate deployment separately when a coordinator, worker or T3 service might
+restart. Report source publication, release publication and verified deployment separately.
+For instructions, edit owning sources and regenerate derived files. An explicit user
+instruction to keep work local takes precedence.
 
 The whole procedure: the `publish-agent-tooling` skill.
 
