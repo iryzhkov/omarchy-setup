@@ -8,11 +8,11 @@ description: >
   `t3-steward campaign`. Use when work needs more than one unattended task, when
   tasks depend on each other or pass files between them, when a plan should be
   reviewed before it is implemented, when a failed run must be started again
-  from one task, or when the user asks for a DAG, a pipeline, a multi-stage job
-  or a campaign. Triggers: campaign, DAG, workflow, pipeline, multi-step job,
-  fan out, parallel tasks, artifact between tasks, declared commit, plan then
-  implement, review then implement, campaign check, readiness, rerun,
-  accepted_waiting.
+  from one task, for a recurring scheduled job, or when the user asks for a
+  DAG, pipeline, multi-stage job or campaign. Triggers: campaign, DAG, workflow,
+  pipeline, multi-step job, recurring job, schedule, cron, fan out, parallel
+  tasks, artifact between tasks, declared commit, plan then implement, review
+  then implement, campaign check, readiness, rerun, accepted_waiting.
 ---
 
 # t3-campaign
@@ -22,18 +22,20 @@ completion with as little human interruption as possible. Agents own routine
 implementation decisions and recoverable failures. A stage boundary, failed
 check or completed review is not by itself a reason to ask the user to continue.
 
-You author it as a directory and submit it. It becomes exactly one workflow and
-one workflow run; there is no separate campaign record, schedule or state.
-Every lifecycle command below is the existing backlog operation with the same
-JSON and exit codes.
+You author it as a directory and submit it. Submission creates exactly one
+workflow and one workflow run; there is no separate campaign runtime record.
+A recurring schedule is a separate coordinator definition that points at the
+immutable workflow. Every lifecycle command below is the existing backlog
+operation with the same JSON and exit codes.
 
 Use `t3-steward task run` for a single unattended task: it derives the project,
 the ref, the route, the idempotency key and the wake from the checkout and
-needs no directory at all (`t3-backlog` is a compatibility wrapper over it; the
-`t3-backlog` skill has the contract). Use a campaign when there is more than one
-task, when tasks depend on each other, or when one task's output is another's
-input. `task run --fan-out GLOB` is the exception that stays a single start: one
-run with one independent task per prompt file, no edges to declare.
+needs no directory at all (`t3-backlog` remains a compatibility wrapper; the
+`t3-task` skill has the contract). Use a campaign when there is more than one
+task, when tasks depend on each other, when one task's output is another's
+input, or when the workflow will recur on a schedule. `task run --fan-out GLOB`
+is the exception that stays a single start: one run with one independent task
+per prompt file, no edges to declare.
 
 ## Frame the work for autonomous completion
 
@@ -255,6 +257,34 @@ Retrying a submission is therefore safe, and changing a campaign means a new key
 operator escape hatch: **agents should not use it.** The coordinator still
 refuses a permanently impossible campaign at acceptance, and the principal and
 the reason are written into the submission audit record.
+
+## Recurring schedules
+
+A recurring job is an immutable campaign workflow plus a separate coordinator
+schedule. Validate and check the campaign normally, then submit it under a new
+idempotency key. Submission creates the workflow and its first run. If the
+submission exists only to register a future schedule, cancel that initial run
+explicitly with `t3-steward campaign cancel <run> --reason "schedule-only
+submission"`; do not mistake registration for a run-free operation.
+
+Read the current definition before replacing it, then use its revision as the
+fence:
+
+```sh
+t3-steward schedules show <schedule> --json
+t3-steward schedules put <schedule> --name "<title>" \
+  --workflow <workflow-id> --cron "<expression>" \
+  --timezone America/Los_Angeles --expected-revision <revision> \
+  --reason "<why>" --request-id <stable-id> --json
+```
+
+Choose `--after-failure next-cycle|hold` deliberately. The coordinator creates
+one run per firing and will not overlap it with an unfinished prior run. Use
+`schedules list`, `show` and `history` for evidence; use the revision-fenced
+`run`, `enable`, `disable` and `delay-next` controls for operator changes.
+Changing campaign bytes requires a new submission key and workflow ID, then a
+revision-fenced schedule update. Do not implement recurring jobs with local
+user timers, compatibility task files or repeated `task run` calls.
 
 ## A minimal manifest
 

@@ -7,7 +7,7 @@
 #                    + config/claude/skills/ov-memory-curation/SKILL.md
 #   huyang.md     <- the "# Reading and editing code" section of config/claude/CLAUDE.md
 #                    + config/claude/skills/huyang/SKILL.md
-#   t3-steward.md <- config/claude/skills/t3-backlog/SKILL.md
+#   t3-steward.md <- config/claude/skills/t3-task/SKILL.md
 #                    + config/claude/skills/t3-campaign/SKILL.md
 #                    + config/claude/skills/t3-wait/SKILL.md
 #   t3-campaign-executor-briefs.md <- t3-campaign/references/executor-briefs.md
@@ -109,7 +109,7 @@ fi
 
 # The skills this script concatenates. A checkout missing one of them would silently
 # produce a reference file with a hole in it.
-required_skills=(ov-memory ov-memory-curation huyang t3-backlog t3-campaign t3-wait)
+required_skills=(ov-memory ov-memory-curation huyang t3-task t3-campaign t3-wait)
 missing=()
 for name in "${required_skills[@]}"; do
   [[ -f "$skills_source/$name/SKILL.md" ]] || missing+=("$skills_source/$name/SKILL.md")
@@ -187,15 +187,15 @@ model on gaming-pc (ollama at 192.168.90.212). Use it for work that is large but
 subtle: scanning many files for a pattern, first-pass summaries, log triage. Keep
 judgement calls here.
 
-## T3 steward: backlog, campaigns and wait
+## T3 steward: tasks, campaigns and wait
 
 The `t3-steward` daemon runs on every T3 host and does three things for agents. Read the
 matching skill, or ~/.config/agents/t3-steward.md, before the first command.
 
-- **One task** (`t3-backlog` skill): work that does not need the user now is started on
-  the fleet from a checkout with `t3-steward task run --model [INSTANCE/]MODEL --
-  "<prompt>"`, rather than in a thread opened on the spot. It derives the project, the
-  ref, the route, the idempotency key and the wake, and normally wakes the calling thread
+- **One task** (`t3-task` skill): one independent outcome that does not need the user now
+  is started on the fleet from a checkout with `t3-steward task run --model
+  [INSTANCE/]MODEL -- "<prompt>"`, rather than in a thread opened on the spot. It derives
+  the project, ref, route, idempotency key and wake, and normally wakes the calling thread
   when the run ends. Do what the record's closing line says rather than ending the turn by
   habit: it says to end the turn only when a wait exists that will fire, and otherwise says
   that no wake is attached, or that the run has already ended and the outcome is there to
@@ -206,9 +206,9 @@ matching skill, or ~/.config/agents/t3-steward.md, before the first command.
   `t3-steward backlog projects` lists the fleet project names, which is what `--project`
   takes, never a T3 project title. `t3-backlog` is a compatibility wrapper that becomes
   exactly that command.
-- **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks
-  depend on each other or pass files between them, is written as a directory and submitted
-  with `t3-steward campaign submit <dir> --idempotency-key KEY`, creating exactly one
+- **Campaign** (`t3-campaign` skill): dependent tasks, artifact handoffs, review pipelines
+  and recurring scheduled workflows are written as a directory and submitted with
+  `t3-steward campaign submit <dir> --idempotency-key KEY`, creating exactly one
   workflow run and notifying the calling thread by default; a caller with no thread to be
   woken passes `--no-notify`, and a submission for which no thread resolves is refused with
   nothing submitted. Run `campaign validate` and `campaign plan` first; neither touches the
@@ -220,8 +220,8 @@ matching skill, or ~/.config/agents/t3-steward.md, before the first command.
   `--at`/`--for` a time, `--github` a run or pull request, `--node` a workflow run or
   task, `--quota` a pool, and `-- <command>` a shell check for what no kind covers (exit 0
   met, exit 2 give up, anything else not yet). `--or-timeout` makes the deadline an
-  outcome rather than a failure. Inside a running backlog or campaign task, `--task
-  current` parks the task attempt itself, so the turn must end there.
+  outcome rather than a failure. Inside a running Steward task, `--task current` parks the
+  task attempt itself, so the turn must end there.
 
 ## Shared working documents
 
@@ -246,15 +246,15 @@ HDR
 
 {
   cat <<'HDR'
-# T3 steward: backlog, campaigns and wait (shared agent instructions)
+# T3 steward: tasks, campaigns and wait (shared agent instructions)
 
-Generated from omarchy-setup's config/claude/skills/t3-backlog/SKILL.md,
+Generated from omarchy-setup's config/claude/skills/t3-task/SKILL.md,
 config/claude/skills/t3-campaign/SKILL.md and config/claude/skills/t3-wait/SKILL.md,
 which are the source of truth and are also what ~/.claude/skills/ holds. Edit the
 skill in that repository, then regenerate with `agents-instructions-gen`; do not
 edit this file directly.
 
-One rule is worth reading twice. Inside a running backlog or campaign task,
+One rule is worth reading twice. Inside any running Steward task,
 `t3-steward wait add --task current -- <command>` parks the task attempt itself: nothing is
 collected, nothing is verified and the run cannot settle until the steward resumes the same
 thread. End the turn the moment it registers. An interactive wait, registered outside a task,
@@ -266,7 +266,7 @@ the thread URL shown by the T3 app. A provider-local session id is not a T3 thre
 Inside a task the execution identity is injected and `--task current` resolves it.
 
 HDR
-  strip_frontmatter "$skills_source/t3-backlog/SKILL.md"
+  strip_frontmatter "$skills_source/t3-task/SKILL.md"
   echo; echo '---'; echo
   # The skill's relative link is correct in its installed directory. The shared
   # concatenated reference has a different parent, so rewrite only that target.

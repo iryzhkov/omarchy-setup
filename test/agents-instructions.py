@@ -14,7 +14,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 generator = str(root / "config/bin/agents-instructions-gen")
-skills = ("ov-memory", "ov-memory-curation", "t3-backlog", "t3-campaign", "t3-wait")
+skills = ("ov-memory", "ov-memory-curation", "t3-task", "t3-campaign", "t3-wait")
 POISON = "# Hand-edited on this host\n"
 
 
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory() as temporary:
     diverged = generate(home, "--root", str(checkout), "--check")
     assert diverged.returncode == 3, diverged.stdout + diverged.stderr
     assert "omarchy-setup/CLAUDE.md" in diverged.stdout
-    assert "skills/t3-backlog/SKILL.md" not in diverged.stdout
+    assert "skills/t3-task/SKILL.md" not in diverged.stdout
 
     # Converge the imported instruction artifact and the host matches.
     (home / ".claude/omarchy-setup/CLAUDE.md").write_bytes(

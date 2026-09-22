@@ -1,27 +1,26 @@
 ---
-name: t3-backlog
+name: t3-task
 description: >
-  Queue work for the t3-steward backlog: an unattended T3 Code thread
-  that starts in a quiet slot when the provider quota has room, on this machine
-  or another host. Use when the user says to do something later, tonight, over
-  the weekend, when they are not around, in the background, or to add it to the
-  backlog or queue; when a task is big enough to eat a large share of the 5-hour
-  window and does not need them; and for anything scheduled that used to open a
-  T3 thread directly. Triggers: backlog, queue it, later, tonight, overnight,
-  when I'm not using it, off-peak, async task, defer, schedule for a quiet time.
+  Queue one independent unattended task with t3-steward so it runs on an
+  eligible fleet worker when its quota pool has room. Use for a single outcome
+  that can run without the user now, including requests to do it later, tonight,
+  off-peak or in the background. Use t3-campaign instead for dependent tasks,
+  artifact handoffs, plan-review-implementation pipelines, or recurring
+  schedules. Triggers: queued task, single unattended task, backlog, queue it,
+  later, tonight, overnight, when I'm not using it, off-peak, async task, defer.
 ---
 
-# t3-backlog
+# t3-task
 
 Every T3 host runs `t3-steward`. The fleet's coordinator dispatches a task to a
 worker as a new T3 session in the project's checkout, when the quota of the
 route it is to run on has room. The agent that runs it gets no input from
 anyone.
 
-The way to start one is `t3-steward task run`; `t3-backlog` is a compatibility
-wrapper over it. One task, one outcome: that is what this skill is for. Work
-that is more than one task, or whose tasks depend on each other or pass files
-between them, is a campaign; see the `t3-campaign` skill.
+The way to start one is `t3-steward task run`; `t3-backlog` remains only as a
+compatibility wrapper over it. One task, one outcome: that is what this skill is
+for. Work with dependent tasks, artifact handoffs, a review pipeline or a
+recurring schedule is a campaign; see the `t3-campaign` skill.
 
 ## Start a task
 
@@ -167,8 +166,8 @@ line. Your prompt still has to make that possible:
 A worker is a fleet host the coordinator dispatches to, named by its worker id
 and not by an SSH alias. Leave it unset and the coordinator picks any eligible
 worker that advertises the project and the route, which is what you want unless
-the task needs one machine's own state: normandy for the homelab Docker stacks
-and OpenViking curation, homelab for things that must run on the server itself.
+the one-off task genuinely needs one machine's own state. Recurring operational
+jobs are campaigns and should normally let `resources.preset` choose placement.
 `t3-steward backlog projects` lists the projects with a worker and route count
 each; add `--project NAME` for one project's eligible workers and everything
 they advertise, or `--verbose` for all of them. `--worker NAME` (`--host` in
@@ -199,7 +198,7 @@ t3-steward backlog start <workflow-run>/<task> --reason TEXT [--command-id ID] [
 `backlog start` is an explicit operator override. It bypasses quota forecast,
 admission, freshness, runway, and automatic quota throttling through worker
 delivery. Use it only under explicit user authority while the user is manually
-monitoring quota. Automatic backlog work must remain fenced; worker health,
+monitoring quota. Automatic queued work must remain fenced; worker health,
 dependency, lock, revision, and effect-safety checks still apply.
 
 ## Talking to the coordinator
@@ -231,9 +230,10 @@ on standard output. Re-running with the same `--idempotency-key`, `--request-id`
 or `--command-id` is always safe: it returns the first answer rather than doing
 the work twice.
 
-## When a queued task never appears
+## Legacy file-intake quarantine
 
-This is about the file-based intake only. `t3-steward task run` and the
+This applies only to compatibility file intake, not `t3-steward task run`,
+recurring schedules or campaign submission. `t3-steward task run` and the
 `t3-backlog` wrapper submit synchronously and a refusal is their exit code, so
 they cannot leave this behind. A task file the coordinator can never accept —
 one naming a project no alias maps, one naming no provider route at all, or one
@@ -266,7 +266,7 @@ is still impossible. Releasing a key that holds no marker reports exactly that
 instead of failing, so an ambiguous response is safe to retry. Both verbs work
 from a host that is not the coordinator.
 
-## Waiting inside a backlog task
+## Waiting inside a task
 
 A running task that has to wait for something external — CI, a review, a long
 build, a time, a quota window — must not poll and must not finish. It registers
@@ -293,9 +293,14 @@ While that wait is live the task is not complete, not verified and not failed:
 no output is collected, no verification runs, and the run cannot settle. **End
 the turn as soon as it registers.** Read the `t3-wait` skill before using it.
 
-## Scheduled jobs
+## Recurring schedules use campaigns
 
-A `t3-job` file with `gated: true` is queued by its timer instead of run, so
-weekly agent jobs take the next quiet slot. Scripts that used to open a thread
-with `t3-run` use `t3-steward task run` when the work can wait; keep `t3-run`
-only for something the user is waiting on right now.
+A recurring operational job is not a repeated `t3-task`. Author it as a version
+2 campaign, submit the immutable bundle to establish its workflow, and point a
+coordinator schedule at that workflow. The coordinator owns cron timing,
+run history, failure policy and overlap prevention. Read the `t3-campaign`
+skill for the schedule workflow and revision-fenced controls.
+
+Use `t3-steward task run` for a one-off independent job that can wait for quota.
+Do not recreate recurring jobs with local timers, compatibility task files or
+scripts that repeatedly open T3 threads.
