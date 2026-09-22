@@ -88,6 +88,70 @@ Autonomy preserves the original scope and checks: recovery cannot grant itself
 new access, weaken verification, approve its own independent review or consume
 an explicit human release approval.
 
+## Write the executor brief before the manifest
+
+A task prompt is a self-contained execution contract, not a reminder to inspect
+the repository and guess. Verify its source revision, paths, symbols, commands
+and referenced artifacts before submission. Give the worker:
+
+- the concrete behavior to produce, including a small before/after example;
+- the repository and exact starting revision, plus verified paths and symbols
+  and why each matters;
+- required references and dependency artifact locations, with provenance and
+  the outputs it must retain;
+- a suggested approach, allowed scope, invariants, approval boundaries and the
+  reason for any constraint that would otherwise look arbitrary;
+- setup and exact verification commands, expected results, failure evidence to
+  retain, completion criteria and when to escalate;
+- instructions to stop and report a missing or stale prerequisite instead of
+  forcing an implementation against different source.
+
+Keep shared background in submitted input files and name the exact sections the
+task needs. Prompts should point to retained evidence by reference rather than
+repeat logs and inventories. Run deterministic checks before independent model
+review, and place review at meaningful milestones instead of after every small
+edit. Group work that shares repository context into a meaningful task.
+
+Use an explicit route the fleet currently advertises. For ordinary
+implementation, investigation, repair and review, prefer `codex/gpt-5.6-sol` or
+`claudeAgent/claude-opus-5` when `t3-steward models` and `campaign check` confirm
+them. Preserve a user's explicit route and an existing campaign's route
+contract. Do not silently escalate to a premium model after a failure; improve
+an underspecified brief or change the repair strategy first.
+
+Read [references/executor-briefs.md](references/executor-briefs.md) when
+authoring implementation or repair prompts. It contains a reusable template and
+a concrete, source-bound example.
+
+### Recovery clauses belong in the brief
+
+Describe recovery behavior even when the installed runtime has no manifest
+field for it:
+
+- On restart or worker replacement, resume from verified commits, retained
+  artifacts and a compact continuation note. Mark provisional work separately
+  from accepted checkpoints and retain the checks and provenance behind reuse.
+- Give ordinary execution a budget and leave bounded capacity for diagnosis,
+  repair and required review. If recovery is waiting on quota or capacity, say
+  what condition resumes it. When the budget is exhausted, preserve evidence
+  and escalate rather than weakening checks or inventing capacity.
+- Give consequential external actions a stable operation identity and require a
+  durable receipt where the external system supports one. After a disconnect
+  between effect and acknowledgement, reconcile the uncertain outcome before
+  retrying. Escalate unresolved consequential ambiguity; do not promise
+  exactly-once behavior across systems that cannot provide it.
+- Each diagnostic attempt must add evidence or change the proposed fix.
+  Repeated identical failures trigger a different strategy or bounded
+  escalation. Keep successful branches and rerun only affected work.
+- State how token use, retries, reviews, latency and failures will be recorded.
+  If token accounting is unavailable, report that gap instead of estimating
+  savings or weakening verification.
+
+These clauses guide agents; they do not create recovery budgets, checkpoints,
+operation receipts, restart reconciliation or amendments in the runtime. Use
+only fields shown by the installed `campaign help`, and record any necessary
+manual recovery path as a limitation.
+
 ## The shortest correct path
 
 ```sh

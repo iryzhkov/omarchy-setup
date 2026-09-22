@@ -270,6 +270,7 @@ check "module runs" module common/31-agent-instructions.sh
 check "CLAUDE.md installed from the checkout" cmp -s "$ROOT/config/claude/CLAUDE.md" "$HOME/.claude/omarchy-setup/CLAUDE.md"
 check "shared pointer generated" test -f "$HOME/.config/agents/AGENTS.md"
 check "reference files generated" test -f "$HOME/.config/agents/t3-steward.md"
+check "campaign brief guidance generated" grep -qF "A task prompt is a self-contained execution contract" "$HOME/.config/agents/t3-steward.md"
 check "codex block written" grep -q '<!-- fleet:start -->' "$HOME/.codex/AGENTS.md"
 check "second run rewrites nothing" module common/31-agent-instructions.sh && ! log_has ': written'
 
