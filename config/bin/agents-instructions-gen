@@ -172,9 +172,9 @@ confirm exact source CI, then review and publish the full release. Use ordinary
 `upkeeper push` only when intentionally capturing the validated host. For a prepared
 release, obtain its canonical digest from read-only `upkeeper fleet-plan --json` and use
 `upkeeper push --authored --expect-head SHA --expect-release-sha256 DIGEST`; authored
-mode preserves reviewed bytes and does not recapture the host. Confirm release CI before
-convergence, and gate deployment separately when a coordinator, worker or T3 service might
-restart. Report source publication, release publication and verified deployment separately.
+mode preserves reviewed bytes and does not recapture the host. Before release publication, inspect holds and preview full target drift because timers may
+converge automatically; preserve an unpublished candidate when that preview is unsafe.
+Confirm release CI before any later convergence. Report source publication, release publication and verified deployment separately.
 For instructions, edit owning sources and regenerate derived files. An explicit user
 instruction to keep work local takes precedence.
 

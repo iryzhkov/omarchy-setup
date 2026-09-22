@@ -21,10 +21,12 @@ release publication and runtime convergence are separate outcomes.
 2. Publish any required build artifact and validate the intended controller installation.
 3. For instructions, edit the owning source and regenerate derived files; never promote a
    hand-edited installed copy.
-4. Choose capture or authored publication deliberately, review the whole release, publish
-   it, and confirm CI for the exact release commit.
-5. Preview convergence on every intended target and apply it only when the runtime gate is
-   safe.
+4. Choose capture or authored publication deliberately and review the whole release.
+5. Before publication, inspect operational holds and preview full convergence on every
+   intended target. If publishing can trigger unsafe automatic convergence, preserve the
+   unpublished candidate and defer release publication.
+6. Publish only after that gate, confirm CI for the exact release commit, and separately
+   verify any approved convergence.
 
 ## Prepare the release
 
@@ -46,8 +48,10 @@ upkeeper push --authored \
   --json
 ~~~
 
-Run those commands in the clean, current UpKeeper checkout whose branch will be published.
-The HEAD fence identifies the reviewed parent; release_sha256 is the canonical release
+Run those commands in the current UpKeeper checkout whose branch will be published. Before
+preparation, unrelated paths and the index must be clean; the reviewed manifest and its
+referenced assets are expected authored working-tree changes. The HEAD fence identifies
+the reviewed parent; release_sha256 is the canonical release
 digest reported by the read-only fleet plan. Do not substitute a guessed file hash.
 Authored mode validates the whole manifest, inventory and referenced assets, preserves the
 reviewed bytes and timestamp, and refuses --components; it does not recapture local state.
@@ -61,7 +65,10 @@ retry only the missing safe effect.
 
 ## Release CI and runtime gate
 
-Confirm required CI for the exact UpKeeper release commit before convergence. Record the
+Before release publication, inspect holds and preview every intended target. A published
+release may be consumed by an automatic timer, so unsafe preview results defer publication,
+not merely manual convergence. Confirm required CI for the exact release commit before any
+subsequent convergence. Record the
 source commit and CI, release commit and CI, manifest digest, asset evidence, and remote
 receipts separately.
 
