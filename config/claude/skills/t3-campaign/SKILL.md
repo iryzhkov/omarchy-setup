@@ -1,7 +1,8 @@
 ---
 name: t3-campaign
 description: >
-  Author a multi-step t3-steward job as a campaign directory: a version 2
+  Author an autonomous multi-step t3-steward job with minimal human interruption
+  as a campaign directory: a version 2
   workflow with a task DAG, artifacts passed between tasks, and preflight
   evidence, validated offline, checked against the live fleet and submitted with
   `t3-steward campaign`. Use when work needs more than one unattended task, when
@@ -16,8 +17,13 @@ description: >
 
 # t3-campaign
 
-A campaign is a directory you write and submit. It becomes exactly one workflow
-and one workflow run; there is no separate campaign record, schedule or state.
+A campaign carries an authorized project through execution, verification and
+completion with as little human interruption as possible. Agents own routine
+implementation decisions and recoverable failures. A stage boundary, failed
+check or completed review is not by itself a reason to ask the user to continue.
+
+You author it as a directory and submit it. It becomes exactly one workflow and
+one workflow run; there is no separate campaign record, schedule or state.
 Every lifecycle command below is the existing backlog operation with the same
 JSON and exit codes.
 
@@ -28,6 +34,59 @@ needs no directory at all (`t3-backlog` is a compatibility wrapper over it; the
 task, when tasks depend on each other, or when one task's output is another's
 input. `task run --fan-out GLOB` is the exception that stays a single start: one
 run with one independent task per prompt file, no edges to declare.
+
+## Frame the work for autonomous completion
+
+Before submission, turn the user's intent into a bounded completion contract:
+
+- State the final outcome, evidence that proves it, source/input versions and
+  authorized scope. Include enough context for workers to act without the
+  initiating conversation. Resolve material ambiguities together up front;
+  delegate routine implementation choices to the executing agents.
+- Make tasks meaningful units of work with explicit dependencies and retained
+  outputs. Include implementation, verification and required agent review.
+  Continue automatically after successful checks and reviews. Do not insert
+  human approval at every stage or end prompts with "ask whether to proceed."
+- Identify genuine human boundaries from the user's instructions: a missing
+  permission, consequential unresolved design choice or explicitly gated
+  release. Put each gate at the action it protects, prepare the reviewable
+  result first, and let independent authorized work continue.
+- Make setup reproducible on an eligible worker. Runner verification must
+  establish its prerequisites in a fresh shell; an agent's temporary exports
+  are not a verification environment. Declare durable inputs and commits.
+- Assign recovery ownership and a bounded attempt/time budget. Prompts should
+  require diagnosis, preservation of useful work, repair within scope, the
+  original checks and required independent review, then continuation. Retry
+  transient failures with backoff; change the cause of deterministic failures
+  before retrying. Preserve failure evidence and link replacement runs.
+- Define escalation and completion reporting. Ask the user only for missing
+  authority or decisions, external blockers the agents cannot resolve, or
+  exhausted recovery. Include attempted fixes and the smallest needed action.
+  Routine recovery should be visible without requiring a user response.
+
+For example, an implementation brief can say:
+
+> Complete the approved plan through implementation, passing verification and
+> independent review. Diagnose and repair ordinary failures within the stated
+> scope and recovery budget; continue between stages without asking for routine
+> confirmation. Preserve useful work and failure evidence. Escalate when missing
+> authority, an unresolved contract decision, an external blocker or exhausted
+> recovery prevents further progress. Keep the explicitly required release
+> approval at the release action.
+
+These are authoring requirements, not proof that the runtime implements every
+recovery path. Check installed help for supported supervision, recovery and
+amendment operations; do not invent manifest fields. A success-review gate does
+not establish failure recovery. A terminal sink wait does not cover a stalled,
+nonterminal run, and a registered or settled wait is not proof of delivery.
+Establish the supported recovery/wake path before describing a campaign as
+unattended; report any uncovered failure path. If a stall is observed, the
+responsible agent diagnoses and performs already-authorized recovery rather
+than waiting for the user to notice it or approve routine repair.
+
+Autonomy preserves the original scope and checks: recovery cannot grant itself
+new access, weaken verification, approve its own independent review or consume
+an explicit human release approval.
 
 ## The shortest correct path
 
