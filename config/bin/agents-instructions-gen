@@ -10,6 +10,7 @@
 #   t3-steward.md <- config/claude/skills/t3-backlog/SKILL.md
 #                    + config/claude/skills/t3-campaign/SKILL.md
 #                    + config/claude/skills/t3-wait/SKILL.md
+#   t3-campaign-executor-briefs.md <- t3-campaign/references/executor-briefs.md
 #   jocasta.md    <- the "# Working documents: Jocasta" section of the same CLAUDE.md
 #
 # Only AGENTS.md is loaded into every session of the harnesses that do not read
@@ -113,6 +114,8 @@ missing=()
 for name in "${required_skills[@]}"; do
   [[ -f "$skills_source/$name/SKILL.md" ]] || missing+=("$skills_source/$name/SKILL.md")
 done
+campaign_briefs="$skills_source/t3-campaign/references/executor-briefs.md"
+[[ -f $campaign_briefs ]] || missing+=("$campaign_briefs")
 ((${#missing[@]} == 0)) || die "the checkout at $root is missing: ${missing[*]}"
 
 strip_frontmatter() { awk 'NR==1 && /^---$/ {skip=1; next} skip && /^---$/ {skip=0; next} !skip' "$1"; }
@@ -264,10 +267,14 @@ Inside a task the execution identity is injected and `--task current` resolves i
 HDR
   strip_frontmatter "$skills_source/t3-backlog/SKILL.md"
   echo; echo '---'; echo
-  strip_frontmatter "$skills_source/t3-campaign/SKILL.md"
+  # The skill's relative link is correct in its installed directory. The shared
+  # concatenated reference has a different parent, so rewrite only that target.
+  strip_frontmatter "$skills_source/t3-campaign/SKILL.md" |
+    sed 's#](references/executor-briefs.md)#](t3-campaign-executor-briefs.md)#g'
   echo; echo '---'; echo
   strip_frontmatter "$skills_source/t3-wait/SKILL.md"
 } >"$stage/t3-steward.md"
+cp "$campaign_briefs" "$stage/t3-campaign-executor-briefs.md"
 
 {
   cat <<'HDR'

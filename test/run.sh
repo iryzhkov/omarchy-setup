@@ -271,6 +271,8 @@ check "CLAUDE.md installed from the checkout" cmp -s "$ROOT/config/claude/CLAUDE
 check "shared pointer generated" test -f "$HOME/.config/agents/AGENTS.md"
 check "reference files generated" test -f "$HOME/.config/agents/t3-steward.md"
 check "campaign brief guidance generated" grep -qF "A task prompt is a self-contained execution contract" "$HOME/.config/agents/t3-steward.md"
+check "campaign brief link rewritten for shared reference" grep -qF "](t3-campaign-executor-briefs.md)" "$HOME/.config/agents/t3-steward.md"
+check "campaign brief reference generated" cmp -s "$ROOT/config/claude/skills/t3-campaign/references/executor-briefs.md" "$HOME/.config/agents/t3-campaign-executor-briefs.md"
 check "codex block written" grep -q '<!-- fleet:start -->' "$HOME/.codex/AGENTS.md"
 check "second run rewrites nothing" module common/31-agent-instructions.sh && ! log_has ': written'
 

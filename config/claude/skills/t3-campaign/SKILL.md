@@ -101,8 +101,10 @@ and referenced artifacts before submission. Give the worker:
   the outputs it must retain;
 - a suggested approach, allowed scope, invariants, approval boundaries and the
   reason for any constraint that would otherwise look arbitrary;
-- setup and exact verification commands, expected results, failure evidence to
-  retain, completion criteria and when to escalate;
+- setup and exact verification commands, expected results, known worker resource
+  bounds, failure evidence to retain, completion criteria and when to escalate;
+- the independent reviewer task or channel, route and declared review artifact,
+  including its acceptance fields and what remains pending if no reviewer runs;
 - instructions to stop and report a missing or stale prerequisite instead of
   forcing an implementation against different source.
 

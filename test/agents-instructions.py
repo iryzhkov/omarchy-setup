@@ -27,6 +27,12 @@ def make_checkout(base):
         skill = claude / "skills" / name
         skill.mkdir()
         (skill / "SKILL.md").write_text("# Fixture\n")
+    (claude / "skills/t3-campaign/SKILL.md").write_text(
+        "# Campaign fixture\n\nRead [the brief](references/executor-briefs.md).\n"
+    )
+    campaign_reference = claude / "skills/t3-campaign/references"
+    campaign_reference.mkdir()
+    (campaign_reference / "executor-briefs.md").write_text("# Executor brief fixture\n")
     huyang = claude / "skills/huyang"
     huyang.mkdir()
     (huyang / "SKILL.md").write_text("---\nname: huyang\n---\n\n# Cheapest correct call\n")
@@ -91,7 +97,8 @@ with tempfile.TemporaryDirectory() as temporary:
 
     generated = sorted(path.name for path in (home / ".config/agents").glob("*.md"))
     assert generated == [
-        "AGENTS.md", "huyang.md", "jocasta.md", "ov-memory.md", "t3-steward.md",
+        "AGENTS.md", "huyang.md", "jocasta.md", "ov-memory.md",
+        "t3-campaign-executor-briefs.md", "t3-steward.md",
     ], generated
     for path in (home / ".config/agents").glob("*.md"):
         assert POISON.strip() not in path.read_text(), (
@@ -112,6 +119,10 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "backlog list" not in flat, "the obsolete intake verification is gone"
     assert "backlog start" not in flat, "the operator override is not advertised here"
     assert "<T3 project>" not in flat, "--project takes a fleet project name"
+    steward_reference = (home / ".config/agents/t3-steward.md").read_text()
+    assert "](t3-campaign-executor-briefs.md)" in steward_reference
+    campaign_briefs = home / ".config/agents/t3-campaign-executor-briefs.md"
+    assert campaign_briefs.read_text() == "# Executor brief fixture\n"
     for flag in ("--at", "--for", "--github", "--node", "--quota", "--or-timeout"):
         assert flag in flat, f"the wait kinds must name {flag}"
 
@@ -156,6 +167,15 @@ with tempfile.TemporaryDirectory() as temporary:
         (path.name, path.read_bytes()) for path in (home / ".config/agents").glob("*.md")
     )
     assert before == after, "the refusal must change nothing"
+
+    # A checkout missing the linked campaign reference is refused rather than
+    # generating a dangling link.
+    source_briefs = checkout / "config/claude/skills/t3-campaign/references/executor-briefs.md"
+    source_briefs.unlink()
+    missing_reference = generate(home, "--root", str(checkout))
+    assert missing_reference.returncode != 0
+    assert "t3-campaign/references/executor-briefs.md" in missing_reference.stderr
+    source_briefs.write_text("# Executor brief fixture\n")
 
     # A checkout missing one of the skills it concatenates is named, not silently
     # turned into a reference file with a hole in it.

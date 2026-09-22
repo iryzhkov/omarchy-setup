@@ -43,18 +43,26 @@ not a forced edit.
 
 ### Setup and deterministic verification
 
-Give commands exactly as they run in a fresh task shell. State expected exit
-codes or observable results. Run deterministic format, build, lint and tests
-before requesting independent review. Keep commands scoped until a meaningful
-milestone; run the repository-required full gate before completion.
+Give commands exactly as they run in a fresh task shell, including known CPU,
+memory, disk or concurrency bounds. State expected exit codes or observable
+results. A worker may add a resource wrapper such as `GOMAXPROCS=2` or `-p 1`
+when it does not reduce coverage, skip checks or change the expected result;
+record the wrapper and why it was needed. Run deterministic format, build, lint
+and tests before requesting independent review. Keep commands scoped until a
+meaningful milestone; run the repository-required full gate before completion.
 
 ### Outputs and checkpoint
 
 List every declared output and its required contents. For a code-producing task,
-declare a campaign commit when a later task needs the Git object. A useful
-checkpoint names the exact commit, source base, checks that passed, artifact
-hashes or references, known risks and the next action. Label incomplete or
-unverified work provisional.
+declare a campaign commit when a later task needs the Git object. Put independent
+review in a distinct dependent task or an established independent channel. Name
+its reviewer task/identity and route, declare its review artifact, and require at
+least the reviewed commit, `accept|changes-requested` verdict, findings and
+verification evidence. If no review channel is available, implementation may
+checkpoint successfully but remains pending review and cannot claim completion.
+A useful checkpoint names the exact commit, source base, checks that passed,
+artifact hashes or references, known risks and the next action. Label incomplete
+or unverified work provisional.
 
 ### Recovery, effects and budget
 
@@ -79,8 +87,9 @@ installed `t3-steward campaign help` documents those keys.
 
 ### Completion and escalation
 
-Completion requires the named outputs, deterministic checks and independent
-review. State who may approve any release or consequential external action.
+Completion requires the named outputs, deterministic checks and an `accept`
+verdict in the declared independent review artifact. Self-review does not satisfy
+that gate. State who may approve any release or consequential external action.
 Escalate only for missing authority, a source-contract decision, an external
 blocker agents cannot resolve, an uncertain consequential effect, or exhausted
 recovery. Retain the smallest evidence bundle needed to continue.
@@ -172,7 +181,12 @@ own isolated homes; do not export the real home as a test target.
 `guidance-handoff.md` records the resulting commit, changed paths, commands
 and exit codes, and any missing token accounting. The declared `guidance`
 commit contains only the maintained skill and its linked reference plus a
-meaningful generation test if behavior needs one.
+meaningful generation test if behavior needs one. A distinct dependent review
+task uses the fleet-confirmed `codex/gpt-5.6-sol` route, consumes `guidance` and
+`guidance-handoff.md`, and declares `review.md`. That artifact names the reviewed
+commit and reviewer task/route, gives an `accept|changes-requested` verdict,
+lists findings and cites deterministic evidence. If that task cannot run, retain
+the implementation checkpoint as pending review rather than claiming completion.
 
 Budget: two implementation attempts and one focused diagnostic attempt, with
 one independent review after deterministic checks. A repeated deterministic
