@@ -91,23 +91,21 @@ The `t3-steward` daemon does three things for agents on these machines, each des
 by its skill. Read the skill before the first command; the summary here only says when to reach
 for which.
 
-- **One task** (`t3-backlog` skill): work that does not need the user now is started on the
-  fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout,
-  rather than in a thread opened on the spot. Use it when the user says later, tonight, when I
-  am not around, or backlog, and for any scheduled agent job. It derives the project, the ref,
-  the route, the idempotency key and the wake, and normally wakes this thread when the run
-  ends. Do what the record's closing line says rather than ending the turn by habit: it says
-  to end the turn only when a wait exists that will fire, and otherwise says that no wake is
-  attached, or that the run has already ended and the result is there to collect with
-  `t3-steward task result <run>`. It prints a record whose first line is `run <id>` and whose
-  last is the result command, so take the id from the first line or from `--json`, never the
-  last. `t3-steward models` lists the routes the fleet can run now. Nothing needs verifying:
-  the start is synchronous and a refusal is its exit code. `t3-backlog` is a compatibility
-  wrapper that becomes exactly that command; prefer `t3-steward task run` in anything new.
-- **Campaign** (`t3-campaign` skill): work that is more than one task, or whose tasks depend on
-  each other or pass files between them, is written as a directory and submitted with
-  `t3-steward campaign submit`, which creates exactly one workflow run and notifies the calling
-  thread by default. A caller with no thread to be woken passes `--no-notify` or names one with
+- **One task** (`t3-task` skill): one independent outcome that does not need the user now is
+  started on the fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from
+  a checkout. Use it when the user says later, tonight, when I am not around, or backlog and
+  the work is genuinely one task. It derives the project, ref, route, idempotency key and
+  wake, and normally wakes this thread when the run ends. Do what the record's closing line
+  says rather than ending the turn by habit: it says to end the turn only when a wait exists
+  that will fire, and otherwise says that no wake is attached, or that the run has already
+  ended and the result is there to collect with `t3-steward task result <run>`. The record's
+  first line is `run <id>` and its last is the result command, so take the id from the first
+  line or from `--json`, never the last. The start is synchronous and a refusal is its exit
+  code. `t3-backlog` remains a compatibility wrapper; prefer `t3-steward task run`.
+- **Campaign** (`t3-campaign` skill): dependent tasks, artifact handoffs, review pipelines and
+  recurring scheduled workflows are written as a directory and submitted with `t3-steward
+  campaign submit`, which creates exactly one workflow run and notifies the calling thread by
+  default. A caller with no thread to be woken passes `--no-notify` or names one with
   `--notify-thread <id>`; a submission for which no thread resolves is refused and nothing is
   submitted.
 - **Wait** (`t3-wait` skill): never poll in a loop for something external. Register a wait with

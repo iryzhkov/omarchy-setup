@@ -19,7 +19,7 @@ when a host has drifted.
 | `~/.config/agents/huyang.md` | the "Reading and editing code" section of `config/claude/CLAUDE.md`, plus `config/claude/skills/huyang/SKILL.md` | `agents-instructions-gen` | the same module |
 | `~/.config/agents/jocasta.md` | the "Working documents: Jocasta" section of `config/claude/CLAUDE.md` | `agents-instructions-gen` | the same module |
 | `~/.config/agents/ov-memory.md` | `config/claude/skills/ov-memory/SKILL.md` and `.../ov-memory-curation/SKILL.md` | `agents-instructions-gen` | the same module |
-| `~/.config/agents/t3-steward.md` | `config/claude/skills/t3-backlog`, `t3-campaign` and `t3-wait` | `agents-instructions-gen` | the same module |
+| `~/.config/agents/t3-steward.md` | `config/claude/skills/t3-task`, `t3-campaign` and `t3-wait` | `agents-instructions-gen` | the same module |
 | the `<!-- fleet:start -->` block of `~/.codex/AGENTS.md` | `~/.config/agents/AGENTS.md` | `agents-instructions-gen` | the same module |
 | the `instructions` list of `~/.config/opencode/opencode.json` | `~/.config/agents/AGENTS.md` | `agents-instructions-gen` | the same module |
 | `~/.claude/skills/<name>/...` and `~/.agents/skills/<name>/...`, for the skills this repository carries | `config/claude/skills/<name>/...` | source projection | UpKeeper, from its release manifest |
