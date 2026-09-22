@@ -22,7 +22,7 @@ when a host has drifted.
 | `~/.config/agents/t3-steward.md` | `config/claude/skills/t3-backlog`, `t3-campaign` and `t3-wait` | `agents-instructions-gen` | the same module |
 | the `<!-- fleet:start -->` block of `~/.codex/AGENTS.md` | `~/.config/agents/AGENTS.md` | `agents-instructions-gen` | the same module |
 | the `instructions` list of `~/.config/opencode/opencode.json` | `~/.config/agents/AGENTS.md` | `agents-instructions-gen` | the same module |
-| `~/.claude/skills/<name>/SKILL.md`, for the skills this repository carries | `config/claude/skills/<name>/SKILL.md` | a byte-for-byte copy | UpKeeper, from its release manifest |
+| `~/.claude/skills/<name>/...` and `~/.agents/skills/<name>/...`, for the skills this repository carries | `config/claude/skills/<name>/...` | source projection | UpKeeper, from its release manifest |
 | `~/.claude/CLAUDE.md` | the host's own `# This machine` section, plus the fleet block UpKeeper owns | nothing; it is authored | UpKeeper, merging into its fenced block |
 
 One command regenerates everything in the middle of that table:
@@ -41,15 +41,16 @@ the whole fleet's instructions.
 ## How a change reaches the other machines
 
 1. Edit the authoritative file in this repository, on a branch, and get it reviewed.
-2. Converge the machine you are working on: `run.sh`, or the module alone, or
-   `agents-instructions-gen --root .` after copying `config/claude/CLAUDE.md` into place.
-3. Confirm that machine holds exactly what the repository says:
+2. Converge the generated resident instructions on the machine you are working on:
+   `run.sh`, or the module alone, or `agents-instructions-gen --root .` after copying
+   `config/claude/CLAUDE.md` into place.
+3. Confirm those generated resident instructions match:
    `agents-instructions-gen --root . --check` must exit 0.
 4. Publish with `upkeeper push` from that machine, following the `publish-agent-tooling`
-   skill. UpKeeper's capture walks the home directory: `~/.claude/omarchy-setup/CLAUDE.md`,
-   every `~/.config/agents/*.md` and every `~/.claude/skills/*` is captured as mode `file`,
-   which is a whole-file overwrite when another host converges. Only `~/.claude/CLAUDE.md`
-   merges, which is how each machine keeps its own `# This machine` section.
+   skill. UpKeeper reads repository-owned skills from the pinned omarchy-setup checkout
+   rather than from installed home-directory copies. It projects the complete skill trees
+   to `~/.claude/skills` for Claude/OpenCode and `~/.agents/skills` for Codex. UpKeeper
+   captures other agent-environment files under its own validation rules.
 5. Other hosts converge on their next self-pull and receive those bytes.
 
 Step 3 is the one that is easy to skip and the one that matters. A capture is a photograph
@@ -84,18 +85,12 @@ machine that is deliberately behind reads the report and decides.
 
 When it reports a difference, decide which side is right before touching anything.
 
-- **The host is behind.** Converge it: `run.sh`, or
-  `modules/common/31-agent-instructions.sh` on its own. A skill is the exception, and it is
-  worth understanding rather than memorising. This repository authors the seven skills under
-  `config/claude/skills/`, but nothing on a host installs them from here: module 31
-  deliberately leaves `~/.claude/skills/` alone, and `upkeeper self-pull` writes the skill
-  bytes recorded in the current release manifest, which were captured from some host's
-  `~/.claude/skills/` in the first place. So when a skill changes in this repository, the
-  only way it reaches a host is that someone copies it from a checkout into
-  `~/.claude/skills/<name>/SKILL.md` on the machine the next release is captured from, and
-  that capture then carries it to the fleet. Copy it from the checkout; never retype or edit
-  the installed file, because that is authoring on a host, which is the thing this document
-  exists to stop.
+- **The host is behind.** Converge generated resident instructions with `run.sh` or
+  `modules/common/31-agent-instructions.sh`. Skills are different: omarchy-setup is their
+  reviewed source, but it never installs or publishes them. UpKeeper reads the pinned source
+  tree while preparing the agent-environment component and is the only process that projects
+  those bytes to harness discovery roots. Never copy or edit an installed skill to prepare a
+  release; installed copies are outputs, not publication inputs.
 - **The host holds an improvement nobody committed.** Copy the text into the authoritative
   file in this repository, review it, commit it, and then converge the host so that its
   copy is derived rather than original. Never publish from the host to keep the change.
