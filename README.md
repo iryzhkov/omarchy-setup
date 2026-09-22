@@ -75,6 +75,11 @@ links are preserved. Git access and this machine's inventory identity must alrea
 be provisioned. UpKeeper retains component bootstrap prerequisites and reports
 missing prerequisites explicitly. No timer is installed by this seam.
 
+This is a bootstrap boundary, not a second fleet manager. omarchy-setup prepares a
+fresh machine and hands control to UpKeeper. It may hold reviewed configuration and
+skill sources, but it does not publish or converge fleet skills; UpKeeper alone builds
+the agent-environment release and projects it to each harness.
+
 ## Uninstalling
 
 ```bash

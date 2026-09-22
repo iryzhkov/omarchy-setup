@@ -195,16 +195,12 @@ with tempfile.TemporaryDirectory() as temporary:
     diverged = generate(home, "--root", str(checkout), "--check")
     assert diverged.returncode == 3, diverged.stdout + diverged.stderr
     assert "omarchy-setup/CLAUDE.md" in diverged.stdout
-    assert "skills/t3-backlog/SKILL.md" in diverged.stdout
+    assert "skills/t3-backlog/SKILL.md" not in diverged.stdout
 
-    # Converge the two artifacts no module here installs, and the host matches.
+    # Converge the imported instruction artifact and the host matches.
     (home / ".claude/omarchy-setup/CLAUDE.md").write_bytes(
         (checkout / "config/claude/CLAUDE.md").read_bytes()
     )
-    for skill in (checkout / "config/claude/skills").iterdir():
-        (home / ".claude/skills" / skill.name / "SKILL.md").write_bytes(
-            (skill / "SKILL.md").read_bytes()
-        )
     converged = generate(home, "--root", str(checkout), "--check")
     assert converged.returncode == 0, converged.stdout + converged.stderr
 

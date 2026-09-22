@@ -292,15 +292,9 @@ check "the failure names what it looked for" grep -q 'config/claude/CLAUDE.md' "
 check "and refuses to read \$HOME" grep -q 'never falls' "$T/gen.log"
 
 section "agents-instructions-gen --check"
-# ~/.claude/skills is UpKeeper's to install, not this repository's, so the check
-# only has something to compare once the skills are in place.
-for d in "$ROOT"/config/claude/skills/*/; do
-  n=$(basename "$d")
-  mkdir -p "$HOME/.claude/skills/$n"
-  cp "$d/SKILL.md" "$HOME/.claude/skills/$n/SKILL.md"
-done
+# UpKeeper publishes skills from the pinned source checkout; this setup check owns only
+# the generated resident instruction artifacts.
 check "a converged host passes" bash "$GEN" --root "$ROOT" --check
-printf '\nhand-edited on this host\n' >>"$HOME/.claude/skills/t3-wait/SKILL.md"
 printf 'stale\n' >"$HOME/.claude/omarchy-setup/CLAUDE.md"
 rm -f "$HOME/.config/agents/jocasta.md"
 printf 'leftover\n' >"$HOME/.config/agents/agent99.md"
@@ -309,11 +303,9 @@ bash "$GEN" --root "$ROOT" --check >"$T/check.log" 2>&1
 check_rc=$?
 check "a diverged host exits 3" [ "$check_rc" = 3 ]
 check "the check changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
-check "the hand-edited skill is named" grep -q 'skills/t3-wait/SKILL.md: the host copy differs' "$T/check.log"
 check "the stale CLAUDE.md is named" grep -q 'omarchy-setup/CLAUDE.md: the host copy differs' "$T/check.log"
 check "the missing reference file is named" grep -q 'agents/jocasta.md: absent on this host' "$T/check.log"
 check "the file nothing generates is named" grep -q 'agents/agent99.md: present on this host' "$T/check.log"
-cp "$ROOT/config/claude/skills/t3-wait/SKILL.md" "$HOME/.claude/skills/t3-wait/SKILL.md"
 module common/31-agent-instructions.sh
 check "converging clears every difference" bash "$GEN" --root "$ROOT" --check
 
