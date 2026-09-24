@@ -79,7 +79,11 @@ an active campaign cannot be shown to continue uninterrupted, retain the validat
 and defer convergence until a safe window. Do not weaken campaign prompts, routes, gates,
 approvals, artifacts or checks to make deployment convenient.
 
-Use UpKeeper for approved convergence; the laptop normally converges through its local
-upkeeper pull --self timer. Report source-published, release-published, actually deployed
-and runtime-verified states separately. A successful build, push, wait or release CI run
-is not proof of fleet convergence.
+Use UpKeeper for approved convergence. For a manual fleet deployment, include the
+`laptop` inventory host in the preview and in the controller-initiated pull after
+release CI; do not omit it because it also has a local self-pull timer. The target's
+lock serializes a manual pull with that timer. The legacy scheduled controller pull
+still skips self-managed hosts. Check the laptop's individual receipt and observed
+state, and report source-published, release-published, actually deployed and
+runtime-verified states separately. A successful build, push, wait or release CI
+run is not proof of fleet convergence.
