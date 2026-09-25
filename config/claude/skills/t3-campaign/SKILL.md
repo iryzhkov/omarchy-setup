@@ -51,7 +51,8 @@ environment:
 
 `t3-steward backlog projects` shows each project's TYPE. Declare every file a
 successor or the owner needs in `outputs`, because outputs are all that is
-collected; a successor reads its `inputs_from` files under
+collected; a fresh task cannot declare `commits`, and `validate` refuses one
+from release 0.11.0-rc.95. A successor reads its `inputs_from` files under
 `.t3/dependencies/<producer task id>/`, an id assigned at submission, so have
 the prompt list `.t3/dependencies/` rather than hard-code it. A single repository-free task is
 `t3-steward task run --fresh --model MODEL -- "..."` from any directory.
@@ -697,9 +698,11 @@ it returns the first answer rather than doing the work twice.
 t3-steward campaign help <topic>
 ```
 
-Topics: `plan`, `graph`, `dag-semantics`, `commits`, `static-versus-dynamic`,
-`readiness`, `rerun`, `notify`. Recovery, graph amendment and artifact commands stay under
-`t3-steward backlog`.
+Topics: `authoring`, `fresh`, `readiness`, `dag-semantics`, `static-versus-dynamic`,
+`plan`, `graph`, `commits`, `rerun`, `notify`, `routes`, and `supervision`
+for supervised runs. Recovery has its own
+`t3-steward campaign recovery` command; graph amendment and artifact commands stay
+under `t3-steward backlog`.
 
 ## Worked examples
 

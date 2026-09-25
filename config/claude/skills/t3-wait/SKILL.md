@@ -168,7 +168,7 @@ Branch on `outcome`, then read the kind's pairs:
 | `shell` | `exit=` |
 | `time` | `at=` (RFC 3339) |
 | `github` | `target=run:<id>\|pr:<n> state= conclusion= url=` |
-| `node` | `run= task= attempt= revision= progress=`, `control=` and `pauseReason=` for the attempt states, and for a terminal run `failed=<comma list>` and `result="t3-steward result <run>"` (the command to fetch the run's result) |
+| `node` | `run= task= attempt= revision= progress=`, `control=` and `pauseReason=` for the attempt states, and for a terminal run `failed=<comma list>` and `result="t3-steward task result <run>"` (the command to fetch the run's result) |
 | `quota` | `pool= phase= percent=` (and `resetsAt=` when known) |
 
 Values with a space are quoted; ignore keys you do not know; do not depend on
@@ -178,7 +178,7 @@ line and the prose follow. Examples:
 
 ```text
 t3-steward-wait kind=github outcome=met wait=tw-park-a1-9 conclusion=success state=completed target=run:123 url=https://github.com/o/r/actions/runs/123
-t3-steward-wait kind=node outcome=met wait=nw-campaign-k1 failed=implement progress=failed result="t3-steward result run-abc" revision=14 run=run-abc task=sink:run-abc
+t3-steward-wait kind=node outcome=met wait=nw-campaign-k1 failed=implement progress=failed result="t3-steward task result run-abc" revision=14 run=run-abc task=sink:run-abc
 t3-steward-wait kind=time outcome=timed-out wait=w-1a2b or-timeout=true
 ```
 
