@@ -565,6 +565,11 @@ calling agent's own canonical thread when the run ends. `--no-notify` is the
 only opt-out. `--notify-thread <id>` names a thread other than the caller's,
 which is what a script on another host wants.
 
+Separately, from release 0.11.0-rc.96 the coordinator can also post run events
+to the owner's channel (Discord or a command). An operator configures that in
+the coordinator's `notifications` section, not per campaign. See
+`t3-steward campaign help notify`.
+
 The thread is resolved before anything is submitted, so a submission for which
 no thread resolves is **refused with nothing submitted** rather than left
 running with nobody listening. Pass `--notify-thread <id>` when resolution is
@@ -603,7 +608,7 @@ There is no SSH helper and no polling loop for this. Full explanation:
 t3-steward campaign show <run> [--json]                 # task states
 t3-steward campaign graph <run> [--json|--dot]          # the persisted graph
 t3-steward campaign explain <run>/<task> [--json]       # why a task is not running
-t3-steward campaign list [--project P] [--progress STATES] [--class CLASS] [--json]
+t3-steward campaign list [--project P] [--progress STATES] [--class C] [--limit N] [--since DURATION] [--json]
 t3-steward campaign cancel <run>/<task> --reason TEXT [--command-id ID] [--json]
 t3-steward campaign cancel <run> --reason TEXT [--command-id ID] [--json]
 ```

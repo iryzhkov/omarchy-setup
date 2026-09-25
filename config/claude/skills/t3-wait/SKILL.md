@@ -46,7 +46,7 @@ shell loop.
 | Kind | Registration | Met when | Settled by |
 | --- | --- | --- | --- |
 | `time` | `--at 2026-09-18T22:00:00Z` or `--for 2h30m` | the instant passes | this host |
-| `github` | `--github run <id>` (default `--state completed`), `--github pr <n> --state merged\|reviewed\|checks-passed`, `[--repo owner/name]` | a run completes with conclusion success (any other conclusion is `failed`); a PR is merged (`failed` when closed unmerged); every check succeeded (`failed` when any failed); the first review lands | this host, reading `gh` with fixed arguments |
+| `github` | `--github run <id>` (default `--state completed`), `--github pr <n> --state merged\|reviewed\|checks-passed`, `[--repo owner/name]`; from rc.96 the target may also be `owner/name#N` or a github.com PR/run URL, which sets the repository | a run completes with conclusion success (any other conclusion is `failed`); a PR is merged (`failed` when closed unmerged); every check succeeded (`failed` when any failed); the first review lands | this host, reading `gh` with fixed arguments |
 | `node` | `--node <run>` (its sink) or `--node <run>/<task>`, `--state terminal\|succeeded\|paused\|waiting-external\|active` (default `terminal`) | the node reaches the state; `terminal` is met on any terminal progress except cancelled, `succeeded` is `failed` on a failed run | the coordinator, from its own records; no local check |
 | `quota` | `--quota <pool> --below 50`, `--quota <pool> --phase normal`, `--quota <pool> --reset` | the pool is under the percent, every bucket is normal, or the window current at registration has reset | the coordinator, from the merged bucket observations |
 | `shell` | `-- <command>` | the command exits 0 (exit 2 gives up, anything else is not yet) | this host |
