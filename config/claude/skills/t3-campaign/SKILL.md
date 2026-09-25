@@ -413,8 +413,14 @@ lifetime.
 fetches from the worker's local repository cache, but its push URL is the
 project's own repository, so `git push origin <branch>` publishes the branch
 where the owner can see it (t3-steward 0.11.0-rc.91 and later; before that the
-push landed in the cache and could be pruned). It needs the worker's own write
-access to that repository. A declared `commits` entry is still how a successor
+push landed in the cache and could be pruned, and a workspace an older worker
+prepared, including a reused workflow-scoped one, still behaves that way). It
+needs the worker's own write access to that repository, and for a contained task
+network and credential access inside the sandbox. Push only the task's own
+branch: never force, `--mirror` or `--prune`, because `origin` is now the real
+repository. Check publication with `git ls-remote <project repository>`, not
+`git fetch origin`, which reads the cache and will not show the branch until the
+cache is next refreshed. A declared `commits` entry is still how a successor
 receives a commit; a push is how the owner does.
 
 Where it shows up:
