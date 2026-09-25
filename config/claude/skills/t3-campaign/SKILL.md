@@ -52,7 +52,8 @@ environment:
 `t3-steward backlog projects` shows each project's TYPE. Declare every file a
 successor or the owner needs in `outputs`, because outputs are all that is
 collected; a successor reads its `inputs_from` files under
-`.t3/dependencies/<task>/`. A single repository-free task is
+`.t3/dependencies/<producer task id>/`, an id assigned at submission, so have
+the prompt list `.t3/dependencies/` rather than hard-code it. A single repository-free task is
 `t3-steward task run --fresh --model MODEL -- "..."` from any directory.
 `check` refuses a Git project with `workspace-type-mismatch` and names the fresh
 projects that exist; when there is none, an operator adds one with
