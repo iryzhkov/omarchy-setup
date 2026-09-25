@@ -12,7 +12,8 @@ description: >
   DAG, pipeline, multi-stage job or campaign. Triggers: campaign, DAG, workflow,
   pipeline, multi-step job, recurring job, schedule, cron, fan out, parallel
   tasks, artifact between tasks, declared commit, plan then implement, review
-  then implement, campaign check, readiness, rerun, accepted_waiting.
+  then implement, campaign check, readiness, rerun, accepted_waiting, research
+  or spike campaign without a repository, fresh workspace.
 ---
 
 # t3-campaign
@@ -36,6 +37,28 @@ task, when tasks depend on each other, when one task's output is another's
 input, or when the workflow will recur on a schedule. `task run --fan-out GLOB`
 is the exception that stays a single start: one run with one independent task
 per prompt file, no edges to declare.
+
+## Work that needs no repository
+
+Research, spike and review campaigns that produce findings rather than commits
+do not need a Git project. Give them a new, empty directory per task:
+
+```yaml
+environment:
+  project: scratch       # a catalog project of type fresh
+  type: fresh            # no ref, no repository; scope stays task
+```
+
+`t3-steward backlog projects` shows each project's TYPE. Declare every file a
+successor or the owner needs in `outputs`, because outputs are all that is
+collected; a successor reads its `inputs_from` files under
+`.t3/dependencies/<producer task id>/`, an id assigned at submission, so have
+the prompt list `.t3/dependencies/` rather than hard-code it. A single repository-free task is
+`t3-steward task run --fresh --model MODEL -- "..."` from any directory.
+`check` refuses a Git project with `workspace-type-mismatch` and names the fresh
+projects that exist; when there is none, an operator adds one with
+`upkeeper project add NAME --type fresh --workers a,b`. The full contract is
+`t3-steward campaign help fresh`.
 
 ## Frame the work for autonomous completion
 
@@ -208,13 +231,13 @@ impossible campaign is reported as transport class `rejected` with the permanent
 reasons only.
 
 Permanent reason codes, which waiting can never fix: `unknown-project`,
-`unknown-setup-profile`, `unknown-provider-instance`, `unknown-model`,
-`unknown-quota-pool`, `worker-not-eligible`, `capability-missing`,
-`cpu-class-impossible`, `resources-impossible`, `directory-impossible`,
-`credential-missing`, `repository-syntax-invalid`,
-`repository-authentication-failed`, `repository-not-found`, `ref-not-found`,
-`no-route`, `no-configured-route`, `timing-window-closed`,
-`message-limit-exceeded`.
+`workspace-type-mismatch`, `unknown-setup-profile`,
+`unknown-provider-instance`, `unknown-model`, `unknown-quota-pool`,
+`worker-not-eligible`, `capability-missing`, `cpu-class-impossible`,
+`resources-impossible`, `directory-impossible`, `credential-missing`,
+`repository-syntax-invalid`, `repository-authentication-failed`,
+`repository-not-found`, `ref-not-found`, `no-route`, `no-configured-route`,
+`supervisor-client-missing`, `timing-window-closed`, `message-limit-exceeded`.
 
 `no-route` means a task declares no `routes` at all. The coordinator never
 chooses one, so declare `routes: [{instance, model}]` in `workflow.yaml`; the
@@ -229,7 +252,8 @@ Temporary reason codes, which submission proceeds through: `quota-closed`,
 Recovery for the common permanent ones:
 
 ```sh
-t3-steward backlog workers --json                 # unknown-project, no-configured-route
+t3-steward backlog projects                       # unknown-project, workspace-type-mismatch (TYPE column)
+t3-steward backlog workers --json                 # no-configured-route
 t3-steward worker enroll <host> --current-catalog   # catalog-digest-mismatch; on the coordinator host
 ```
 
@@ -295,7 +319,7 @@ class: surplus           # surplus runs on spare quota (default); required is ad
 
 environment:
   project: my-project    # a project configured on the fleet
-  type: git              # git, or fresh for an empty scratch directory
+  type: git              # git, or fresh for an empty directory (see "Work that needs no repository")
   scope: task
   ref: main
 

@@ -59,6 +59,16 @@ Flags: `--project NAME` (when the remote matches no project or several),
 `current`), `--no-notify`, `--json`. The prompt is exactly one of an argument
 after `--`, `--prompt-file FILE`, `--prompt-file -`, or stdin.
 
+`--fresh` runs the task in a new empty directory instead of a checkout, for
+research or spike work whose result is files rather than commits. It needs no
+checkout and derives no ref; the project is the catalog's one project of type
+fresh, or `--project NAME` naming one. Name what it writes with `--outputs`,
+because only declared outputs are collected:
+
+```sh
+t3-steward task run --fresh --model claude-sonnet-5 --outputs findings.md -- "..."
+```
+
 What the fleet can run right now:
 
 ```sh
