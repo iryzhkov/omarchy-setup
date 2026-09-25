@@ -504,6 +504,18 @@ own replaces the inherited list entirely.
 
 ## Waiting inside a campaign task
 
+A task gets one turn: ending it with no task-bound wait registered completes
+the task, and a closing `BACKLOG STATUS: continue` is a failure, not a request
+for another turn. The Steward then collects the declared outputs and verifies
+them at once. Native subagents T3 tracks are waited for; processes the task
+started in the background (shell jobs, background commands) are not. A prompt
+that has the task start its checks in the background and end its turn gets it
+collected with no outputs and failed, with "missing declared output ... the
+turn ended before it was written". Tell the task to run long checks in the
+foreground, or to park as below. From t3-steward
+0.11.0-rc.92 the worker appends a short "How this task ends" section saying so
+to every task prompt.
+
 A task that has to wait for something external — CI, a review, a long build,
 another campaign, a quota window — must not poll and must not finish. It
 registers a task-bound wait of the matching kind and ends the turn:
