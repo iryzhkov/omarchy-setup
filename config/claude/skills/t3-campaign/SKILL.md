@@ -392,7 +392,8 @@ the namespace of `outputs`, so one task cannot declare a commit and an output of
 the same name. `revision` is resolved in the producing task's own workspace when
 that task finishes; a task that declares a commit it did not produce fails with
 `declared commit <name>: <cause>`, exactly as a missing declared output fails.
-`revision` must be a ref name or a full commit id (`HEAD`, a branch, a tag,
+`revision` must be a ref name or a commit id, preferably the full 40-character
+one (`HEAD`, a branch, a tag,
 `refs/...`); expressions such as `HEAD~1` or `main^` are refused by `validate`
 as "not a safe Git ref". To hand over several commits, commit each to its own
 branch and declare one entry per branch.
