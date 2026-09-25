@@ -326,7 +326,8 @@ environment:
 routes:
   - instance: claudeAgent
     model: claude-haiku-4-5
-    quota_pool: claude-main
+    quota_pool: claude-main  # optional; must be the pool the instance is bound to
+    options: {effort: medium} # optional; passed to T3's model selection as written
 
 tasks:
   review:
@@ -360,7 +361,10 @@ retained, and a task that does not produce a declared output fails with
 
 A Git commit a later task needs is declared separately, under `commits:`; see
 the next section. `t3-steward campaign help dag-semantics` is the full
-explanation of these fields.
+explanation of these fields, and `t3-steward campaign help routes` covers
+`routes`, including `options` (`effort` is the option T3 honours for Claude and
+Codex). A task `context:` block is accepted by the schema but has not been
+qualified in the field; pass the same material as input files instead.
 
 ## Handing a Git commit to a later task
 
@@ -388,6 +392,11 @@ the namespace of `outputs`, so one task cannot declare a commit and an output of
 the same name. `revision` is resolved in the producing task's own workspace when
 that task finishes; a task that declares a commit it did not produce fails with
 `declared commit <name>: <cause>`, exactly as a missing declared output fails.
+`revision` must be a ref name or a commit id, preferably the full 40-character
+one (`HEAD`, a branch, a tag,
+`refs/...`); expressions such as `HEAD~1` or `main^` are refused by `validate`
+as "not a safe Git ref". To hand over several commits, commit each to its own
+branch and declare one entry per branch.
 
 The consumer receives two things:
 
