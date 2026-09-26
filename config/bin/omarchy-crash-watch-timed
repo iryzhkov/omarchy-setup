@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run Omarchy's current crash watcher with expiring notifications.
+# Keep the upstream watcher logic (deduplication, filtering, diagnosis action)
+# and change only the urgency passed to Omarchy Shell.
+set -euo pipefail
+
+upstream=/usr/bin/omarchy-crash-watch
+needle="    --urgency critical \\"
+replacement="    --urgency normal \\"
+source=$(<"$upstream")
+
+if [[ $source != *"$needle"* ]]; then
+  echo "omarchy-crash-watch-timed: upstream notification call changed; using packaged watcher" >&2
+  exec "$upstream" "$@"
+fi
+
+source=${source/"$needle"/"$replacement"}
+exec /usr/bin/bash -c "$source" "$upstream" "$@"
