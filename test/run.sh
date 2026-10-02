@@ -233,9 +233,15 @@ section "28-scripts / 85-hooks"
 check "scripts run" module common/28-scripts.sh
 check "omarchy-setup wrapper executable" test -x "$HOME/.local/bin/omarchy-setup"
 check "layout cycle script executable" test -x "$HOME/.local/bin/omarchy-workspace-layout-cycle"
+mkdir -p "$HOME/.config/omarchy/hooks/post-update.d"
+printf '#!/bin/bash\nexit 0\n' >"$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "hooks dry run" env DRY_RUN=1 bash "$ROOT/modules/common/85-hooks.sh"
+check "dry run preserves legacy hook" test -f "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
 check "hooks run" module common/85-hooks.sh
-check "post-update hook executable" test -x "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
-check "hook is a no-op without a recorded checkout" bash "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "legacy update hook removed" test ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "legacy update hook backed up" bash -c 'compgen -G "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook.omarchy-setup.bak.*" >/dev/null'
+check "hooks rerun" module common/85-hooks.sh
+check "setup update hook remains absent" test ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
 check "wrapper refuses without a recorded checkout" env -u OMARCHY_SETUP_ROOT bash -c '! "$1"' _ "$HOME/.local/bin/omarchy-setup"
 
 # ------------------------------------------------------------ host files --
