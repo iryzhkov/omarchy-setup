@@ -513,6 +513,22 @@ Omarchy itself leaves enabled. That step refuses to run while
 `~/.ssh/authorized_keys` is empty -- disabling passwords without a working key
 is how a remote box gets locked away permanently.
 
+The trusted home subnets in `SSH_TRUSTED_SUBNETS` (default `192.168.70.0/24`
+and `192.168.90.0/24`) are then exempted from the rate limit: ufw's `LIMIT`
+refuses a source that opens six connections in 30 seconds, which the steward's
+admin transport and parallel agents exceed. Each subnet gets
+`22/tcp ALLOW from <subnet>` inserted ahead of `22/tcp LIMIT Anywhere`, which
+stays in force for every other source. Reapplying adds nothing that is already
+ahead of the limit, and moves an ALLOW that sits behind it. An ALLOW removes
+brute-force rate limiting for every address on the subnet, so the step runs only
+when `sshd -T -C` for a connection from that subnet reports password,
+keyboard-interactive and root login all disabled, and otherwise fails with the
+settings that block it. `SSH_TRUSTED_SUBNETS=()` keeps every source limited.
+
+This module runs only on the remote profile, from a full `run.sh` (bootstrap,
+`omarchy-setup`, or the post-update hook after `omarchy update`). UpKeeper
+moves the checkout to the pinned commit but runs only `28-scripts`.
+
 ## Secrets
 
 Bitwarden is the source of truth. This repo holds only the *manifest* — which
