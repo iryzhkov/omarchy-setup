@@ -310,134 +310,249 @@ module common/31-agent-instructions.sh
 check "converging clears every difference" bash "$GEN" --root "$ROOT" --check
 
 # ------------------------------------------------------------------ sshd --
-# 35-sshd against fakes: sudo runs its command (install only logs), ufw keeps
-# its rules in a file and renders `status numbered` the way ufw 0.36 does, and
-# sshd -T prints a fixture, chosen per source address when one exists so a
-# Match block for a single subnet can be simulated.
+# 35-sshd against fakes. sudo runs its command (install without -o/-g, so the
+# drop-in lands in a fixture /etc/ssh). ufw keeps its rules in a file, renders
+# `status numbered` the way ufw 0.36 does, and follows real ufw's matching:
+# insert skips a rule that differs only by comment, delete with a comment
+# removes only the rule carrying that comment, delete by number is refused so
+# a test fails if the module ever uses one. sshd -t and the reload fail on
+# demand.
 section "35-sshd: trusted-subnet exemption from the SSH rate limit"
 SB="$T/sshbin" UFW_STATE="$T/ufw.rules" SSHD_T="$T/sshd-T" SSH_LOG="$T/ssh-calls"
-mkdir -p "$SB" "$SSHD_T" "$HOME/.ssh"
+SSHD_DIR="$T/etc/ssh"
+DROPIN="$SSHD_DIR/sshd_config.d/50-omarchy-setup.conf"
+mkdir -p "$SB" "$SSHD_T" "$HOME/.ssh" "$SSHD_DIR/sshd_config.d"
 printf 'ssh-ed25519 AAAA test\n' >"$HOME/.ssh/authorized_keys"
 cat >"$SB/sudo" <<'SH'
 #!/usr/bin/env bash
-[[ $1 == install ]] && { echo "sudo $*" >>"$SSH_LOG"; exit 0; }
+echo "sudo $*" >>"$SSH_LOG"
+if [[ $1 == install ]]; then
+  args=() skip=0
+  for a in "$@"; do
+    if (( skip )); then skip=0; continue; fi
+    case $a in -o|-g) skip=1 ;; *) args+=("$a") ;; esac
+  done
+  exec "${args[@]}"
+fi
 exec "$@"
 SH
 cat >"$SB/sshd" <<'SH'
 #!/usr/bin/env bash
 echo "sshd $*" >>"$SSH_LOG"
-[[ $1 == -t ]] && exit 0
-addr=$(sed -n 's/.*addr=\([^,]*\).*/\1/p' <<<"${3:-}")
-if [[ -n $addr && -f $SSHD_T/$addr ]]; then cat "$SSHD_T/$addr"; else cat "$SSHD_T/default"; fi
+case $1 in
+  -t) [[ ! -e $SSHD_T/t-fail ]] ;;
+  -T) cat "$SSHD_T/effective" ;;
+  *) exit 1 ;;
+esac
+SH
+cat >"$SB/systemctl" <<'SH'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$SSH_LOG"
+[[ $1 == reload && -e $SSHD_T/reload-fail ]] && exit 1
+exit 0
 SH
 cat >"$SB/ufw" <<'SH'
 #!/usr/bin/env bash
 echo "ufw $*" >>"$SSH_LOG"
+[[ $1 == --force ]] && shift
+unexpected() { echo "fake ufw: unexpected: $*" >&2; exit 1; }
+# proto tcp from <subnet> to any port 22 [comment <text>]
+spec() {
+  [[ $# == 8 || ( $# == 10 && $9 == comment ) ]] || unexpected "$@"
+  [[ "$1 $2 $3 $5 $6 $7 $8" == "proto tcp from to any port 22" ]] || unexpected "$@"
+  from=$4 comment=${10:-}
+}
+matching() {   # rules for port 22 from $from, any comment
+  awk -F'|' -v f="$from" '$1 == "22/tcp" && $2 == "ALLOW" && $3 == f' "$UFW_STATE"
+}
 case $1 in
   status)
-    [[ -f $UFW_STATE.inactive ]] && { echo 'Status: inactive'; exit 0; }
+    [[ -e $UFW_STATE.inactive ]] && { echo 'Status: inactive'; exit 0; }
     printf 'Status: active\n\n     To                         Action      From\n     --                         ------      ----\n'
     n=0
-    while IFS='|' read -r to action from comment; do
+    while IFS='|' read -r to action src comment; do
       n=$((n + 1))
-      line=$(printf '[%2d] %-26s %-11s %-26s' "$n" "$to" "$action IN" "$from")
+      line=$(printf '[%2d] %-26s %-11s %-26s' "$n" "$to" "$action IN" "$src")
       [[ -n $comment ]] && line+=" # $comment"
       printf '%s\n' "$line"
     done <"$UFW_STATE"
     ;;
-  insert|allow)
-    pos=0; [[ $1 == insert ]] && { pos=$2; shift 2; }
-    [[ $1 == allow ]] && shift
-    [[ "$1 $2 $3 $5 $6 $7 $8 $9" == "proto tcp from to any port 22 comment" ]] || { echo "fake ufw: unexpected rule: $*" >&2; exit 1; }
-    rule="22/tcp|ALLOW|$4|${10}"
-    if (( pos == 0 )); then printf '%s\n' "$rule" >>"$UFW_STATE"
-    else awk -v p="$pos" -v r="$rule" 'NR == p { print r } { print }' "$UFW_STATE" >"$UFW_STATE.new" && mv "$UFW_STATE.new" "$UFW_STATE"; fi
+  insert)
+    pos=$2; [[ $3 == allow ]] || unexpected "$@"; shift 3; spec "$@"
+    [[ -n $(matching) ]] && { echo 'Skipping inserting existing rule'; exit 0; }
+    (( pos >= 1 && pos <= $(wc -l <"$UFW_STATE") )) || { echo 'ERROR: Invalid position' >&2; exit 1; }
+    awk -v p="$pos" -v r="22/tcp|ALLOW|$from|$comment" 'NR == p { print r } { print }' "$UFW_STATE" >"$UFW_STATE.new"
+    mv "$UFW_STATE.new" "$UFW_STATE"; echo 'Rule inserted'
     ;;
-  --force)
-    [[ $2 == delete ]] || exit 1
-    awk -v p="$3" 'NR != p' "$UFW_STATE" >"$UFW_STATE.new" && mv "$UFW_STATE.new" "$UFW_STATE"
+  delete)
+    [[ $2 == allow ]] || unexpected "$@"; shift 2; spec "$@"
+    awk -F'|' -v f="$from" -v c="$comment" '
+      !done && $1 == "22/tcp" && $2 == "ALLOW" && $3 == f && (c == "" || $4 == c) { done = 1; next }
+      { print }' "$UFW_STATE" >"$UFW_STATE.new"
+    if cmp -s "$UFW_STATE" "$UFW_STATE.new"; then echo 'Could not delete non-existent rule'; else echo 'Rule deleted'; fi
+    mv "$UFW_STATE.new" "$UFW_STATE"
     ;;
-  *) echo "fake ufw: unexpected: $*" >&2; exit 1 ;;
+  *) unexpected "$@" ;;
 esac
 SH
 printf '#!/bin/sh\necho "ssh-ed25519 AAAA test"\n' >"$SB/curl"
-printf '#!/bin/sh\necho "$(basename "$0") $*" >>"$SSH_LOG"\n' >"$SB/omarchy"
-cp "$SB/omarchy" "$SB/systemctl"
+printf '#!/bin/sh\necho "omarchy $*" >>"$SSH_LOG"\n' >"$SB/omarchy"
 chmod +x "$SB"/*
-export UFW_STATE SSHD_T SSH_LOG
+export UFW_STATE SSHD_T SSH_LOG OMARCHY_SETUP_SSHD_DIR="$SSHD_DIR"
 
-hardened='passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin no\npubkeyauthentication yes\n'
-sshd_t() { rm -f "$SSHD_T"/*; printf '%b' "$hardened" >"$SSHD_T/default"; }
+SSH_CONF="$ROOT/config/ssh.conf"
+cp "$SSH_CONF" "$T/ssh.conf.orig"
+OWNED=omarchy-sshd-trusted
+V4_LIMIT='22/tcp|LIMIT|Anywhere|omarchy-sshd'
+V6_LIMIT='22/tcp (v6)|LIMIT|Anywhere (v6)|omarchy-sshd'
+# A hardened host with no drop-in of ours yet and the default subnet list.
+sshd_reset() {
+  rm -f "$SSHD_T"/* "$SSHD_DIR"/sshd_config.d/*
+  printf 'passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin no\npubkeyauthentication yes\n' >"$SSHD_T/effective"
+  printf 'Include sshd_config.d/*.conf\nPort 22\n' >"$SSHD_DIR/sshd_config"
+  cp "$T/ssh.conf.orig" "$SSH_CONF"
+}
 # The rules omarchy's sshd setup leaves on normandy, before any exemption.
 ufw_omarchy() {
   rm -f "$UFW_STATE.inactive"
-  printf '%s\n' '53317/udp|ALLOW|Anywhere|' '22/tcp|LIMIT|Anywhere|omarchy-sshd' \
-    'Anywhere on nebula1|ALLOW|Anywhere|' '22/tcp (v6)|LIMIT|Anywhere (v6)|omarchy-sshd' >"$UFW_STATE"
+  printf '%s\n' '53317/udp|ALLOW|Anywhere|' "$V4_LIMIT" 'Anywhere on nebula1|ALLOW|Anywhere|' "$V6_LIMIT" >"$UFW_STATE"
 }
+# Puts a hand-added rule at the top, where an operator would insert it.
+ufw_hand_added() { { printf '22/tcp|ALLOW|%s|%s\n' "$1" "$2"; cat "$UFW_STATE"; } >"$T/ufw.new"; mv "$T/ufw.new" "$UFW_STATE"; }
+subnets() { cp "$T/ssh.conf.orig" "$SSH_CONF"; printf 'SSH_TRUSTED_SUBNETS=(%s)\n' "$*" >>"$SSH_CONF"; }
 sshd_module() { : >"$SSH_LOG"; PATH="$SB:$PATH" module remote/35-sshd.sh; }
-rule_line() { grep -n -F -- "$1" "$UFW_STATE" | head -n 1 | cut -d: -f1; }
-allow_line() { rule_line "22/tcp|ALLOW|$1|"; }
-limit_line() { rule_line '22/tcp|LIMIT|Anywhere|'; }
-ahead_of_limit() { local a; a=$(allow_line "$1"); [[ -n $a && $a -lt $(limit_line) ]]; }
-no_rule_change() { ! grep -qE '^ufw (insert|allow|--force)' "$SSH_LOG"; }
-SSH_CONF="$ROOT/config/ssh.conf"
-cp "$SSH_CONF" "$T/ssh.conf.orig"
+refused() { ! sshd_module; }
+rule_at() {   # line of the first ALLOW from $1, with comment $2 when given
+  awk -F'|' -v f="$1" -v c="${2-}" -v any="${2+no}" \
+    '$1 == "22/tcp" && $2 == "ALLOW" && $3 == f && (any != "no" || $4 == c) { print NR; exit }' "$UFW_STATE"
+}
+limit_at() { grep -nxF -- "$V4_LIMIT" "$UFW_STATE" | head -n 1 | cut -d: -f1; }
+owned_ahead() { local a; a=$(rule_at "$1" "$OWNED"); [[ -n $a && $a -lt $(limit_at) ]]; }
+no_owned() { ! grep -q "|$OWNED\$" "$UFW_STATE"; }
+no_rule_change() { ! grep -qE '^ufw (--force )?(insert|allow|delete)' "$SSH_LOG"; }
+only_spec_mutations() { ! grep -qE '^ufw (--force )?(allow|delete [0-9])' "$SSH_LOG"; }
+unchanged() { [ "$(md5sum <"$UFW_STATE")" = "$1" ]; }
+limits_kept() { grep -qxF -- "$V4_LIMIT" "$UFW_STATE" && grep -qxF -- "$V6_LIMIT" "$UFW_STATE" && [ "$(grep -c '^22/tcp|LIMIT|Anywhere|' "$UFW_STATE")" = 1 ]; }
+reloaded() { grep -qx 'sshd -t' "$SSH_LOG" && grep -qx 'systemctl reload sshd' "$SSH_LOG"; }
 
-sshd_t; ufw_omarchy
+sshd_reset; ufw_omarchy
 check "first apply exits 0" sshd_module
-check "VLAN 70 allowed ahead of the LIMIT rule" ahead_of_limit 192.168.70.0/24
-check "VLAN 90 allowed ahead of the LIMIT rule" ahead_of_limit 192.168.90.0/24
-check "configured order kept between the two" [ "$(allow_line 192.168.70.0/24)" -lt "$(allow_line 192.168.90.0/24)" ]
-check "LIMIT kept for every other source" [ "$(grep -c '^22/tcp|LIMIT|Anywhere|' "$UFW_STATE")" = 1 ]
-check "IPv6 LIMIT and nebula rules untouched" grep -qx 'Anywhere on nebula1|ALLOW|Anywhere|' "$UFW_STATE"
-check "the effective config was read per subnet" grep -qF 'addr=192.168.90.0' "$SSH_LOG"
+check "VLAN 70 owned ALLOW ahead of the LIMIT" owned_ahead 192.168.70.0/24
+check "VLAN 90 owned ALLOW ahead of the LIMIT" owned_ahead 192.168.90.0/24
+check "configured order kept" [ "$(rule_at 192.168.70.0/24)" -lt "$(rule_at 192.168.90.0/24)" ]
+check "IPv4 LIMIT kept once, IPv6 LIMIT row survives" limits_kept
+check "nebula rule untouched" grep -qx 'Anywhere on nebula1|ALLOW|Anywhere|' "$UFW_STATE"
+check "no append, no numbered delete" only_spec_mutations
+check "drop-in installed" grep -qx 'PasswordAuthentication no' "$DROPIN"
+check "validated and reloaded" reloaded
 before=$(md5sum <"$UFW_STATE")
 check "second apply exits 0" sshd_module
 check "second apply changes no rule" no_rule_change
-check "no duplicates and order kept" [ "$(md5sum <"$UFW_STATE")" = "$before" ]
+check "no duplicates, order kept" unchanged "$before"
+check "unchanged drop-in: still validated and reloaded" reloaded
 
-# normandy as Igor left it on 2026-10-01: hand-added rules, 90 before 70,
-# their own comments, several unrelated rules between them and the LIMIT.
-printf '%s\n' '22/tcp|ALLOW|192.168.90.0/24|ssh gaming VLAN 90' '22/tcp|ALLOW|192.168.70.0/24|ssh trusted VLAN 70' \
-  '53317/udp|ALLOW|Anywhere|' '22/tcp|LIMIT|Anywhere|omarchy-sshd' 'Anywhere on nebula1|ALLOW|Anywhere|' >"$UFW_STATE"
+# normandy as Igor left it on 2026-10-01: untagged hand-added rules, 90
+# before 70, with their own comments. They are reported, never adopted.
+sshd_reset; ufw_omarchy
+ufw_hand_added 192.168.70.0/24 'ssh trusted VLAN 70'; ufw_hand_added 192.168.90.0/24 'ssh gaming VLAN 90'
 before=$(md5sum <"$UFW_STATE")
 check "hand-added rules: apply exits 0" sshd_module
-check "hand-added rules: nothing changed" [ "$(md5sum <"$UFW_STATE")" = "$before" ]
+check "hand-added rules: nothing changed" unchanged "$before"
+check "hand-added rules: reported as unmanaged" log_has "unmanaged exemption: 192.168.90.0/24"
 
-# An ALLOW behind the LIMIT never matches; it is moved, not duplicated.
-printf '%s\n' '22/tcp|LIMIT|Anywhere|omarchy-sshd' '22/tcp|ALLOW|192.168.70.0/24|late' >"$UFW_STATE"
-check "misplaced ALLOW: apply exits 0" sshd_module
-check "misplaced ALLOW moved ahead" ahead_of_limit 192.168.70.0/24
-check "misplaced ALLOW not duplicated" [ "$(grep -c '|192.168.70.0/24|' "$UFW_STATE")" = 1 ]
-
-ufw_omarchy; before=$(md5sum <"$UFW_STATE")
-sshd_t; printf 'passwordauthentication yes\nkbdinteractiveauthentication no\npermitrootlogin no\n' >"$SSHD_T/default"
-if sshd_module; then bad "password auth on: module should refuse"; else ok "password auth on: module refuses"; fi
-check "refusal names the setting" log_has "192.168.70.0/24: passwordauthentication is yes, not no"
+# The gate: Match blocks anywhere in the configuration, or any of the three
+# settings not "no", refuse the exemption outright.
+sshd_reset; ufw_omarchy; before=$(md5sum <"$UFW_STATE")
+printf 'Match Address 10.0.0.0/8\n  PasswordAuthentication yes\n' >"$SSHD_DIR/sshd_config.d/60-lan.conf"
+check "Match in a drop-in: refused" refused
+check "refusal names the file" log_has "60-lan.conf"
+check "refusal says what to remove" log_has "remove every Match block"
 check "refusal explains the trade-off" log_has "removes brute-force limiting"
-check "refusal changes no rule" [ "$(md5sum <"$UFW_STATE")" = "$before" ]
-sshd_t; printf 'passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin prohibit-password\n' >"$SSHD_T/default"
-if sshd_module; then bad "root login allowed: module should refuse"; else ok "root login allowed: module refuses"; fi
+check "Match: no rule change" unchanged "$before"
+sshd_reset; printf '  match user git\n    ForceCommand true\n' >>"$SSHD_DIR/sshd_config"
+check "indented lower-case Match in sshd_config: refused" refused
+check "Match in sshd_config: no rule change" unchanged "$before"
+sshd_reset; printf 'passwordauthentication yes\nkbdinteractiveauthentication no\npermitrootlogin no\n' >"$SSHD_T/effective"
+check "password auth on: refused" refused
+check "refusal names the setting" log_has "passwordauthentication is yes, not no"
+sshd_reset; printf 'passwordauthentication no\nkbdinteractiveauthentication no\npermitrootlogin prohibit-password\n' >"$SSHD_T/effective"
+check "root login by key: refused" refused
 check "refusal names root login" log_has "permitrootlogin is prohibit-password, not no"
-sshd_t; printf 'passwordauthentication yes\nkbdinteractiveauthentication no\npermitrootlogin no\n' >"$SSHD_T/192.168.90.0"
-if sshd_module; then bad "Match re-enabling passwords for one subnet: should refuse"; else ok "Match re-enabling passwords for one subnet: refuses"; fi
-check "refusal names that subnet" log_has "192.168.90.0/24: passwordauthentication is yes"
-check "no rule added for either subnet" [ "$(md5sum <"$UFW_STATE")" = "$before" ]
-sshd_t
-check "dry run exits 0" env DRY_RUN=1 bash -c 'PATH="$1:$PATH" bash "$2"' _ "$SB" "$ROOT/modules/remote/35-sshd.sh"
-check "dry run changes no rule" [ "$(md5sum <"$UFW_STATE")" = "$before" ]
+check "gate refusals: no rule change" unchanged "$before"
 
-printf 'SSH_TRUSTED_SUBNETS=()\n' >>"$SSH_CONF"
-check "no subnets: apply exits 0" sshd_module
-check "no subnets: no rule change" no_rule_change
-cp "$T/ssh.conf.orig" "$SSH_CONF"; printf 'SSH_TRUSTED_SUBNETS=("1.2.3.4/24; reboot")\n' >>"$SSH_CONF"
-if sshd_module; then bad "malformed subnet: module should refuse"; else ok "malformed subnet: module refuses"; fi
-check "malformed subnet: no rule change" no_rule_change
-cp "$T/ssh.conf.orig" "$SSH_CONF"
-touch "$UFW_STATE.inactive"
-check "ufw inactive: apply exits 0" sshd_module
+# The running daemon, not the disk: validation and reload happen in this run.
+sshd_reset; ufw_omarchy; sshd_module; ufw_omarchy; cp "$DROPIN" "$T/dropin.before"
+touch "$SSHD_T/reload-fail"
+check "reload failure, unchanged drop-in: refused" refused
+check "reload failure: no exemption granted" no_owned
+check "reload failure: refusal names the reload" log_has "reload sshd failed"
+check "reload failure: drop-in as it was" cmp -s "$DROPIN" "$T/dropin.before"
+sshd_reset; ufw_omarchy; printf '# an older drop-in\nPasswordAuthentication no\n' >"$DROPIN"; cp "$DROPIN" "$T/dropin.before"
+touch "$SSHD_T/t-fail"
+check "validation failure after a drop-in change: refused" refused
+check "validation failure: previous drop-in restored" cmp -s "$DROPIN" "$T/dropin.before"
+check "validation failure: never reloaded" bash -c '! grep -qx "systemctl reload sshd" "$1"' _ "$SSH_LOG"
+check "validation failure: no exemption granted" no_owned
+sshd_reset; ufw_omarchy; touch "$SSHD_T/t-fail"
+check "validation failure with no previous drop-in: refused" refused
+check "validation failure: new drop-in removed" test ! -e "$DROPIN"
+
+# Revocation: owned rules follow the desired set; untagged rules stay.
+sshd_reset; ufw_omarchy; sshd_module
+subnets 192.168.70.0/24
+check "subnet removed: apply exits 0" sshd_module
+check "subnet removed: kept subnet still owned ahead" owned_ahead 192.168.70.0/24
+check "subnet removed: its owned rule revoked" [ -z "$(rule_at 192.168.90.0/24)" ]
+check "subnet removed: deleted by specification" only_spec_mutations
+ufw_hand_added 10.20.0.0/24 'hand added'
+subnets
+check "list emptied: apply exits 0" sshd_module
+check "list emptied: owned rules revoked" no_owned
+check "list emptied: untagged rule kept" grep -qx '22/tcp|ALLOW|10.20.0.0/24|hand added' "$UFW_STATE"
+check "list emptied: untagged rule reported" log_has "unmanaged exemption: 10.20.0.0/24"
+check "list emptied: LIMIT rows kept" limits_kept
+sshd_reset; ufw_omarchy; sshd_module; ufw_hand_added 10.20.0.0/24 'hand added'
+printf 'passwordauthentication yes\nkbdinteractiveauthentication no\npermitrootlogin no\n' >"$SSHD_T/effective"
+check "gate failing after a prior apply: refused" refused
+check "gate failing: owned rules revoked" no_owned
+check "gate failing: untagged rule kept" grep -qx '22/tcp|ALLOW|10.20.0.0/24|hand added' "$UFW_STATE"
+check "gate failing: untagged rule reported" log_has "unmanaged exemption: 10.20.0.0/24"
+check "gate failing: LIMIT rows kept" limits_kept
+
+# Fail closed on the firewall baseline.
+sshd_reset; printf '%s\n' '53317/udp|ALLOW|Anywhere|' 'Anywhere on nebula1|ALLOW|Anywhere|' >"$UFW_STATE"
+check "missing LIMIT: refused" refused
+check "missing LIMIT: nothing appended" no_rule_change
+check "missing LIMIT: refusal names it" log_has "22/tcp LIMIT Anywhere"
+sshd_reset; ufw_omarchy; printf '22|LIMIT|Anywhere|\n' >>"$UFW_STATE"
+check "two LIMIT rules: refused" refused
+check "two LIMIT rules: no rule change" no_rule_change
+sshd_reset; ufw_omarchy; ufw_hand_added Anywhere ''
+check "port 22 already open to Anywhere: refused" refused
+sshd_reset; ufw_omarchy; printf '22/tcp|ALLOW|192.168.70.0/24|%s\n' "$OWNED" >>"$UFW_STATE"
+check "owned rule behind the LIMIT: refused" refused
+check "owned rule behind the LIMIT: nothing deleted" no_rule_change
+sshd_reset; ufw_omarchy; touch "$UFW_STATE.inactive"
+check "ufw inactive: refused" refused
 check "ufw inactive: no rule change" no_rule_change
 rm -f "$UFW_STATE.inactive"
+
+# The subnet list is validated whole before anything is touched.
+for bad_subnet in 192.168.70.0/33 256.168.70.0/24 192.168.70.5/24 10.0.0.0/8 192.168.70.0 '"1.2.3.0/24;reboot"'; do
+  sshd_reset; ufw_omarchy; subnets 192.168.90.0/24 "$bad_subnet"
+  check "invalid subnet $bad_subnet: refused" refused
+  check "invalid subnet $bad_subnet: refused before any change" bash -c '! grep -qE "^(omarchy|ufw (insert|delete)|sudo install)" "$1"' _ "$SSH_LOG"
+done
+sshd_reset; ufw_omarchy; subnets 192.168.070.0/24 192.168.70.0/24
+check "leading zeros and duplicates: apply exits 0" sshd_module
+check "canonical subnet owned once" [ "$(grep -c '|192.168.70.0/24|' "$UFW_STATE")" = 1 ]
+check "canonical form used" bash -c '! grep -q 070 "$1"' _ "$UFW_STATE"
+
+sshd_reset; ufw_omarchy; before=$(md5sum <"$UFW_STATE")
+check "dry run exits 0" env DRY_RUN=1 bash -c 'PATH="$1:$PATH" bash "$2"' _ "$SB" "$ROOT/modules/remote/35-sshd.sh"
+check "dry run changes no rule" unchanged "$before"
+check "dry run writes no drop-in" test ! -e "$DROPIN"
+sshd_reset
 
 # ---------------------------------------------------------------- dry run --
 section "dry run changes nothing"

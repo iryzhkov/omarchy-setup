@@ -517,17 +517,73 @@ The trusted home subnets in `SSH_TRUSTED_SUBNETS` (default `192.168.70.0/24`
 and `192.168.90.0/24`) are then exempted from the rate limit: ufw's `LIMIT`
 refuses a source that opens six connections in 30 seconds, which the steward's
 admin transport and parallel agents exceed. Each subnet gets
-`22/tcp ALLOW from <subnet>` inserted ahead of `22/tcp LIMIT Anywhere`, which
-stays in force for every other source. Reapplying adds nothing that is already
-ahead of the limit, and moves an ALLOW that sits behind it. An ALLOW removes
-brute-force rate limiting for every address on the subnet, so the step runs only
-when `sshd -T -C` for a connection from that subnet reports password,
-keyboard-interactive and root login all disabled, and otherwise fails with the
-settings that block it. `SSH_TRUSTED_SUBNETS=()` keeps every source limited.
+`22/tcp ALLOW from <subnet>` inserted directly ahead of `22/tcp LIMIT Anywhere`,
+which stays in force for every other source, and tagged with the ufw comment
+`omarchy-sshd-trusted`.
 
-This module runs only on the remote profile, from a full `run.sh` (bootstrap,
-`omarchy-setup`, or the post-update hook after `omarchy update`). UpKeeper
-moves the checkout to the pinned commit but runs only `28-scripts`.
+An ALLOW removes brute-force rate limiting for every address on the subnet,
+which is acceptable only while sshd accepts keys alone. The module is
+conservative about that:
+
+- It runs `sshd -t` and `systemctl reload sshd` in the same run, even when its
+  drop-in did not change, so the exemption rests on what the running daemon
+  loaded. If either fails it grants nothing and restores the drop-in it
+  replaced.
+- It refuses if any `Match` block appears in `sshd_config` or any file it
+  includes, because `sshd -T` shows only the global settings, and if `sshd -T`
+  does not report `passwordauthentication`, `kbdinteractiveauthentication` and
+  `permitrootlogin` as `no`. The refusal names each blocking line.
+- Every refusal also revokes the rules tagged `omarchy-sshd-trusted`. A subnet
+  removed from the list loses its tagged rule on the next run.
+- Untagged rules for the same subnets (added by hand) are never adopted or
+  deleted; every run reports them as `unmanaged exemption`.
+- It fails closed on the firewall: it refuses unless ufw is active with exactly
+  one IPv4 `22/tcp LIMIT Anywhere` rule and no `ALLOW` from Anywhere on port
+  22, and it never appends an ALLOW without that LIMIT behind it. Rules are
+  inserted from a fresh `ufw status numbered` and deleted by full rule
+  specification, never by number, and the final order is re-read and verified.
+- The subnet list is validated whole before anything is touched: IPv4 network
+  addresses only, /16 or narrower, leading zeros and duplicates normalised.
+
+`SSH_TRUSTED_SUBNETS=()` keeps every source limited and revokes the tagged
+rules.
+
+### Applying the exemption to a host
+
+The module runs only on hosts whose recorded profile is `remote`, from a full
+`run.sh` (bootstrap, `omarchy-setup`, or the post-update hook after
+`omarchy update`). UpKeeper moves the checkout to the pinned commit but runs
+only `28-scripts`, so it never runs this module. normandy, the laptop and
+omarchy-pc record the `client` profile, so none of them gets it automatically.
+
+To apply it to one host by hand, in a terminal on that host (the module calls
+`sudo` for `sshd -T`, `sshd -t`, `systemctl reload`, `install` and `ufw`, so it
+needs interactive sudo or a fresh sudo timestamp):
+
+```bash
+sudo ufw status numbered > ~/ufw-before.txt      # keep the starting point
+sudo sshd -T | grep -E '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) '
+sudo grep -rniE '^[[:space:]]*match[[:space:]]' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+cd "$(cat ~/.local/state/omarchy-setup/root)"
+OMARCHY_SETUP_ROOT=$PWD OMARCHY_SETUP_LIB=$PWD/lib DRY_RUN=1 bash modules/remote/35-sshd.sh
+OMARCHY_SETUP_ROOT=$PWD OMARCHY_SETUP_LIB=$PWD/lib bash modules/remote/35-sshd.sh
+sudo ufw status numbered                         # compare with ~/ufw-before.txt
+```
+
+The module also reruns `omarchy setup security sshd` and installs the hardening
+drop-in, exactly as on a remote host. Afterwards the tagged ALLOW rules must sit
+above `22/tcp LIMIT IN Anywhere`, and both the IPv4 and the IPv6 LIMIT rows must
+still be there.
+
+Rollback removes only the module's own rules, by specification:
+
+```bash
+sudo ufw delete allow proto tcp from 192.168.70.0/24 to any port 22 comment omarchy-sshd-trusted
+sudo ufw delete allow proto tcp from 192.168.90.0/24 to any port 22 comment omarchy-sshd-trusted
+```
+
+Or set `SSH_TRUSTED_SUBNETS=()` and run the module again. Hand-added rules
+without the tag are left for you to remove.
 
 ## Secrets
 
