@@ -12,8 +12,8 @@ description: >
 
 # OV memory
 
-An OpenViking store on homelab (`http://192.168.70.223:1933`), exposed by the
-`ov-memory` MCP server. It is memory for *agents*, not a chat log: durable facts
+An OpenViking store in the homelab (`https://ov.ryzhkov.dev`, through the edge
+VIP), exposed by the `ov-memory` MCP server. It is memory for *agents*, not a chat log: durable facts
 about infrastructure, decisions and projects.
 
 ## Search before you assume
