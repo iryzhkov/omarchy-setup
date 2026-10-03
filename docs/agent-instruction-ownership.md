@@ -40,24 +40,42 @@ the whole fleet's instructions.
 
 ## How a change reaches the other machines
 
-1. Edit the authoritative file in this repository, on a branch, and get it reviewed.
-2. Converge the generated resident instructions on the machine you are working on:
-   `run.sh`, or the module alone, or `agents-instructions-gen --root .` after copying
-   `config/claude/CLAUDE.md` into place.
-3. Confirm those generated resident instructions match:
-   `agents-instructions-gen --root . --check` must exit 0.
-4. Publish with `upkeeper push` from that machine, following the `publish-agent-tooling`
-   skill. UpKeeper reads repository-owned skills from the pinned omarchy-setup checkout
-   rather than from installed home-directory copies. It projects the complete skill trees
-   to `~/.claude/skills` for Claude/OpenCode and `~/.agents/skills` for Codex. UpKeeper
-   captures other agent-environment files under its own validation rules.
-5. Other hosts converge on their next self-pull and receive those bytes.
+1. Edit the authoritative sources on a branch and run the repository checks.
+   `test/run.sh` and `python3 test/agents-instructions.py` generate into
+   throwaway homes, so validation changes no installed instructions.
+2. Push the source and get the PR reviewed. Report source publication separately
+   from release publication and fleet convergence. A PR-only task stops here.
+3. For an authorized release, follow the `publish-agent-tooling` skill.
+   UpKeeper reads skills from the pinned omarchy-setup checkout and projects their
+   complete trees to `~/.claude/skills` and `~/.agents/skills`.
+   Generated resident artifacts belong to the agent-environment component.
+   Review the full release and target drift before publication.
+4. Capture deliberately with `upkeeper push` only when promoting a validated
+   host; regenerate its resident artifacts and run
+   `agents-instructions-gen --root . --check` first. For a prepared release,
+   use authored publication with its required head and canonical digest fences;
+   do not recapture the host. Confirm release CI before authorized convergence.
 
-Step 3 is the one that is easy to skip and the one that matters. A capture is a photograph
-of the pushing host, so whatever that host is holding becomes the fleet's instructions,
-reviewed or not. The 2026-09-18 release republished this machine's months-old copy while
-the corrected text sat on `origin/main`. Running the check before the push is what makes
-"a capture publishes derived bytes only" true.
+No generated resident files are committed in this repository. Generation is
+validated in isolated tests and left to UpKeeper for distribution. Never edit
+installed copies to prepare a source change. The 2026-09-18 capture republished
+an old host copy while corrected source sat on main; validating derived bytes
+and choosing capture versus authored publication deliberately prevents recurrence.
+
+## Steward guidance ownership
+
+The resident `CLAUDE.md` and generated `AGENTS.md` summary own the interactive
+versus agreed-plan handoff rule and the manual model roles, until a generated
+policy replaces them. Their bulk-reading rule selects a focused reader subagent
+(Sonnet for Claude Code, Luna for Codex) and leaves quick known-file lookups direct.
+
+The `t3-task` skill owns one-task inputs, dry runs and result collection.
+The `t3-campaign` skill owns Jocasta handoff, milestone ledger and executor
+checkpoint conventions, declared task/review boundaries and the cross-provider
+review digestion loop. `t3-wait` owns external parking and resume outcomes.
+The executor reference holds the reusable brief template. The shared steward
+reference concatenates these skills; detailed runtime contracts remain in
+`t3-steward --help full` and family help rather than being copied everywhere.
 
 ## What the arrangement does and does not promise
 
@@ -108,4 +126,6 @@ UpKeeper capture taken from that host in the meantime publishes it to every mach
   changes nothing.
 - `test/agents-instructions.py` builds a fixture checkout and a home whose installed copies
   all carry text the checkout never says, and asserts that none of it reaches the output.
-- Both run in `.github/workflows/test.yml` on every push and pull request.
+- The real-source generator test also verifies current steward guidance reaches both
+  resident surfaces and the shared references without legacy routes or paths.
+- Both run in `.github/workflows/test.yml` on pushes to main and pull requests.
