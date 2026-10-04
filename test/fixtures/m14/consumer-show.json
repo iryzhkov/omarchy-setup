@@ -1,0 +1,105 @@
+{
+  "schema": "route-policy/v1",
+  "roles": [
+    {
+      "name": "plan",
+      "candidates": [
+        {
+          "route": "claudeAgent/claude-opus-5-5",
+          "effort": "high",
+          "tier": "standard"
+        },
+        {
+          "route": "codex/gpt-6.1-sol",
+          "effort": "high",
+          "tier": "standard"
+        }
+      ],
+      "constraints": {}
+    },
+    {
+      "name": "execute",
+      "candidates": [
+        {
+          "route": "claudeAgent/claude-opus-5-5",
+          "effort": "medium",
+          "tier": "standard"
+        },
+        {
+          "route": "codex/gpt-6.1-sol",
+          "effort": "medium",
+          "tier": "standard"
+        }
+      ],
+      "constraints": {}
+    },
+    {
+      "name": "review",
+      "candidates": [
+        {
+          "route": "claudeAgent/claude-opus-5-5",
+          "effort": "medium",
+          "tier": "standard"
+        },
+        {
+          "route": "codex/gpt-6.1-sol",
+          "effort": "medium",
+          "tier": "standard"
+        }
+      ],
+      "constraints": {}
+    },
+    {
+      "name": "critical-review",
+      "candidates": [
+        {
+          "route": "claudeAgent/claude-fable-5-1",
+          "effort": "medium",
+          "tier": "premium"
+        },
+        {
+          "route": "codex/gpt-6-astra",
+          "effort": "medium",
+          "tier": "premium"
+        }
+      ],
+      "constraints": {
+        "tiers": [
+          "premium"
+        ]
+      }
+    },
+    {
+      "name": "read",
+      "candidates": [
+        {
+          "route": "claudeAgent/claude-sonnet-5-5",
+          "effort": "medium",
+          "tier": "economy"
+        },
+        {
+          "route": "codex/gpt-6-luna",
+          "effort": "medium",
+          "tier": "economy"
+        }
+      ],
+      "constraints": {
+        "tiers": [
+          "economy"
+        ]
+      }
+    },
+    {
+      "name": "3d",
+      "candidates": [
+        {
+          "route": "codex/gpt-6-astra",
+          "effort": "medium",
+          "tier": "premium"
+        }
+      ],
+      "constraints": {}
+    }
+  ],
+  "digest": "36bf620787746dc384f6d4929a7a88726ca51543abe3826080383444a8bd3e5d"
+}

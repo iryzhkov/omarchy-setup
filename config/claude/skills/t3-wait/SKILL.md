@@ -23,6 +23,11 @@ A plain CLI may use `task result <run> --wait` or
 For a decision from Igor inside a task, use `t3-steward ask`, not a shell check
 or native question tool; see `t3-task`. Outside a task use the session's question tool.
 
+Policy-backed roles do not change wait semantics or implement quota failover.
+After deployment, use the resident role policy for work resumed after a wait;
+operator/session provider and effort restrictions still require explicit pins.
+No nested review orchestration or M16/M17 compiler is implied.
+
 ## Choose the condition
 
 | Kind | Arguments | Outcome |

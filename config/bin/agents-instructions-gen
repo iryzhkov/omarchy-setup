@@ -38,7 +38,7 @@ die() {
 
 usage() {
   cat <<'USAGE'
-Usage: agents-instructions-gen [--root DIR] [--check]
+Usage: agents-instructions-gen [--root DIR] [--policy FILE] [--check]
 
 Generate ~/.config/agents/ from an omarchy-setup checkout. The checkout is the only
 source; nothing is ever read back out of $HOME.
@@ -46,6 +46,9 @@ source; nothing is ever read back out of $HOME.
   --root DIR  The checkout to read. Default: $OMARCHY_SETUP_ROOT, else the checkout this
               script is running from. A copy installed in ~/.local/bin is not in a
               checkout, so it needs one of the two.
+  --policy FILE  Explicit reviewed route-policy/v1 input; parsed by t3-steward policy
+                 show --file FILE --json. Never discovered under HOME. Native roles
+                 require this option; without it legacy generation remains compatible.
   --check     Change nothing. Compare the installed copies against what this checkout
               says they should be, and report every path that differs and in which
               direction. Exit 0 when the host matches, 3 when it has diverged, 1 on an
@@ -58,6 +61,7 @@ USAGE
 root=''
 root_source=''
 mode=install
+policy=''
 while (($#)); do
   case $1 in
   --root)
@@ -69,6 +73,17 @@ while (($#)); do
   --root=*)
     root=${1#--root=}
     root_source='--root'
+    shift
+    ;;
+  --policy)
+    (($# >= 2)) && [[ -n $2 ]] || die "--policy needs a nonempty file"
+    [[ -z $policy ]] || die "--policy supplied twice"
+    policy=$2
+    shift 2
+    ;;
+  --policy=*)
+    [[ -z $policy && -n ${1#--policy=} ]] || die "--policy needs one nonempty file"
+    policy=${1#--policy=}
     shift
     ;;
   --check)
@@ -328,6 +343,11 @@ HDR
   awk '/^# Working documents: Jocasta$/ {p=1; next} p && /^# / {exit} p' \
     "$claude_source" | grep -v '/.config/agents/jocasta.md' || true
 } >"$stage/jocasta.md"
+
+if [[ -n $policy ]]; then
+  python3 "$root/config/bin/agents-role-project" "$root" "$stage" "$policy" "$mode"
+  exit $?
+fi
 
 # ------------------------------------------------------------------ check --
 # A report, not a repair: --check writes nothing anywhere. It verifies the resident

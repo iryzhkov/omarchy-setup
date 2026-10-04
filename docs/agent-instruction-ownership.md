@@ -38,6 +38,82 @@ find a checkout it names the paths it looked for and changes nothing. That refus
 deliberate: reading the installed copies back is how a hand-edit on one machine became
 the whole fleet's instructions.
 
+## Explicit policy projection (M14 source interface)
+
+The optional API is:
+
+```sh
+agents-instructions-gen --root /exact/omarchy-setup --policy /explicit/reviewed-policy.yaml
+agents-instructions-gen --root /exact/omarchy-setup --policy /explicit/reviewed-policy.yaml --check
+```
+
+The policy file is a separate explicit input. There is no HOME policy discovery,
+environment policy fallback, installed-source fallback or catalog/readiness query.
+The generator invokes `t3-steward policy show --file FILE --json`; Steward's
+rc108 route-policy/v1 parser owns schema validation. The helper verifies the
+normalized response and raw-byte SHA-256, rejects input changes and symlinks,
+and enforces recognized claude/codex provider constraints. This frontend
+supports the explicit instances `claudeAgent` and `codex` only; other aliases
+or constraints refuse rather than invent mappings. Candidate and role order is
+retained, and each provider selects its first eligible candidate. Every one of
+the five native roles must have an eligible candidate for both providers;
+incomplete projections refuse. The optional 3d role remains Codex-only guidance.
+
+Claude family aliases opus/sonnet/haiku/fable are a native frontend projection
+of supported `claude-FAMILY-VERSION` IDs, never evidence that an exact catalog
+model is authorized. Steward retains exact authorization. Native definitions
+never grant tools, permissions or auth, and Codex overlays contain only top-level
+`model` and `model_reasoning_effort` (current v2 format).
+
+Policy-backed generated home-relative output inventory for derive integration:
+
+| Output | Source / contents |
+|---|---|
+| `.claude/omarchy-setup/CLAUDE.md` | source `config/claude/CLAUDE.md` template with Claude-specific policy Model roles |
+| `.config/agents/AGENTS.md` | generator template with Codex-specific policy Model roles |
+| `.config/agents/huyang.md` | existing source section + skill |
+| `.config/agents/jocasta.md` | existing source section |
+| `.config/agents/ov-memory.md` | existing source skills |
+| `.config/agents/t3-steward.md` | maintained task/campaign/wait skills |
+| `.config/agents/t3-campaign-executor-briefs.md` | existing source reference |
+| `.codex/AGENTS.md` | generated fleet fence; unrelated instructions preserved |
+| `.claude/agents/reader.md` | policy read |
+| `.claude/agents/executor.md` | policy execute |
+| `.claude/agents/reviewer.md` | policy review |
+| `.claude/agents/critical-reviewer.md` | policy critical-review |
+| `.claude/agents/planner.md` | policy plan |
+| `.codex/reader.config.toml` | policy read |
+| `.codex/executor.config.toml` | policy execute |
+| `.codex/reviewer.config.toml` | policy review |
+| `.codex/critical-reviewer.config.toml` | policy critical-review |
+| `.codex/planner.config.toml` | policy plan |
+| `.config/opencode/opencode.json` (only when present) | preserves unrelated settings/instructions and updates existing pointer list |
+
+The imported CLAUDE artifact, both role sections and each native file record
+the raw policy digest; ordered role/candidate/constraint metadata remains visible.
+All outputs are staged and all destinations preflighted before installation.
+Symlinks, malformed fences/settings, unmanaged native collisions, consumer
+failures, invalid policies and changing input bytes refuse before installed writes.
+Existing native files are rewritten only if they carry the generator's policy
+marker. The generator owns these exact native filenames, never their parent
+directories: unrelated agents, profiles, settings and skills coexist. There is
+no native retirement or unmanaged-role deletion. Filesystem failures during the
+final per-file atomic replacements are not a multi-file rollback guarantee.
+
+Without `--policy`, the legacy API, manual fallback guidance, module installation
+and known legacy reference cleanup remain compatible. It does not generate or
+retire native roles. Module31 remains the legacy installer; policy-aware UpKeeper
+derive integration must supply the explicit policy file and collect this inventory.
+This source change does not activate S1A shared ownership. Source generation is
+not release or runtime proof; M14 whole-release acceptance remains pending.
+
+Offline CI uses pinned consumer response fixtures and adversarial envelopes.
+The implementation task separately builds the reviewed Steward commit
+`d2327563e90e9b66adaf80c5a7a03746fce16763` and enables schema parity with
+`M14_POLICY_CONSUMER=/temporary/t3-steward python3 test/agents-instructions.py`.
+Only schema inspection is invoked; no Claude model call or live readiness is
+needed. Native syntax checks are static.
+
 ## How a change reaches the other machines
 
 1. Edit the authoritative sources on a branch and run the repository checks.

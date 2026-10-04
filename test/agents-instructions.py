@@ -332,3 +332,5 @@ with tempfile.TemporaryDirectory() as temporary:
     assert (home / ".config/agents/AGENTS.md").read_text() == shared
 
 print("Inert candidate: legacy direct/copied writer and retirement preserved")
+
+subprocess.run(["python3", str(root / "test/agent-roles.py")], check=True)
