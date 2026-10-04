@@ -16,6 +16,25 @@ for exploration, design and contract decisions; an agreed multi-step plan goes t
 cannot replace a declared task or independent review. The resident instructions
 own model roles; select a currently advertised route with `t3-steward models`.
 
+## Policy-backed roles (Phase A)
+
+After explicit policy-backed deployment, use `read`, `execute`, `review`,
+`critical-review` and `plan` for the required role. The native
+reader/executor/reviewer/critical-reviewer/planner definitions are for bounded
+same-provider work; they cannot replace a declared task or independent review.
+Steward retains exact catalog authorization and production review diversity.
+Family aliases in native Claude definitions are frontend projection only.
+
+For one task, `t3-steward task run --role execute --dry-run -- "Bounded outcome"`
+selects from the deployed policy. Before deployment, continue using an explicit
+advertised route. Operator/session restrictions take precedence: pin
+`--model "$ROUTE" --effort medium` when restricted to one provider and medium
+effort, and verify that the route belongs to that provider. Never silently
+raise effort or switch providers after failure. Review roles select one reviewer
+in Phase A; explicit independent/judge/swarm routes still express the production
+review contract. Nested review orchestration, quota failover and M16/M17
+compilation are not implemented by these generated files.
+
 ## Start from the checkout
 
 Choose `ROUTE` from `t3-steward models` for the required role and effort. Do not

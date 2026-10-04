@@ -1,0 +1,29 @@
+schema: route-policy/v1
+roles:
+  - name: plan
+    candidates:
+      - {route: claudeAgent/claude-opus-5-5, effort: high, tier: standard}
+      - {route: codex/gpt-6.1-sol, effort: high, tier: standard}
+  - name: execute
+    candidates:
+      - {route: claudeAgent/claude-opus-5-5, effort: medium, tier: standard}
+      - {route: codex/gpt-6.1-sol, effort: medium, tier: standard}
+  - name: review
+    candidates:
+      - {route: claudeAgent/claude-opus-5-5, effort: medium, tier: standard}
+      - {route: codex/gpt-6.1-sol, effort: medium, tier: standard}
+  - name: critical-review
+    constraints:
+      tiers: [premium]
+    candidates:
+      - {route: claudeAgent/claude-fable-5-1, effort: medium, tier: premium}
+      - {route: codex/gpt-6-astra, effort: medium, tier: premium}
+  - name: read
+    constraints:
+      tiers: [economy]
+    candidates:
+      - {route: claudeAgent/claude-sonnet-5-5, effort: medium, tier: economy}
+      - {route: codex/gpt-6-luna, effort: medium, tier: economy}
+  - name: 3d
+    candidates:
+      - {route: codex/gpt-6-astra, effort: medium, tier: premium}

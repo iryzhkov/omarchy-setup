@@ -30,10 +30,29 @@ schedules. Quick same-provider subagents are allowed for reading and sub-work,
 but never in place of a declared task or review. Each declared task has its own
 admission, placement, verification, artifacts and retry boundary.
 
-Model roles are manual until a generated policy replaces them; the resident
-instructions own the assignments and effort limits. Use `t3-steward models`
-and `campaign check` to select real instance/model routes. Do not invent role
-flags or silently escalate effort after failure.
+The resident instructions own policy-backed roles after explicit deployment,
+and manual fallback assignments otherwise. Use `t3-steward models` and
+`campaign check` to verify real routes. Keep explicit provider/effort pins for
+operator or session restrictions; never silently escalate after failure.
+
+## Policy-backed roles (Phase A)
+
+After explicit policy-backed deployment, use `read`, `execute`, `review`,
+`critical-review` and `plan` for the required role. The native
+reader/executor/reviewer/critical-reviewer/planner definitions are for bounded
+same-provider work; they cannot replace a declared task or independent review.
+Steward retains exact catalog authorization and production review diversity.
+Family aliases in native Claude definitions are frontend projection only.
+
+For one task, `t3-steward task run --role execute --dry-run -- "Bounded outcome"`
+selects from the deployed policy. Before deployment, continue using an explicit
+advertised route. Operator/session restrictions take precedence: pin
+`--model "$ROUTE" --effort medium` when restricted to one provider and medium
+effort, and verify that the route belongs to that provider. Never silently
+raise effort or switch providers after failure. Review roles select one reviewer
+in Phase A; explicit independent/judge/swarm routes still express the production
+review contract. Nested review orchestration, quota failover and M16/M17
+compilation are not implemented by these generated files.
 
 ## Write the executor brief before the manifest
 

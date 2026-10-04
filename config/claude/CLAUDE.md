@@ -104,6 +104,12 @@ the work needs operator-level access, or it releases to the fleet. After handoff
 keep only the run id and Jocasta ledger reference in the session's working set;
 fetch detailed evidence when needed.
 
+With explicit `agents-instructions-gen --policy FILE`, the generated imported
+Claude artifact replaces the manual fallback below with Claude-specific policy roles;
+Codex receives its own policy projection. Without that deployment, keep the manual
+guidance and explicit routes. Native roles cover bounded same-provider work only.
+Operator/session provider or effort restrictions require explicit pins in Steward.
+
 Model roles are assigned by hand until a generated policy replaces them:
 Opus 5.5 or Sol 6.1 at high effort for planning and execution; Fable 5.1 or Astra
 at medium effort for critical review, including plan review; Sonnet 5.5 or Luna 6
