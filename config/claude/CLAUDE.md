@@ -106,12 +106,12 @@ fetch detailed evidence when needed.
 
 Model roles are assigned by hand until a generated policy replaces them:
 Opus 5.5 or Sol 6.1 at high effort for planning and execution; Fable 5.1 or Astra
-at medium effort for critical review, including plan review; Sonnet 5.5 or Luna
+at medium effort for critical review, including plan review; Sonnet 5.5 or Luna 6
 at medium effort for reading. Never use max effort or above. Check
 `t3-steward models` for available routes; role names are guidance, not CLI flags.
 In Claude Code, bulk reading (many files, long logs, large diffs or codebase
 searches) goes to a reader subagent (`model: sonnet`) with a focused question and
-a bounded answer. Codex sessions use Luna at medium effort for the same.
+a bounded answer. Codex sessions use Luna 6 (`codex/gpt-6-luna`) at medium effort for the same.
 Read a quick lookup in a known file directly.
 
 Inside a steward task, `t3-steward ask` is the one way to get a decision from Igor:

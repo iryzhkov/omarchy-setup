@@ -160,6 +160,7 @@ then run validation. Choose the execution and review roles deliberately.
 version: 2
 name: implement-and-review
 class: surplus
+inputs: [inputs/plan.md]
 environment:
   project: PROJECT
   type: git
@@ -190,6 +191,8 @@ tasks:
     resources: {preset: light}
 ```
 
+Top-level `inputs` ships the plan read-only at `.t3/inputs/inputs/plan.md`;
+files merely present in the directory are not bundled.
 `prompt_file` is required; inline prompts are unsupported. `needs` builds the
 DAG; `inputs_from` names outputs or commits from a task also named in `needs`.
 Dependency files are read-only at `.t3/dependencies/<producer task id>/`;
@@ -269,18 +272,86 @@ source run and diagnose before rerunning. Authorized cancellation uses
 Register a validated workflow without an initial run using
 `campaign submit ./campaign --register-only --idempotency-key scheduled-1`.
 Then use `schedules put` with the returned workflow id, cron, timezone and an
-explicit `--after-failure next-cycle|hold` choice. Fetch the current schedule
-before replacing it; pass `--expected-revision` and a stable `--request-id`.
+explicit `--after-failure next-cycle|hold` choice. Fetch the current definition
+with `t3-steward schedules show <schedule> --json` and use its revision for
+`--expected-revision` when replacing it, plus a stable `--request-id`.
+Read commands are `schedules list`, `show` and `history`; revision-fenced controls
+are `schedules run`, `enable`, `disable` and `delay-next` (requires `--until`).
+Controls require `--reason`; use a stable `--command-id` when retrying.
+See `t3-steward schedules --help full` for the complete syntax, including the
+required schedule id, `--name`, `--workflow`, `--cron`, `--timezone` and `--reason`
+on `put`.
 Registration requires an upgraded coordinator and refuses supervision/gates;
 do not silently fall back to starting work. Schedules own timing, history and
 overlap prevention; never recreate them with local timers or repeated task starts.
 
-Operator-only verbs with no campaign/task replacement remain under
-`t3-steward backlog`: catalog `projects`/`workers`, graph amendments and
-artifact inspection/retrieval. Consult current help and preserve revision fences.
-Use campaign/task verbs for normal lifecycle work and `triage` for attention.
-All remote commands use the configured client transport; never bypass it with
-`ssh <coordinator> t3-steward`. Worker enrollment is a separate operator action,
-not routine task recovery. Transport exits: 3 configuration, 4 authentication,
-5 unavailable, 6 timeout, 7 protocol, 8 rejected. Prove the answering identity
-with `t3-steward coordinator identity --json` before submission.
+## Operator-only administration
+
+Use campaign/task verbs for normal lifecycle work. The selected commands below
+retain low-level administration where those verbs are not replacements on rc.105.
+This is not a complete inventory: `t3-steward backlog --help full` and
+`t3-steward worker --help full` are the complete lists, including stopped
+coordinator backups, daemon/containment verbs and legacy compatibility helpers.
+Read-only diagnostics are available to agents; mutations require operator authority.
+`t3-steward triage` prints recovery commands with ids, revisions and idempotency
+keys filled in. Inspect the reason and authority before executing a proposed control.
+
+| Namespace / verbs | Purpose |
+| --- | --- |
+| `backlog projects`, `workers` | Read-only project catalog and worker enrollment/capabilities. |
+| `backlog diagnose`, `task show`, `events`, `usage` | Read-only run diagnosis, task detail, event history and bounded usage. |
+| `backlog commands`, `command show` | Read-only control receipts and their application. |
+| `backlog artifacts`, `artifact show`, `artifact get` | Inspect retained evidence or retrieve it locally. |
+| `backlog task add`, `task set`, `edge add`, `edge remove`, `run clone` | Amend or clone the persisted graph; require `--expected-revision N --request-id ID --reason TEXT`. |
+| `backlog start`, `resume`, `retry`, `skip`, `cancel` | Revision-fenced controls on an existing task, rather than creating a campaign rerun. |
+| `backlog pause`, `delay`, `rewake` | Pause an attempt, defer eligibility, or wake waiting-external after its wait is no longer live. |
+| `backlog recover` | Resolve an assignment using coordinator/assignment epochs, attempt revision and evidence id/hash; consult full help for the exact fences. |
+| `backlog quarantine`, `quarantine release` | Read legacy intake refusals, or deliberately clear a marker after fixing its cause. |
+| `campaign recovery` | Retry a failed supervised operation using fenced evidence; see `campaign recovery retry --help full`. |
+
+`backlog start` is an explicit operator override: it bypasses quota forecast,
+admission, freshness, runway and automatic quota throttling through worker delivery.
+Use it only under explicit user authority while the user is manually monitoring quota.
+Automatic queued work must remain fenced; worker health, dependency, lock, revision
+and effect-safety checks still apply. Other controls do not grant this override.
+Preserve `--expected-revision` and use a stable `--command-id` for retries.
+`campaign rerun` creates a new run; it and supervised `campaign recovery`
+are not replacements for these controls on an existing attempt.
+
+Selected syntax (replace placeholders with inspected ids and revisions):
+
+```sh
+t3-steward backlog start <run>/<task> --reason "Explicitly authorized quota override" --expected-revision N --command-id ID --json
+t3-steward backlog edge add <run>/<task> --from <dependency> --expected-revision N --request-id ID --reason "Add required dependency"
+t3-steward backlog artifacts <run>/<task> --json
+t3-steward backlog artifact get <artifact> --output evidence.md
+t3-steward backlog quarantine --json
+t3-steward backlog quarantine release <key> --reason "Fixed the intake configuration"
+```
+
+Quarantine applies to legacy file intake, not synchronous task/campaign submission.
+Changing the file's content releases its marker; after a configuration-only fix,
+release the intake key, not the namespaced record key. Release creates nothing:
+the next intake cycle retries, and can refuse again if the cause remains.
+
+All ordinary remote commands use the configured client transport; never bypass
+it with `ssh <coordinator> t3-steward`. Worker enrollment is the one deliberate exception:
+`worker enroll` must run on the coordinator host, at its console or through a
+plain SSH shell there. The remote-admin role is refused even over an authenticated
+client because enrollment binds coordinator identity, epoch and credentials.
+
+```sh
+t3-steward worker enroll <worker> --current-catalog --reason "Re-enroll after catalog change"
+t3-steward worker enroll --all --current-catalog --reason "Re-enroll stale workers"
+```
+
+`--current-catalog` reads the required digest and current enrollment revision
+from the coordinator. `--all` skips workers already current. For
+`catalog-digest-mismatch`, this is the operator recovery; a
+`project-binding-defaulted` warning also requires checking the project binding
+and eligible worker enrollment. See `campaign help readiness` and
+`worker enroll --help full`; do not enroll as routine task recovery.
+
+Transport exits: 3 configuration, 4 authentication, 5 unavailable, 6 timeout,
+7 protocol, 8 rejected. Prove the answering identity with
+`t3-steward coordinator identity --json` before submission.

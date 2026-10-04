@@ -40,6 +40,12 @@ question tool. A plain CLI can block with `task result --wait` or
 `campaign show --wait`; an agent task registers a task-bound wait and ends its
 turn. Campaign executors keep `continuation.md` current for resume and handoff.
 
+The `t3-backlog` compatibility wrapper is obsolete for new agent guidance;
+existing scripts can continue using it during the rollback window. Use
+`t3-steward task run` for new submissions. Retained operator controls and their
+authority safeguards live in the `t3-campaign` skill's operator section; full
+`backlog` and `worker` help hold the complete low-level command inventories.
+
 Commands and flags were checked against 0.11.0-rc.105. Role assignment,
 milestone ledgers and reader digestion are agent conventions until generated
 policy and runtime orchestration replace them. Older clients or coordinators may

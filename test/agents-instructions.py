@@ -262,6 +262,35 @@ with tempfile.TemporaryDirectory() as temporary:
     require("subagents cannot replace a declared task or review",
             "never in place of a declared task or review" in reference)
     require("operator commands are labeled", "Operator-only" in reference)
+    # Operator guidance must survive generation, separately from agent lifecycle.
+    campaign = (root / "config/claude/skills/t3-campaign/SKILL.md").read_text()
+    task = (root / "config/claude/skills/t3-task/SKILL.md").read_text()
+    operator = reference.partition("## Operator-only administration")[2]
+    require("operator section separate from normal lifecycle", bool(operator))
+    for term in ("backlog start", "explicit user authority", "manually monitoring quota",
+                 "quota forecast", "admission", "freshness", "runway",
+                 "automatic quota throttling", "effect-safety",
+                 "quarantine release", "creates nothing", "worker enroll",
+                 "must run on the coordinator host", "one deliberate exception",
+                 "--current-catalog", "catalog-digest-mismatch",
+                 "campaign recovery", "backlog --help full", "worker --help full",
+                 "resume", "retry", "skip", "pause", "delay", "rewake", "recover",
+                 "events", "usage", "diagnose", "task show", "commands",
+                 "edge add", "artifact get", "--expected-revision", "--request-id"):
+        require(f"operator reference: missing {term}", term in operator)
+    for term in ("schedules show <schedule> --json", "schedules --help full",
+                 "list", "history", "run", "enable", "disable", "delay-next"):
+        require(f"schedule reference: missing {term}", term in reference)
+    require("bundled plan declared", "inputs: [inputs/plan.md]" in campaign)
+    require("bundled plan mounted path", ".t3/inputs/inputs/plan.md" in reference)
+    require("task checkpoint retention explained",
+            "--outputs continuation.md,handoff.md" in task)
+    require("task catalog is read-only",
+            "Read-only catalog lookups" in task and "operator-only catalog" not in task)
+    require("task points at shared operator guidance",
+            "Operator-only administration" in task)
+    for label, text in (("Claude", claude), ("shared", shared)):
+        require(f"{label}: unambiguous reader role", "Luna 6" in text)
     # Link rewriting and source provenance remain correct with real skills.
     require("generated reference link",
             "](t3-campaign-executor-briefs.md)" in reference)

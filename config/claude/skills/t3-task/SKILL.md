@@ -82,7 +82,9 @@ Ending a task turn with no task-bound wait completes the task: declared outputs
 are collected and verification runs. Run long checks in the foreground and wait
 for them; background shell processes are not waited for. For an external condition,
 use `t3-steward wait add --task current` and end the turn immediately; see
-`t3-wait`. Keep `continuation.md` current before a park or handoff.
+`t3-wait`. Keep `continuation.md` current before a park or handoff. Parking
+holds the local checkpoint in the workspace. For retention after completion or
+handoff, declare `--outputs continuation.md,handoff.md` at task submission.
 
 ## Collect and diagnose
 
@@ -103,6 +105,8 @@ and never cancels work. Inside an agent task, park instead of blocking on extern
 work. Reattach with the same selector. Diagnose before retrying; use
 `campaign cancel <run> --reason TEXT` for an authorized cancellation.
 
-Operator-only catalog queries without a replacement are
-`t3-steward backlog projects` and `t3-steward backlog workers --json`.
-Use `triage` for attention rather than inventing recovery controls.
+Read-only catalog lookups without a replacement are
+`t3-steward backlog projects` (fleet names and types for `--project` / `--fresh`)
+and `t3-steward backlog workers --json` (worker capabilities and enrollment).
+For retained controls and safeguards, see **Operator-only administration** in
+`t3-campaign`; use `triage` for attention and prepared recovery commands.
