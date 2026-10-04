@@ -300,3 +300,35 @@ with tempfile.TemporaryDirectory() as temporary:
     assert not failures, "\n".join(failures)
 
 print("Steward instruction contracts: real-source generation passed")
+
+# INERT preparation compatibility: the legacy direct generator and installed
+# module path keep writing only legacy source bytes in disposable homes.
+with tempfile.TemporaryDirectory() as temporary:
+    base = Path(temporary)
+    home = make_home(base)
+    stale = home / ".config/agents/agent99.md"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("retired reference")
+    result = generate(home, "--root", str(root))
+    assert result.returncode == 0, result.stderr
+    assert not stale.exists(), "legacy retirement cleanup must remain"
+    assert not (home / ".config/agents/owner.json").exists()
+    assert not (root / "shared/agent-instructions").exists()
+    for source in ("run.sh", "modules/common/28-scripts.sh",
+                   "modules/common/31-agent-instructions.sh",
+                   "config/hooks/post-update.d/omarchy-setup.hook"):
+        text = (root / source).read_text()
+        assert "upkeeper-shared-prepare" not in text, source
+        assert "candidate-inert" not in text, source
+    installed = home / ".local/bin/agents-instructions-gen"
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(Path(generator).read_bytes())
+    invoked = subprocess.run(
+        ["bash", str(installed), "--root", str(root)],
+        env=dict(os.environ, HOME=str(home)),
+        capture_output=True, text=True,
+    )
+    assert invoked.returncode == 0, invoked.stderr
+    assert (home / ".config/agents/AGENTS.md").read_text() == shared
+
+print("Inert candidate: legacy direct/copied writer and retirement preserved")
