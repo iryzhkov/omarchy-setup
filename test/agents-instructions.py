@@ -58,13 +58,19 @@ def make_home(base):
     )
     opencode = home / ".config/opencode/opencode.json"
     opencode.parent.mkdir(parents=True)
+    foreign = [
+        "original.md", "/elsewhere/rules.md", ".config/agents/user.md",
+        str(home / ".config/agents-personal/rules.md"),
+        str(home / ".config/agents-custom/user.md"), str(home / ".config/agents.md"),
+        str(home / ".config/agents/user.md"),
+    ]
     opencode.write_text(json.dumps({
-        "instructions": [
-            "original.md",
+        "instructions": foreign + [
             str(home / ".config/agents/t3-steward.md"),
             str(home / ".config/agents/jocasta.md"),
         ],
         "model": "keep",
+        "permission": {"edit": "ask"},
     }))
     opencode.chmod(0o600)
     return home
@@ -138,7 +144,14 @@ with tempfile.TemporaryDirectory() as temporary:
 
     config = json.loads((home / ".config/opencode/opencode.json").read_text())
     assert config["model"] == "keep"
-    assert config["instructions"] == [str(home / ".config/agents/AGENTS.md"), "original.md"], (
+    foreign = [
+        "original.md", "/elsewhere/rules.md", ".config/agents/user.md",
+        str(home / ".config/agents-personal/rules.md"),
+        str(home / ".config/agents-custom/user.md"), str(home / ".config/agents.md"),
+        str(home / ".config/agents/user.md"),
+    ]
+    assert config["permission"] == {"edit": "ask"}
+    assert config["instructions"] == [str(home / ".config/agents/AGENTS.md")] + foreign, (
         "only the shared pointer is loaded into every session; foreign entries are kept"
     )
     assert (home / ".config/opencode/opencode.json").stat().st_mode & 0o777 == 0o600
@@ -234,14 +247,17 @@ with tempfile.TemporaryDirectory() as temporary:
     for label, text in (("Claude", claude), ("shared", shared)):
         for term in ("interactive", "Igor has agreed", "Jocasta", "run id",
                      "ledger", "operator-level", "estimated cost", "fleet",
-                     "Opus 5.5", "Sol 6.1", "Fable 5.1", "Astra",
-                     "Sonnet 5.5", "Luna", "high", "medium", "max effort",
+                     "high", "medium", "max effort",
                      "generated policy", "reader subagent", "bounded answer",
                      "known file", "t3-steward ask", "ask-answer.json",
                      "t3-steward review"):
             require(f"{label}: missing {term}", term in text)
-    require("Claude reader selects Sonnet", "model: sonnet" in claude)
-    require("shared reader selects Luna", "Codex" in shared and "Luna" in shared)
+    require("no-policy guidance remains inert", "assigned by hand" in claude and "assigned by hand" in shared)
+    require("no-policy resident source stays unchanged",
+            (home / ".claude/omarchy-setup/CLAUDE.md").read_bytes() == POISON.encode())
+    require("no-policy API creates no native roles",
+            not (home / ".claude/agents").exists() and
+            not list((home / ".codex").glob("*.config.toml")))
     for term in ("task run --input", "--dry-run", "task result <run> --wait",
                  "campaign show <run> --wait", "triage", "--independent",
                  "--swarm", "--judge", "summary.json", "review result",
@@ -289,8 +305,8 @@ with tempfile.TemporaryDirectory() as temporary:
             "Read-only catalog lookups" in task and "operator-only catalog" not in task)
     require("task points at shared operator guidance",
             "Operator-only administration" in task)
-    for label, text in (("Claude", claude), ("shared", shared)):
-        require(f"{label}: unambiguous reader role", "Luna 6" in text)
+    require("no-policy check reports imported source drift",
+            generate(home, "--root", str(root), "--check").returncode == 3)
     # Link rewriting and source provenance remain correct with real skills.
     require("generated reference link",
             "](t3-campaign-executor-briefs.md)" in reference)

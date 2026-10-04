@@ -92,6 +92,13 @@ Policy-backed generated home-relative output inventory for derive integration:
 The imported CLAUDE artifact, both role sections and each native file record
 the raw policy digest; ordered role/candidate/constraint metadata remains visible.
 All outputs are staged and all destinations preflighted before installation.
+An explicit policy resolving to an output, sharing its inode through a hardlink,
+or overlapping its directory ancestry is refused before any installed write.
+Fleet and legacy Jocasta fences must each have one ordered pair and disjoint
+intervals; overlapping, nested, duplicate or incomplete blocks refuse in both
+policy-backed and standalone legacy generation, including check mode.
+OpenCode removes only the exact generated reference paths (including the retired
+agent99 reference), preserving similarly named siblings and unrelated entries.
 Symlinks, malformed fences/settings, unmanaged native collisions, consumer
 failures, invalid policies and changing input bytes refuse before installed writes.
 Existing native files are rewritten only if they carry the generator's policy

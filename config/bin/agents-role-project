@@ -164,19 +164,39 @@ def replace_roles(text, replacement):
     return changed
 
 
-def merged_codex(text, shared):
-    start, end = "<!-- fleet:start -->", "<!-- fleet:end -->"
-    legacy_start, legacy_end = "<!-- jocasta:start -->", "<!-- jocasta:end -->"
-    for first, last in ((legacy_start, legacy_end), (start, end)):
+def validate_fences(text):
+    intervals = []
+    for name in ("fleet", "jocasta"):
+        first, last = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
         if first in text or last in text:
             if text.count(first) != 1 or text.count(last) != 1 or text.index(last) < text.index(first):
                 refuse("malformed instruction block")
+            intervals.append((text.index(first), text.index(last) + len(last)))
+    intervals.sort()
+    if len(intervals) == 2 and intervals[0][1] > intervals[1][0]:
+        refuse("overlapping instruction blocks")
+
+
+def managed_instructions(home):
+    # Exact generated references only; no ownership of sibling paths or the directory.
+    return {str(home / ".config/agents" / name) for name in (
+        "AGENTS.md", "ov-memory.md", "huyang.md", "t3-steward.md",
+        "t3-campaign-executor-briefs.md", "jocasta.md", "agent99.md")}
+
+
+def merged_codex(text, shared):
+    start, end = "<!-- fleet:start -->", "<!-- fleet:end -->"
+    legacy_start, legacy_end = "<!-- jocasta:start -->", "<!-- jocasta:end -->"
+    validate_fences(text)
     if legacy_start in text:
         text = text[:text.index(legacy_start)].rstrip() + "\n" + text[text.index(legacy_end) + len(legacy_end):].lstrip()
     block = start + "\n" + shared.strip() + "\n" + end
     if start in text:
-        return text[:text.index(start)] + block + text[text.index(end) + len(end):]
-    return (text.rstrip() + "\n\n" + block + "\n").lstrip()
+        text = text[:text.index(start)] + block + text[text.index(end) + len(end):]
+    else:
+        text = (text.rstrip() + "\n\n" + block + "\n").lstrip()
+    validate_fences(text)
+    return text
 
 
 def run(root, stage, policy_path, check):
@@ -223,14 +243,20 @@ def run(root, stage, policy_path, check):
         config = json.loads(opencode_path.read_text(), object_pairs_hook=strict_object)
         if not isinstance(config, dict) or not isinstance(config.get("instructions", []), list):
             refuse("OpenCode instructions must be a list")
-        generated = str(home / ".config/agents")
+        managed = managed_instructions(home)
         config["instructions"] = [str(home / ".config/agents/AGENTS.md")] + [
-            entry for entry in config.get("instructions", []) if not str(entry).startswith(generated)]
+            entry for entry in config.get("instructions", []) if str(entry) not in managed]
         outputs[".config/opencode/opencode.json"] = (json.dumps(config, indent=2) + "\n").encode()
     # Preflight every destination before the first write. Own exact native files only.
     for name in outputs:
         destination = home / name
         safe_path(destination)
+        resolved = destination.resolve()
+        policy_resolved = policy_path.resolve()
+        if (resolved == policy_resolved or resolved in policy_resolved.parents
+                or policy_resolved in resolved.parents
+                or destination.exists() and destination.samefile(policy_path)):
+            refuse(f"policy/output collision: {destination}")
         for parent in destination.parents:
             if parent.exists() and not parent.is_dir():
                 refuse(f"non-directory output ancestor: {parent}")
