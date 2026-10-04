@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+
+from m15_guidance import assert_m15_guidance
 import tomllib
 
 root = Path(__file__).resolve().parents[1]
@@ -184,6 +186,8 @@ print(os.environ['RESPONSE'])
     assert not (home / ".codex/3d.config.toml").exists()
     shared = (home / ".config/agents/AGENTS.md").read_text()
     imported = (home / ".claude/omarchy-setup/CLAUDE.md").read_text()
+    reference = (home / ".config/agents/t3-steward.md").read_text()
+    assert_m15_guidance((shared, imported), reference)
     assert "## Model roles (codex)" in shared and "## Model roles (claude)" in imported
     assert "- 3d:" in shared and "- 3d:" not in imported
     assert "assigned by hand" not in shared + imported

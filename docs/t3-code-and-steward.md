@@ -30,7 +30,9 @@ Stay interactive for exploration, design and contract decisions. Once Igor agree
 a plan, write it to Jocasta and hand it off with the `t3-campaign` skill using
 the session as notify thread; retain the run id and ledger reference. Quick
 same-provider subagents can read or do sub-work, never replace declared tasks or
-reviews. The resident instructions own manual model roles and bulk-reader rules.
+reviews. The resident instructions own policy-backed model roles and bulk-reader rules
+when explicitly deployed; otherwise the manual fallback remains. Session provider and
+effort restrictions require explicit pins and take precedence over roles.
 
 Use `task run --input FILE` and `--dry-run` for one independent task;
 `campaign validate/plan/check/submit` for dependent work; `review` for
@@ -40,15 +42,25 @@ question tool. A plain CLI can block with `task result --wait` or
 `campaign show --wait`; an agent task registers a task-bound wait and ends its
 turn. Campaign executors keep `continuation.md` current for resume and handoff.
 
-The `t3-backlog` compatibility wrapper is obsolete for new agent guidance;
-existing scripts can continue using it during the rollback window. Use
-`t3-steward task run` for new submissions. Retained operator controls and their
-authority safeguards live in the `t3-campaign` skill's operator section; full
-`backlog` and `worker` help hold the complete low-level command inventories.
+Use `t3-steward task run` or `campaign submit` for submission, `schedules`
+for recurring timing, and `campaign cancel` for routine authorized cancellation.
+Legacy Markdown file intake and wrapper submission are being retired in stages;
+do not create new consumers or assume old scripts still run. Phase 1 retains
+compatibility code, files and quarantine while the rollout lead verifies both
+intake gates, observes consumers and owns rollback to the previous reviewed release.
+Final removal is pending that evidence and lead acceptance.
 
-Commands and flags were checked against 0.11.0-rc.105. Role assignment,
-milestone ledgers and reader digestion are agent conventions until generated
-policy and runtime orchestration replace them. Older clients or coordinators may
+Retained operator controls and authority safeguards live in the `t3-campaign`
+skill's operator section. Consult matching full help for `backlog`, `worker`,
+`campaign`, `campaign supervision`, `campaign recovery retry`, `coordinator`,
+`install-service` and `schedules`; backlog/worker help alone is not complete.
+Schedule reads are available to agents; schedule mutations require explicit operator
+authority. Keep disabled schedules disabled until authorized recreation or enablement.
+
+The original lifecycle commands were checked against 0.11.0-rc.105; consult installed
+full help for the current contract. M14 policy generation projects native roles;
+it does not implement in-task review orchestration, quota failover or M16/M17
+compilation. Milestone ledgers remain agent conventions. Older clients or coordinators may
 lack file inputs, blocking collection, review or run-free schedule registration;
 check installed full help and report unsupported behavior rather than guessing.
 Older prepared workspaces may have cache push URLs: inspect the push URL before

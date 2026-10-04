@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from m15_guidance import assert_m15_guidance
+
 root = Path(__file__).resolve().parents[1]
 generator = str(root / "config/bin/agents-instructions-gen")
 skills = ("ov-memory", "ov-memory-curation", "t3-task", "t3-campaign", "t3-wait")
@@ -281,7 +283,18 @@ with tempfile.TemporaryDirectory() as temporary:
     # Operator guidance must survive generation, separately from agent lifecycle.
     campaign = (root / "config/claude/skills/t3-campaign/SKILL.md").read_text()
     task = (root / "config/claude/skills/t3-task/SKILL.md").read_text()
-    operator = reference.partition("## Operator-only administration")[2]
+    assert_m15_guidance((claude, shared), reference)
+    deployment_doc = (root / "docs/t3-code-and-steward.md").read_text()
+    deployment_work = deployment_doc.split("## Agent work through the steward\n", 1)[1]
+    require("deployment doc public submission and cancellation",
+            all(term in deployment_work for term in ("task run", "campaign submit",
+                                                      "schedules", "campaign cancel")))
+    require("deployment doc does not authorize old wrappers",
+            "existing scripts can continue" not in deployment_work)
+    require("deployment doc marks pending removal and authority",
+            "Final removal is pending" in deployment_work and
+            "schedule mutations require explicit operator" in deployment_work)
+    operator = campaign.partition("## Operator-only administration")[2]
     require("operator section separate from normal lifecycle", bool(operator))
     for term in ("backlog start", "explicit user authority", "manually monitoring quota",
                  "quota forecast", "admission", "freshness", "runway",

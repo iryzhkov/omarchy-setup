@@ -35,6 +35,14 @@ in Phase A; explicit independent/judge/swarm routes still express the production
 review contract. Nested review orchestration, quota failover and M16/M17
 compilation are not implemented by these generated files.
 
+## Public submission boundary
+
+Use `task run` instead of obsolete Markdown file intake or wrapper submission.
+Dependent work and recurring schedules belong to `t3-campaign`. Retained read-only
+catalog lookups below do not authorize low-level controls or legacy intake.
+See **Staged legacy intake retirement** in `t3-campaign` for the lead-owned
+observation, rollback and pending removal decision.
+
 ## Start from the checkout
 
 Choose `ROUTE` from `t3-steward models` for the required role and effort. Do not
