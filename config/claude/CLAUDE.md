@@ -104,6 +104,13 @@ the work needs operator-level access, or it releases to the fleet. After handoff
 keep only the run id and Jocasta ledger reference in the session's working set;
 fetch detailed evidence when needed.
 
+Use `task run` for one independent outcome and `campaign submit` for an agreed
+workflow; recurring timing belongs to `schedules`. Routine authorized cancellation
+uses `campaign cancel <run>[/<task>] --reason TEXT`. Legacy Markdown file intake
+and wrapper submission are being retired in stages; do not create new consumers.
+Retained `backlog` diagnostics and fenced operator controls are separate from
+that intake. The `t3-campaign` skill documents their authority and rollback boundary.
+
 With explicit `agents-instructions-gen --policy FILE`, the generated imported
 Claude artifact replaces the manual fallback below with Claude-specific policy roles;
 Codex receives its own policy projection. Without that deployment, keep the manual
