@@ -76,7 +76,10 @@ while (($#)); do
     shift
     ;;
   --policy)
-    (($# >= 2)) && [[ -n $2 ]] || die "--policy needs a nonempty file"
+    if (($# < 2)); then
+      die "--policy needs a nonempty file"
+    fi
+    [[ -n $2 ]] || die "--policy needs a nonempty file"
     [[ -z $policy ]] || die "--policy supplied twice"
     policy=$2
     shift 2
