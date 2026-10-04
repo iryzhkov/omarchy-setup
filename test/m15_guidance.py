@@ -17,23 +17,41 @@ def assert_m15_guidance(residents, reference):
             "## Interactive work and the T3 steward\n" in text
         ) else section(text, "# Interactive work and the T3 steward")
         for term in ("task run", "campaign submit", "schedules",
-                     "campaign cancel <run>[/<task>]", "retired in stages",
+                     "campaign cancel <run>[/<task>]", "permanently retired",
                      "fenced operator controls"):
             assert term in interactive, ("resident lifecycle", term)
 
     campaign = section(reference, "# t3-campaign")
     operator = section(campaign, "## Operator-only administration")
     lifecycle = campaign.split("## Operator-only administration\n", 1)[0]
-    retirement = section(campaign, "## Staged legacy intake retirement")
+    retirement = section(campaign, "## Permanent legacy intake retirement")
     schedules = section(campaign, "## Recurring schedules and operator boundaries")
     task = section(reference, "# t3-task")
     collection = section(task, "## Collect and diagnose")
     wait = section(reference, "# t3-wait")
 
-    for term in ("disabled by default", "separate intake", "does not prove",
-                 "rollout lead", "previous reviewed", "Final removal remains pending",
-                 "no active legacy consumers", "no automatic", "quarantine"):
+    for term in ("permanently retires", "local", "coordinator intake", "file forwarding",
+                 "true", "rejected", "false", "parsed", "Historical", "rc109",
+                 "do not prove runtime deployment", "rollout", "lead",
+                 "immutable rollback bundles", "never reenable", "marker-only cleanup",
+                 "no automatic retry", "Keep disabled", "production diversity",
+                 "explicit route and effort pins", "Codex medium only"):
         assert term in retirement, ("retirement", term)
+    for text in residents:
+        interactive = section(text, "## Interactive work and the T3 steward") if (
+            "## Interactive work and the T3 steward\n" in text
+        ) else section(text, "# Interactive work and the T3 steward")
+        for term in ("true", "rejected", "false", "parsed", "marker-only cleanup",
+                     "authenticated", "cannot retry intake", "runtime deployment",
+                     "immutable rollback bundles"):
+            assert term in interactive, ("resident retirement", term)
+    for current in (*residents, retirement, operator):
+        for obsolete in ("retired in stages", "Final removal remains pending",
+                         "temporary compatibility opt-in",
+                         "Changing the file's content releases its marker",
+                         "release the intake key", "next intake cycle retries",
+                         "Fixed the intake configuration"):
+            assert obsolete not in current, ("active legacy recipe", obsolete)
     for family in ("backlog", "worker", "campaign", "campaign supervision",
                    "campaign recovery retry", "coordinator", "install-service", "schedules"):
         assert f"t3-steward {family} --help full" in operator, ("help family", family)
@@ -52,6 +70,13 @@ def assert_m15_guidance(residents, reference):
                   "worker health", "effect-safety"):
         assert fence in operator, ("operator fence", fence)
     assert "clearing quarantine does not enable or restart intake" in operator
+    quarantine = operator.split("Historic quarantine applies", 1)[1].split(
+        "All ordinary remote commands", 1)[0]
+    for term in ("authenticated client transport", "operator authority", "--reason",
+                 "marker-only cleanup", "creates nothing", "cannot",
+                 "next-cycle retry", "Content edits", "digest", "key aliases",
+                 "Preserve the files", "lead custody"):
+        assert term in quarantine, ("historic quarantine", term)
 
     # Test the schedule section itself, not occurrences in operator help or prose.
     assert "Schedule reads (`list`, `show`, `history`) are available to agents" in schedules

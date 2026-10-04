@@ -107,9 +107,15 @@ fetch detailed evidence when needed.
 Use `task run` for one independent outcome and `campaign submit` for an agreed
 workflow; recurring timing belongs to `schedules`. Routine authorized cancellation
 uses `campaign cancel <run>[/<task>] --reason TEXT`. Legacy Markdown file intake
-and wrapper submission are being retired in stages; do not create new consumers.
-Retained `backlog` diagnostics and fenced operator controls are separate from
-that intake. The `t3-campaign` skill documents their authority and rollback boundary.
+and wrapper submission are permanently retired in the new source: local runner,
+coordinator intake and file forwarding cannot execute Markdown work. Old true
+enable flags are rejected; false values are parsed for compatibility. Retained
+`backlog` diagnostics and fenced operator controls remain available. Historic
+quarantine release is authenticated marker-only cleanup; it creates nothing and
+cannot retry intake. Preserve files and quarantine evidence under rollout lead
+custody. Source publication does not prove runtime deployment; the rollout lead
+owns immutable rollback bundles, never scanner reenablement. The `t3-campaign`
+skill documents the authority and rollback boundary.
 
 With explicit `agents-instructions-gen --policy FILE`, the generated imported
 Claude artifact replaces the manual fallback below with Claude-specific policy roles;

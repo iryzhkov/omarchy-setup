@@ -291,9 +291,17 @@ with tempfile.TemporaryDirectory() as temporary:
                                                       "schedules", "campaign cancel")))
     require("deployment doc does not authorize old wrappers",
             "existing scripts can continue" not in deployment_work)
-    require("deployment doc marks pending removal and authority",
-            "Final removal is pending" in deployment_work and
-            "schedule mutations require explicit operator" in deployment_work)
+    require("deployment doc permanent retirement and authority",
+            all(term in deployment_work for term in (
+                "permanently retires", "true enable flags", "rejected", "false",
+                "marker-only cleanup", "cannot retry", "immutable",
+                "never reenable", "rc109", "do not prove runtime deployment",
+                "production diversity waiver", "explicit route and effort pins",
+                "Codex medium only", "schedule mutations require explicit operator")))
+    for obsolete in ("retired in stages", "Final removal is pending",
+                     "temporary compatibility opt-in", "next intake cycle retries"):
+        require(f"deployment doc obsolete retirement: {obsolete}",
+                obsolete not in deployment_work)
     operator = campaign.partition("## Operator-only administration")[2]
     require("operator section separate from normal lifecycle", bool(operator))
     for term in ("backlog start", "explicit user authority", "manually monitoring quota",
