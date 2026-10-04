@@ -309,28 +309,32 @@ Registration requires an upgraded coordinator and refuses supervision/gates;
 do not silently fall back to starting work. Schedules own timing, history and
 overlap prevention; never recreate them with local timers or repeated task starts.
 
-## Staged legacy intake retirement
+## Permanent legacy intake retirement
 
 Submit new work through `task run` or `campaign submit`; use `schedules` for
 recurring timing. Legacy Markdown file intake and wrapper submission are obsolete
 entry points, not replacements for public submission. Do not write task files
 or recreate local wrapper/timer submission recipes.
 
-M15 phase 1 stages the local Markdown runner and coordinator Markdown intake
-disabled by default, retaining compatibility code, existing files and quarantine
-for a lead-owned observation and rollback window. These are separate intake
-gates; disabling the local runner alone does not prove coordinator intake is off.
-This guidance does not prove those gates are deployed. The rollout lead verifies
-the exact source, release and runtime state, owns rollback to the previous reviewed
-release, and authorizes any temporary compatibility opt-in. Do not enable intake
-or schedules as routine recovery.
+The new M15 source permanently retires executable Markdown intake: the local
+runner, coordinator intake and file forwarding cannot execute file work. Old true
+enable flags are rejected; false values are parsed for compatibility. Historical
+rc109 phase 1 staged behavior is prior-release evidence, not the new contract.
+Source publication and this guidance do not prove runtime deployment. The rollout
+lead verifies exact source, release and runtime state; the current fleet remains
+on rc109 until a separately reviewed coordinated release is deployed.
 
-Final removal remains pending reviewed phase 1 deployment, an inventory showing
-no active legacy consumers, and observation evidence accepted by the lead.
-Preserve files and quarantine evidence until that decision; there is no automatic
-removal date. Public submission, persisted tasks, artifacts, worker planning,
-schedules and retained operator controls remain in scope for normal operation.
-Retiring file intake does not retire the `backlog` administration namespace.
+Preserve existing files and quarantine evidence under rollout lead custody.
+The lead retains previous reviewed immutable rollback bundles; rollback must
+never reenable the retired scanner. Historic quarantine read/release remains
+authenticated marker-only cleanup, with no automatic retry or submission effect.
+Public submission, persisted tasks, artifacts, worker planning, schedules and
+retained operator controls remain in scope for normal operation. Retiring file
+intake does not retire the `backlog` administration namespace. Keep disabled
+schedules disabled; there is no schedule resurrection or production diversity
+waiver. Provider/session restrictions require explicit route and effort pins;
+this checkpoint is Codex medium only. Ordered policy roles, candidates and tiers
+remain unchanged.
 
 ## Operator-only administration
 
@@ -342,8 +346,8 @@ not a complete command list.
 
 Consult the matching help family before administration:
 - `t3-steward backlog --help full`: persisted graph, attempt controls, receipts,
-  artifacts, quarantine and stopped-coordinator backups. Legacy compatibility helpers
-  may remain in help during retirement; they are not new submission guidance.
+  artifacts, historic quarantine and stopped-coordinator backups. Retained help
+  does not authorize executable Markdown intake.
 - `t3-steward worker --help full`: enrollment, daemon and containment operations.
 - `t3-steward campaign --help full`: public lifecycle and recovery;
   `t3-steward campaign supervision --help full`: structured supervision controls;
@@ -370,7 +374,7 @@ keys filled in. Inspect the reason and authority before executing a proposed con
 | `backlog start`, `resume`, `retry`, `skip` | Revision-fenced controls on an existing task, rather than creating a campaign rerun; routine cancellation uses `campaign cancel`. |
 | `backlog pause`, `delay`, `rewake` | Pause an attempt, defer eligibility, or wake waiting-external after its wait is no longer live. |
 | `backlog recover` | Resolve an assignment using coordinator/assignment epochs, attempt revision and evidence id/hash; consult full help for the exact fences. |
-| `backlog quarantine`, `quarantine release` | Read legacy intake refusals, or deliberately clear a marker after fixing its cause. |
+| `backlog quarantine`, `quarantine release` | Read historic intake refusals, or perform authenticated marker-only cleanup. |
 | `campaign recovery` | Retry a failed supervised operation using fenced evidence; see `campaign recovery retry --help full`. |
 
 `backlog start` is an explicit operator override: it bypasses quota forecast,
@@ -390,14 +394,16 @@ t3-steward backlog edge add <run>/<task> --from <dependency> --expected-revision
 t3-steward backlog artifacts <run>/<task> --json
 t3-steward backlog artifact get <artifact> --output evidence.md
 t3-steward backlog quarantine --json
-t3-steward backlog quarantine release <key> --reason "Fixed the intake configuration"
+t3-steward backlog quarantine release <key> --reason "Authorized historic marker cleanup"
 ```
 
-Quarantine applies to legacy file intake, not synchronous task/campaign submission.
-With intake disabled, clearing quarantine does not enable or restart intake.
-Changing the file's content releases its marker; after a configuration-only fix,
-release the intake key, not the namespaced record key. Release creates nothing:
-the next intake cycle retries, and can refuse again if the cause remains.
+Historic quarantine applies to retired file intake, not synchronous task/campaign
+submission. Quarantine reads use the authenticated client transport; release
+requires operator authority and `--reason`. Release is marker-only cleanup and
+creates nothing: clearing quarantine does not enable or restart intake. It cannot
+submit work, forward files or trigger a next-cycle retry. Content edits, digest
+changes and key aliases cannot reactivate retired intake. Preserve the files and
+quarantine evidence under rollout lead custody.
 
 All ordinary remote commands use the configured client transport; never bypass
 it with `ssh <coordinator> t3-steward`. Worker enrollment is the one deliberate exception:
