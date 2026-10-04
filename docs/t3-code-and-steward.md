@@ -23,3 +23,35 @@ and recovery evidence.
 
 omarchy-setup keeps OS packages, desktop, toolchains, secrets and sshd. Its
 UpKeeper bootstrap handoff and pull --self are Citadel U2, not part of U1.
+
+## Agent work through the steward
+
+Stay interactive for exploration, design and contract decisions. Once Igor agrees
+a plan, write it to Jocasta and hand it off with the `t3-campaign` skill using
+the session as notify thread; retain the run id and ledger reference. Quick
+same-provider subagents can read or do sub-work, never replace declared tasks or
+reviews. The resident instructions own manual model roles and bulk-reader rules.
+
+Use `task run --input FILE` and `--dry-run` for one independent task;
+`campaign validate/plan/check/submit` for dependent work; `review` for
+cross-provider plan or diff review; `ask` for owner decisions inside a steward
+task; and `triage` for operator attention. Outside a task, use the session's
+question tool. A plain CLI can block with `task result --wait` or
+`campaign show --wait`; an agent task registers a task-bound wait and ends its
+turn. Campaign executors keep `continuation.md` current for resume and handoff.
+
+The `t3-backlog` compatibility wrapper is obsolete for new agent guidance;
+existing scripts can continue using it during the rollback window. Use
+`t3-steward task run` for new submissions. Retained operator controls and their
+authority safeguards live in the `t3-campaign` skill's operator section; full
+`backlog` and `worker` help hold the complete low-level command inventories.
+
+Commands and flags were checked against 0.11.0-rc.105. Role assignment,
+milestone ledgers and reader digestion are agent conventions until generated
+policy and runtime orchestration replace them. Older clients or coordinators may
+lack file inputs, blocking collection, review or run-free schedule registration;
+check installed full help and report unsupported behavior rather than guessing.
+Older prepared workspaces may have cache push URLs: inspect the push URL before
+publishing a task branch. No installed instructions or fleet deployment are changed
+by a source-only PR. See [instruction ownership](agent-instruction-ownership.md)
+for sources, isolated generation checks and the authorized release path.

@@ -85,34 +85,64 @@ Write to it with `feed post` when an unattended run produced something a later s
 want to know. Never copy feed entries into OV as if they were established facts; promoting an
 event to knowledge is a decision, not a sync.
 
-# Deferred and parked work: the T3 steward
+# Interactive work and the T3 steward
 
-The `t3-steward` daemon does three things for agents on these machines, each described in full
-by its skill. Read the skill before the first command; the summary here only says when to reach
-for which.
+Read the matching steward skill before its first command.
 
-- **One task** (`t3-task` skill): one independent outcome that does not need the user now is
-  started on the fleet with `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from
-  a checkout. Use it when the user says later, tonight, when I am not around, or backlog and
-  the work is genuinely one task. It derives the project, ref, route, idempotency key and
-  wake, and normally wakes this thread when the run ends. Do what the record's closing line
-  says rather than ending the turn by habit: it says to end the turn only when a wait exists
-  that will fire, and otherwise says that no wake is attached, or that the run has already
-  ended and the result is there to collect with `t3-steward task result <run>`. The record's
-  first line is `run <id>` and its last is the result command, so take the id from the first
-  line or from `--json`, never the last. The start is synchronous and a refusal is its exit
-  code. `t3-backlog` remains a compatibility wrapper; prefer `t3-steward task run`.
-- **Campaign** (`t3-campaign` skill): dependent tasks, artifact handoffs, review pipelines and
-  recurring scheduled workflows are written as a directory and submitted with `t3-steward
-  campaign submit`, which creates exactly one workflow run and notifies the calling thread by
-  default. A caller with no thread to be woken passes `--no-notify` or names one with
-  `--notify-thread <id>`; a submission for which no thread resolves is refused and nothing is
-  submitted.
-- **Wait** (`t3-wait` skill): never poll in a loop for something external. Register a wait with
-  `t3-steward wait add`, end the turn, and the steward wakes the thread with the outcome. Five
-  kinds: `--at`/`--for` a time, `--github` a run or pull request, `--node` a workflow run or
-  task, `--quota` a pool, `-- <command>` a shell check for what no kind covers (exit 0 met,
-  exit 2 give up, else not yet). `--or-timeout` makes the deadline an outcome, not a failure.
+Stay interactive while exploring, designing, answering contract questions and making
+decisions turn by turn. Hand off to a campaign once Igor has agreed a plan; never
+submit exploration that is not yet a plan. Use a subagent for quick same-provider
+reading or sub-work inside either an interactive session or a steward task.
+Subagents are never in place of a declared task or review.
+
+Agree the plan, write it to Jocasta, turn it into a campaign with the
+`t3-campaign` skill, and submit with the session as notify thread
+(`--notify-thread current`). Once Igor has agreed the plan in the session,
+agents may submit it without another approval: say that the campaign started and
+give the run id and ledger reference. Ask first when the estimated cost is large,
+the work needs operator-level access, or it releases to the fleet. After handoff,
+keep only the run id and Jocasta ledger reference in the session's working set;
+fetch detailed evidence when needed.
+
+Model roles are assigned by hand until a generated policy replaces them:
+Opus 5.5 or Sol 6.1 at high effort for planning and execution; Fable 5.1 or Astra
+at medium effort for critical review, including plan review; Sonnet 5.5 or Luna 6
+at medium effort for reading. Never use max effort or above. Check
+`t3-steward models` for available routes; role names are guidance, not CLI flags.
+In Claude Code, bulk reading (many files, long logs, large diffs or codebase
+searches) goes to a reader subagent (`model: sonnet`) with a focused question and
+a bounded answer. Codex sessions use Luna 6 (`codex/gpt-6-luna`) at medium effort for the same.
+Read a quick lookup in a known file directly.
+
+Inside a steward task, `t3-steward ask` is the one way to get a decision from Igor:
+give options, a deadline and a safe default, end the turn after parking, and read
+`ask-answer.json` on resume. Approver-required asks take no default and fail
+unanswered. Outside a task, use the session's own question tool.
+Use `t3-steward review` for cross-provider plan or diff review; the
+`t3-campaign` skill describes file inputs and the review digestion loop.
+
+- **One task** (`t3-task` skill): one independent unattended outcome uses
+  `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout.
+  Use `--input FILE` for pinned inputs and `--dry-run` before submission.
+  The start is synchronous; a refusal is its exit code. Take the run id from
+  the first line (`run <id>`) or JSON, never from the closing result command.
+  Follow the record's closing instruction: end the turn only when it promises
+  a wake; collect immediately when the run already ended.
+- **Campaign** (`t3-campaign` skill): dependent tasks, artifact handoffs,
+  declared reviews and recurring schedules use a version 2 workflow directory.
+  Run `campaign validate`, `campaign plan` and read-only `campaign check`;
+  submit with an idempotency key and the session as notify thread.
+  Tasks keep `continuation.md` current; details and the milestone ledger template
+  live in the skill. A caller intentionally wanting no wake uses `--no-notify`;
+  unresolved notify threads are refused before submission.
+- **Wait** (`t3-wait` skill): use a foreground blocking command such as
+  `t3-steward task result <run> --wait` or `campaign show <run> --wait` in a plain CLI.
+  In a steward task, register `wait add --task current` for external waits and
+  end the turn immediately. Conditions are `--at`/`--for` time, `--github`,
+  `--node`, `--quota`, or `-- COMMAND` (0 met, 2 give up, else not yet).
+  `--or-timeout` makes a deadline an outcome. Ordinary sessions register a
+  thread wait and end the turn. Never poll in an agent loop.
+  Use `t3-steward triage` for operator attention and ready-to-run recovery commands.
 
 # Working documents: Jocasta
 

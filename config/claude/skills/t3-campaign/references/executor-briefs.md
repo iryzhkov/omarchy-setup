@@ -53,6 +53,13 @@ meaningful milestone; run the repository-required full gate before completion.
 
 ### Outputs and checkpoint
 
+Keep `continuation.md` current at every step and before parking or handoff: goal,
+checklist, current step, blockers, last verification. Declare it as an output.
+Quick same-provider subagents may read or do sub-work, but never replace a declared
+task or review. Retain `handoff.md` with decisions and why, reviewed commit,
+verification, open risks, next action and evidence links for the Jocasta milestone
+ledger. See the campaign skill for the ledger template and review digestion loop.
+
 List every declared output and its required contents. For a code-producing task,
 declare a campaign commit when a later task needs the Git object. Put independent
 review in a distinct dependent task or an established independent channel. Name
@@ -167,7 +174,7 @@ find . -type f -not -path './.git/*' -exec sh -c '
     esac
   done
 ' sh {} +
-python3 /home/igor/.codex/skills/.system/skill-creator/scripts/quick_validate.py \
+python3 "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" \
   config/claude/skills/t3-campaign
 ```
 
@@ -182,7 +189,8 @@ own isolated homes; do not export the real home as a test target.
 and exit codes, and any missing token accounting. The declared `guidance`
 commit contains only the maintained skill and its linked reference plus a
 meaningful generation test if behavior needs one. A distinct dependent review
-task uses the fleet-confirmed `codex/gpt-5.6-sol` route, consumes `guidance` and
+task uses a cross-provider review route selected from `t3-steward models`
+for the required review role and effort, consumes `guidance` and
 `guidance-handoff.md`, and declares `review.md`. That artifact names the reviewed
 commit and reviewer task/route, gives an `accept|changes-requested` verdict,
 lists findings and cites deterministic evidence. If that task cannot run, retain
@@ -197,5 +205,5 @@ so an effect receipt is not applicable.
 Complete only when all checks pass and the commit is ready for independent
 review. Escalate a stale source/path mismatch, a required change outside the
 allowed files, or exhausted recovery with `mismatch.md` or the failing log.
-Do not claim the representative Sol evaluation; a separate agent performs it
+Do not claim the independent review; a separate reviewer performs it
 from the retained brief and references.

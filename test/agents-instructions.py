@@ -213,3 +213,90 @@ with tempfile.TemporaryDirectory() as temporary:
     assert (home / ".config/agents/agent99.md").exists(), "--check must change nothing"
 
 print("Shared agent instruction generation: source, preservation, idempotence and divergence passed")
+
+# Exercise the real source trees too: fixture skills above deliberately cannot
+# catch stale guidance leaking into the reference every harness reads.
+with tempfile.TemporaryDirectory() as temporary:
+    base = Path(temporary)
+    home = make_home(base)
+    result = generate(home, "--root", str(root))
+    assert result.returncode == 0, result.stdout + result.stderr
+    shared = (home / ".config/agents/AGENTS.md").read_text()
+    reference = (home / ".config/agents/t3-steward.md").read_text()
+    claude = (root / "config/claude/CLAUDE.md").read_text()
+    briefs = (home / ".config/agents/t3-campaign-executor-briefs.md").read_text()
+    failures = []
+
+    def require(label, condition):
+        if not condition:
+            failures.append(label)
+
+    for label, text in (("Claude", claude), ("shared", shared)):
+        for term in ("interactive", "Igor has agreed", "Jocasta", "run id",
+                     "ledger", "operator-level", "estimated cost", "fleet",
+                     "Opus 5.5", "Sol 6.1", "Fable 5.1", "Astra",
+                     "Sonnet 5.5", "Luna", "high", "medium", "max effort",
+                     "generated policy", "reader subagent", "bounded answer",
+                     "known file", "t3-steward ask", "ask-answer.json",
+                     "t3-steward review"):
+            require(f"{label}: missing {term}", term in text)
+    require("Claude reader selects Sonnet", "model: sonnet" in claude)
+    require("shared reader selects Luna", "Codex" in shared and "Luna" in shared)
+    for term in ("task run --input", "--dry-run", "task result <run> --wait",
+                 "campaign show <run> --wait", "triage", "--independent",
+                 "--swarm", "--judge", "summary.json", "review result",
+                 "continuation.md", "goal", "checklist", "current step",
+                 "blockers", "last verification", "milestone", "handoff"):
+        require(f"reference: missing {term}", term in reference)
+    require("brief checkpoint is portable", "continuation.md" in briefs)
+    require("brief validator path is portable", "$HOME/.codex/skills/" in briefs)
+    for obsolete in ("t3-backlog", "or backlog", "backlog_v2",
+                     "Legacy file", "BACKLOG STATUS:", "/home/igor/",
+                     "claude-haiku-4-5", "t3-primary/opus", "--model opus",
+                     "claude-sonnet-5", "codex/gpt-5.6-sol",
+                     "claudeAgent/claude-opus-5", "rc.9",
+                     "backlog or campaign task", "backlog show", "backlog list",
+                     "backlog status"):
+        require(f"obsolete guidance: {obsolete}",
+                obsolete not in claude + shared + reference + briefs)
+    require("subagents cannot replace a declared task or review",
+            "never in place of a declared task or review" in reference)
+    require("operator commands are labeled", "Operator-only" in reference)
+    # Operator guidance must survive generation, separately from agent lifecycle.
+    campaign = (root / "config/claude/skills/t3-campaign/SKILL.md").read_text()
+    task = (root / "config/claude/skills/t3-task/SKILL.md").read_text()
+    operator = reference.partition("## Operator-only administration")[2]
+    require("operator section separate from normal lifecycle", bool(operator))
+    for term in ("backlog start", "explicit user authority", "manually monitoring quota",
+                 "quota forecast", "admission", "freshness", "runway",
+                 "automatic quota throttling", "effect-safety",
+                 "quarantine release", "creates nothing", "worker enroll",
+                 "must run on the coordinator host", "one deliberate exception",
+                 "--current-catalog", "catalog-digest-mismatch",
+                 "campaign recovery", "backlog --help full", "worker --help full",
+                 "resume", "retry", "skip", "pause", "delay", "rewake", "recover",
+                 "events", "usage", "diagnose", "task show", "commands",
+                 "edge add", "artifact get", "--expected-revision", "--request-id"):
+        require(f"operator reference: missing {term}", term in operator)
+    for term in ("schedules show <schedule> --json", "schedules --help full",
+                 "list", "history", "run", "enable", "disable", "delay-next"):
+        require(f"schedule reference: missing {term}", term in reference)
+    require("bundled plan declared", "inputs: [inputs/plan.md]" in campaign)
+    require("bundled plan mounted path", ".t3/inputs/inputs/plan.md" in reference)
+    require("task checkpoint retention explained",
+            "--outputs continuation.md,handoff.md" in task)
+    require("task catalog is read-only",
+            "Read-only catalog lookups" in task and "operator-only catalog" not in task)
+    require("task points at shared operator guidance",
+            "Operator-only administration" in task)
+    for label, text in (("Claude", claude), ("shared", shared)):
+        require(f"{label}: unambiguous reader role", "Luna 6" in text)
+    # Link rewriting and source provenance remain correct with real skills.
+    require("generated reference link",
+            "](t3-campaign-executor-briefs.md)" in reference)
+    require("brief source bytes", briefs == (
+        root / "config/claude/skills/t3-campaign/references/executor-briefs.md"
+    ).read_text())
+    assert not failures, "\n".join(failures)
+
+print("Steward instruction contracts: real-source generation passed")
