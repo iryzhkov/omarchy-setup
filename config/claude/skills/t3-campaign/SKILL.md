@@ -17,12 +17,13 @@ description: >
 
 Stay interactive for exploration, design, contract questions and decisions turn
 by turn. Once Igor has agreed a plan in the session, write the plan to Jocasta,
-author a campaign directory, and submit with `--notify-thread current`. Agents
+author a campaign directory with a `ledger:` block, and submit with `--notify-thread current`. Agents
 may do this without another approval: announce the run id and Jocasta ledger
 reference. Ask first when estimated cost is large, operator-level access is
 needed, or the campaign releases to the fleet. Never submit exploration that is
 not yet a plan. Keep only the run id and ledger reference in the session's working
-set after handoff; fetch detailed evidence when needed.
+set after handoff. A successor session resumes from the ledger and run ids, not
+from a transcript.
 
 A single independent outcome uses `t3-steward task run` (`t3-task` skill).
 Use a campaign for dependencies, artifact handoffs, declared reviews or recurring
@@ -34,6 +35,16 @@ The resident instructions own policy-backed roles after explicit deployment,
 and manual fallback assignments otherwise. Use `t3-steward models` and
 `campaign check` to verify real routes. Keep explicit provider/effort pins for
 operator or session restrictions; never silently escalate after failure.
+
+## Keep the orchestrator's context small
+
+A coordinating session reads states, verdicts and finding titles, never raw
+diffs, logs or full reviews. Anything longer goes to an economy `read`-role
+reader subagent with a focused question; it returns at most about ten lines:
+verdict, blocking findings with paths, next action. Keep durable state in the
+Steward-written ledger (below), not in the session's context. When the installed
+release offers compact views or a progress mirror (check `campaign help`), read
+those first.
 
 ## Policy-backed roles (Phase A)
 
@@ -83,28 +94,29 @@ task use the session's own question tool.
 
 ## Milestone ledger and handoff
 
-Create a Jocasta ledger with the agreed plan's exact document/revision reference,
-scope, budget, model routes, approval boundaries and this compact record per milestone:
+Declare `ledger: {jocasta_project: NAME}` in `workflow.yaml` (optional `plan`,
+`risk` and `acceptance`; see `campaign help ledger`). The coordinator then creates
+`<project>/handoffs/<run id>.md` at submission and appends one record per ended
+attempt, quoting the task's `handoff.md`, plus a closing record. Without the block
+nothing is written.
+
+The lead adds the human layer to that document with Jocasta's revision fence:
+the agreed plan's exact document/revision reference, scope, budget, model routes,
+approval boundaries and, at milestone boundaries, this compact record:
 
 ```text
 Milestone:
 Goal and acceptance:
-Declared executor / reviewer tasks:
 Inputs and source revisions:
-Status and current step:
 Decisions and why:
 Verification and reviewed commit:
 Review verdict and blocking findings:
-Outputs / handoff references:
 Blockers, risks and next action:
 ```
 
 Executors retain a `handoff.md` with goal, resulting commit, decisions and why,
 checks and evidence, review outcome, open risks, next action and artifact links.
-Declare it and `continuation.md` as outputs. Update the ledger at milestone
-boundaries through a responsible agent using Jocasta's revision fence. This is
-an authoring convention: automatic ledger appends, progress mirrors and policy
-generation are not promised by this CLI.
+Declare it and `continuation.md` as outputs.
 
 ## Review and digest
 
@@ -128,9 +140,11 @@ park the task. This release does not support in-task review orchestration: decla
 review as a dependent campaign task or run the standalone round from the lead
 session. Do not invent nested review gates.
 
-Give the round's `summary.json` and review files to a reader subagent with a
-focused question and bounded answer: return a deduplicated action list with
-severity, evidence, affected paths and unresolved contract questions. Fix within
+Read only the verdict and finding titles yourself. The reader subagent is the
+only path by which full review files, diffs and logs reach the orchestrator: give
+it the round's `summary.json` and review files with a focused question and a
+bounded answer of at most about ten lines, a deduplicated action list with
+severity, affected paths and unresolved contract questions. Fix within
 scope or ask Igor, run checks, then review again on the new inputs. Keep the
 reviewed commit and acceptance in the ledger. Exit 0 means valid review results,
 whatever the verdict; `--gate` requires `--wait` on submission and rejects

@@ -57,8 +57,12 @@ Keep `continuation.md` current at every step and before parking or handoff: goal
 checklist, current step, blockers, last verification. Declare it as an output.
 Quick same-provider subagents may read or do sub-work, but never replace a declared
 task or review. Retain `handoff.md` with decisions and why, reviewed commit,
-verification, open risks, next action and evidence links for the Jocasta milestone
-ledger. See the campaign skill for the ledger template and review digestion loop.
+verification, open risks, next action and evidence links; the coordinator quotes
+it into the campaign ledger when one is declared. Put the result or verdict on the
+first line of `handoff.md`, `review.md` and the final message (for example
+`RESULT: implemented <sha>` or `VERDICT: changes-requested`), then finding titles
+one per line, then detail, so a coordinator can act on the head alone. See the
+campaign skill for the ledger and review digestion loop.
 
 List every declared output and its required contents. For a code-producing task,
 declare a campaign commit when a later task needs the Git object. Put independent
