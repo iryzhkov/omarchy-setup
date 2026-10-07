@@ -132,6 +132,11 @@ and never cancels work. Inside an agent task, park instead of blocking on extern
 work. Reattach with the same selector. Diagnose before retrying; use
 `campaign cancel <run> --reason TEXT` for an authorized cancellation.
 
+A coordinating session reads the state, verdict and first line of the retained
+final message, not the whole message, logs or diffs; avoid `--json` there. Hand anything
+longer to an economy reader subagent that returns at most about ten lines, and
+keep durable notes in a Jocasta handoff or campaign ledger, not in the session.
+
 Read-only catalog lookups without a replacement are
 `t3-steward backlog projects` (fleet names and types for `--project` / `--fresh`)
 and `t3-steward backlog workers --json` (worker capabilities and enrollment).
