@@ -66,7 +66,7 @@ step "host files"
 # is a decision to make by hand on that machine.
 HOST_DIR="$OMARCHY_SETUP_ROOT/hosts/$SETUP_HOST"
 if [[ -d $HOST_DIR ]]; then
-  for f in "$HOST_DIR"/systemd/user/*.service; do
+  for f in "$HOST_DIR"/systemd/user/*.service "$HOST_DIR"/systemd/user/*.timer; do
     [[ -f $f ]] || continue
     systemctl --user disable --now "$(basename "$f")" >/dev/null 2>&1 || true
   done

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Reap disposable agent build and test scratch so tmpfs (/tmp is RAM on this
+# host) and the root filesystem do not grow without bound.
+#
+# Every path below is a rebuildable cache or dead test debris. Nothing here is
+# a source of truth: cargo and go regenerate their target and build caches, and
+# the t3-steward CLI test scratch directories are leaked empty fake HOMEs.
+# Ages are deliberately generous so that work in progress is never touched.
+#
+# Pass --dry-run to list what would be removed without removing it.
+set -uo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: agent-scratch-reap [--dry-run] [-h, --help]' \
+    'Remove aged disposable agent build/test caches and dead worktrees for the daily user timer.' \
+    '  --dry-run    List what would be removed without removing it.' \
+    '  -h, --help   Print this help without scanning or removing anything.'
+}
+
+dry_run=false
+help=false
+options=true
+error=
+# Inspect every argument before any action. Help wins among options, but
+# words after -- are positional arguments, including help-looking words.
+for arg in "$@"; do
+  if $options; then
+    case $arg in
+      -h|--help) help=true ;;
+      --dry-run) dry_run=true ;;
+      --) options=false ;;
+      -*) [[ -n $error ]] || error="unknown option: $arg" ;;
+      *) [[ -n $error ]] || error="unexpected argument: $arg" ;;
+    esac
+  else
+    [[ -n $error ]] || error="unexpected argument: $arg"
+  fi
+done
+if $help; then
+  usage
+  exit 0
+fi
+if [[ -n $error ]]; then
+  printf 'agent-scratch-reap: %s\n' "$error" >&2
+  usage >&2
+  exit 2
+fi
+scratch_tmp=${AGENT_SCRATCH_REAP_TMP:-/tmp}
+
+reclaimed_paths=0
+
+# reap PATTERN AGE_DAYS DESCRIPTION
+# Removes each top-level match whose own mtime is older than AGE_DAYS.
+reap() {
+  local pattern=$1 age=$2 description=$3 path
+  while IFS= read -r -d '' path; do
+    if $dry_run; then
+      printf 'would remove (%s): %s\n' "$description" "$path"
+    else
+      rm -rf -- "$path" && printf 'removed (%s): %s\n' "$description" "$path"
+    fi
+    reclaimed_paths=$((reclaimed_paths + 1))
+  done < <(find "$(dirname "$pattern")" -maxdepth 1 -name "$(basename "$pattern")" \
+             -mtime "+$age" -print0 2>/dev/null)
+}
+
+# /tmp is tmpfs here, so these directly occupy RAM or swap.
+reap "$scratch_tmp/t3-steward-cli-tests-*" 1 'leaked CLI test HOME'
+reap "$scratch_tmp/go-build*"              3 'go build cache'
+reap "$scratch_tmp/t3qual.*"               3 'steward qualification scratch'
+reap "$scratch_tmp/t3-candidate-*"         3 'steward candidate scratch'
+reap "$HOME/.cache/w2-tmp/t3-steward-cli-tests-*" 3 'leaked CLI test HOME'
+
+# Per-task cargo target directories from codex runs. Each is tens of GB.
+reap "$HOME/.cache/codex-*-target" 7 'codex cargo target'
+reap "$HOME/.cache/codex-targets"  7 'codex cargo target'
+
+# Worktree directories git no longer registers. A registered worktree is live
+# work: removing it would corrupt the registry, so it is always preserved.
+prune_worktrees() {
+  local parent=$HOME/.cache/steward-worktrees path
+  [[ -d $parent ]] || return 0
+  local registered
+  registered=$(git -C "$HOME/Work/t3-steward" worktree list --porcelain 2>/dev/null |
+                 awk '/^worktree /{print $2}')
+  while IFS= read -r -d '' path; do
+    if grep -qxF "$path" <<<"$registered"; then
+      continue
+    fi
+    if $dry_run; then
+      printf 'would remove (unregistered worktree): %s\n' "$path"
+    else
+      rm -rf -- "$path" && printf 'removed (unregistered worktree): %s\n' "$path"
+    fi
+    reclaimed_paths=$((reclaimed_paths + 1))
+  done < <(find "$parent" -mindepth 1 -maxdepth 1 -type d -mtime +14 -print0 2>/dev/null)
+}
+prune_worktrees
+
+printf 'agent-scratch-reap: %d path(s) %s; / now %s used, /tmp %s used\n' \
+  "$reclaimed_paths" "$($dry_run && echo 'matched' || echo 'removed')" \
+  "$(df -h / | awk 'NR==2{print $5}')" "$(df -h /tmp | awk 'NR==2{print $3}')"
