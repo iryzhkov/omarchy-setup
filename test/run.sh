@@ -60,6 +60,10 @@ while IFS= read -r f; do
   check "bash -n ${f#"$ROOT"/}" bash -n "$f"
 done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/bin/*' -o -path '*/root/usr/local/bin/*' \) | sort)
 
+# -------------------------------------------------------- reaper arguments --
+section "agent-scratch-reap"
+check "arguments, dry run and sandbox cleanup" bash "$ROOT/test/agent-scratch-reap.sh"
+
 # -------------------------------------------------------- managed blocks --
 section "write_managed_block"
 (
@@ -249,6 +253,20 @@ printf 'key = 1\n' >"$HF/config/app/sub/settings.conf"
 printf 'data\n' >"$HF/share/tool/data.txt"
 printf '[Unit]\nDescription=t\n[Service]\nExecStart=/bin/true\n[Install]\nWantedBy=default.target\n' >"$HF/systemd/user/hosttool.service"
 printf '#!/bin/sh\necho "systemctl $*" >>"%s/systemctl.log"\ncase "$*" in *is-enabled*) exit 1;; esac\nexit 0\n' "$T" >"$T/bin/systemctl"; chmod +x "$T/bin/systemctl"
+printf '[Unit]\nDescription=t\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n' >"$HF/systemd/user/hosttool.timer"
+printf '[Service]\nExecStart=/bin/true\n' >"$HF/systemd/user/helper.service"
+# Model persistent enablement without contacting the real user manager.
+cat >"$T/bin/systemctl" <<'STUB'
+#!/bin/sh
+echo "systemctl $*" >>"$TMPDIR/systemctl.log"
+case "$*" in
+  *is-enabled*) test -f "$TMPDIR/enabled-$4";;
+  *"enable --now"*) touch "$TMPDIR/enabled-$4";;
+esac
+STUB
+chmod +x "$T/bin/systemctl"
+# These state files belong to this test's private directory.
+export TMPDIR="$T"
 check "host files run" module common/29-host-files.sh
 check "script installed executable" test -x "$HOME/.local/bin/hosttool"
 check "config keeps its relative path" test -f "$HOME/.config/app/sub/settings.conf"
@@ -256,7 +274,12 @@ check "share file installed" test -f "$HOME/.local/share/tool/data.txt"
 check "unit installed 0644" [ "$(mode "$HOME/.config/systemd/user/hosttool.service")" = 644 ]
 check "unit enabled" grep -q 'enable --now hosttool.service' "$T/systemctl.log"
 check "second run rewrites nothing" module common/29-host-files.sh && ! log_has ': written'
-rm -f "$T/bin/systemctl"
+check "timer installed 0644" [ "$(mode "$HOME/.config/systemd/user/hosttool.timer")" = 644 ]
+check "timer enabled" grep -q 'enable --now hosttool.timer' "$T/systemctl.log"
+check "service without Install is not enabled" [ "$(count 'enable --now helper.service' "$T/systemctl.log")" = 0 ]
+check "timer enablement is idempotent" [ "$(count 'enable --now hosttool.timer' "$T/systemctl.log")" = 1 ]
+check "timer already enabled is reported" log_has "hosttool.timer: already enabled"
+# Keep the systemctl stub for uninstall as well.
 
 # -------------------------------------------------- resident instructions --
 # The layer every agent session holds before it reads anything. Nothing used to
@@ -328,6 +351,8 @@ check "dry run exits 0" bash "$ROOT/uninstall.sh" --dry-run
 check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
 check "uninstall exits 0" bash "$ROOT/uninstall.sh"
 check "host files gone" [ ! -e "$HOME/.local/bin/hosttool" ] && [ ! -e "$HOME/.config/app/sub/settings.conf" ] && [ ! -e "$HOME/.config/systemd/user/hosttool.service" ]
+check "timer removed" test ! -e "$HOME/.config/systemd/user/hosttool.timer"
+check "timer disabled" grep -q 'disable --now hosttool.timer' "$T/systemctl.log"
 check "no setup fence left" [ -z "$(grep -rl 'omarchy-setup:' "$HOME/.config/hypr" "$HOME/.bashrc" 2>/dev/null)" ]
 check "UpKeeper agent import preserved" grep -q 'omarchy-setup:claude' "$HOME/.claude/CLAUDE.md"
 check "owned dirs gone" [ ! -e "$HYPR/omarchy-setup" ] && [ ! -e "$HOME/.config/bash/omarchy-setup" ]

@@ -1,0 +1,9 @@
+[Unit]
+Description=Reap disposable agent build and test scratch
+Documentation=man:systemd-tmpfiles(8)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/agent-scratch-reap
+Nice=10
+IOSchedulingClass=idle

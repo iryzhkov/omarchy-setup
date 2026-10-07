@@ -15,6 +15,10 @@ Keep behaviour here, not appearance: monitor scale, theme and bar layout are
 tuned by hand on each machine and are deliberately not managed by this repo
 (see the README's Non-goals).
 
+## omarchy-pc
+
+`bin/agent-scratch-reap` removes aged disposable agent build/test caches and dead worktrees on this host. Its daily user timer is enabled by 29-host-files; the oneshot service runs without arguments. Use `--dry-run` to preview cleanup or `--help` for usage.
+
 ## omarchy-macbook-air-igor
 
 The Asahi Linux MacBook Air (M2, J413). Everything here works around that
