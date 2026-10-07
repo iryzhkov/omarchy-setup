@@ -187,6 +187,7 @@ campaign/
 ```
 
 Replace the project and route placeholders below with fleet-advertised values,
+replace `JOCASTA_PROJECT` with the Jocasta project that holds the agreed plan,
 then run validation. Choose the execution and review roles deliberately.
 
 ```yaml
@@ -194,6 +195,7 @@ version: 2
 name: implement-and-review
 class: surplus
 inputs: [inputs/plan.md]
+ledger: {jocasta_project: JOCASTA_PROJECT}
 environment:
   project: PROJECT
   type: git

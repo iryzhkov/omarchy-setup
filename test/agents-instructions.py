@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 
 from m15_guidance import assert_m15_guidance
+from campaign_example import assert_campaign_example
 
 root = Path(__file__).resolve().parents[1]
 generator = str(root / "config/bin/agents-instructions-gen")
@@ -284,6 +285,7 @@ with tempfile.TemporaryDirectory() as temporary:
     campaign = (root / "config/claude/skills/t3-campaign/SKILL.md").read_text()
     task = (root / "config/claude/skills/t3-task/SKILL.md").read_text()
     assert_m15_guidance((claude, shared), reference)
+    assert_campaign_example(campaign)
     deployment_doc = (root / "docs/t3-code-and-steward.md").read_text()
     deployment_work = deployment_doc.split("## Agent work through the steward\n", 1)[1]
     require("deployment doc public submission and cancellation",
