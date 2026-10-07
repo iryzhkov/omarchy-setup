@@ -189,6 +189,22 @@ check "host content appended after base" grep -q 'vrr = 1' "$OWNED/input.lua"
 check "host marker present" grep -q -- '-- host: testhost' "$OWNED/input.lua"
 check "system input.lua still one fence" [ "$(count '>>> omarchy-setup:input >>>' "$HYPR/input.lua")" = 1 ]
 
+section "30-hypr: host without luac"
+# A fresh host has no luac. The syntax check is then skipped, and must not
+# turn the skipped check into a failed render.
+NOLUAC="$T/noluac-bin"
+mkdir -p "$NOLUAC"
+IFS=: read -ra path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  for tool in "$dir"/*; do
+    name=${tool##*/}
+    [[ $name == luac* || -e $NOLUAC/$name || ! -x $tool ]] && continue
+    ln -s "$tool" "$NOLUAC/$name"
+  done
+done
+check "luac is hidden" env PATH="$NOLUAC" bash -c '! command -v luac'
+check "run without luac" env PATH="$NOLUAC" bash "$ROOT/modules/client/30-hypr.sh"
+
 section "30-hypr: prune a dropped name"
 printf 'hl.config({})\n' >"$ROOT/config/hypr/monitors.lua"
 check "add: run" module client/30-hypr.sh
