@@ -26,6 +26,7 @@ mkdir -p "$HOME/.config/hypr" "$T/bin"
 printf '#!/bin/sh\ncase "$1" in configerrors) echo "no errors";; esac\nexit 0\n' >"$T/bin/hyprctl"
 chmod +x "$T/bin/hyprctl"
 export PATH="$T/bin:$PATH"
+module_fixture_path=$PATH
 # hypr_reload addresses the session through this variable; pin it so the stub
 # path is taken the same way on a desktop and in CI.
 export HYPRLAND_INSTANCE_SIGNATURE=stub
@@ -198,7 +199,7 @@ section "30-hypr: host without luac"
 # turn the skipped check into a failed render.
 NOLUAC="$T/noluac-bin"
 mkdir -p "$NOLUAC"
-IFS=: read -ra path_dirs <<<"$PATH"
+IFS=: read -ra path_dirs <<<"$module_fixture_path"
 for dir in "${path_dirs[@]}"; do
   for tool in "$dir"/*; do
     name=${tool##*/}

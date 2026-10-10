@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
+from unittest import mock
 import subprocess
 import sys
 import tempfile
@@ -19,7 +21,7 @@ def utc(value):
 
 class PackageTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir="/tmp")
         self.root = Path(self.tmp.name)
         self.root.chmod(0o700)
         self.output = self.root / "stage"
@@ -92,17 +94,23 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(first["changes"], [])
         for path in self.output.iterdir():
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.run_tool("retire-stage", "--output", self.output)
+        terminal = self.run_tool("retire-stage", "--output", self.output)
+        self.assertEqual(terminal["status"], "retired-disabled")
+        self.assertEqual(terminal["expires_at"], self.request["expires_at"])
         self.assertEqual(before, {k: v for k, v in self.snapshot(self.output).items()
                                   if k != "retired.json"})
         retired = self.snapshot(self.output)
-        self.run_tool("retire-stage", "--output", self.output)
+        self.assertEqual(terminal, self.run_tool("retire-stage", "--output", self.output))
+        self.assertEqual(terminal, self.run_tool("inspect", "--output", self.output))
+        self.assertEqual(terminal, self.run_tool("assess", "--output", self.output,
+                                              "--gates", "/home/igor/auth-not-opened"))
         self.assertEqual(retired, self.snapshot(self.output))
         self.stage(success=False)
+        self.assertEqual(retired, self.snapshot(self.output))
 
     def test_all_live_actions_refuse_without_opening_inputs(self):
         before = self.snapshot(self.root)
-        for action in ("apply", "activate", "inactivate", "rollback", "bridge"):
+        for action in ("apply", "activate", "inactivate", "rollback", "bridge", "install", "enroll", "qualify-live"):
             value = self.run_tool(action, "--request", "/home/igor/auth",
                                   "--output", self.personal, success=False,
                                   env={"SSH_ORIGINAL_COMMAND": "x; cat /home/igor/auth",
@@ -166,6 +174,85 @@ class PackageTests(unittest.TestCase):
         self.stage(success=False)
         self.root.chmod(0o700)
 
+    def test_repair2_held_directory_survives_real_ancestor_replacement(self):
+        functions = runpy.run_path(str(TOOL), run_name="held_directory_fixture")
+        ancestor = self.root / "ancestor"
+        ancestor.mkdir(mode=0o700)
+        original_output = ancestor / "stage"
+        original_output.mkdir(mode=0o700)
+        original_input = ancestor / "request.json"
+        self.save(original_input, self.request)
+        replacement = self.root / "replacement"
+        replacement.mkdir(mode=0o700)
+        replacement_output = replacement / "stage"
+        replacement_output.mkdir(mode=0o700)
+        self.save(replacement / "request.json", {"redirected": True})
+        replacement_before = self.snapshot(replacement)
+        original_raw = original_input.read_bytes()
+        moved = self.root / "held-original"
+        with functions["private_dir"](str(original_output)) as output:
+            with functions["open_directory"](ancestor) as inputs:
+                output_fd, input_fd = output.fd, inputs.fd
+                # Real pathname attack after verification, not a mocked helper result.
+                ancestor.rename(moved)
+                ancestor.symlink_to(replacement, target_is_directory=True)
+                self.assertEqual(functions["read_at"](inputs, "request.json"), original_raw)
+                first = functions["stage"](self.request, output)
+                self.assertEqual(first, functions["stage"](self.request, output))
+                self.assertEqual(first, functions["inspect_at"](output)[1])
+                self.assertEqual(replacement_before, self.snapshot(replacement))
+                self.assertIn("receipt.json", self.snapshot(moved / "stage"))
+                with self.assertRaises(OSError):
+                    functions["open_directory"](ancestor)
+        for fd in (output_fd, input_fd):
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+        self.assertIsNone(output.fd)
+        self.assertIsNone(inputs.fd)
+
+    def test_repair2_trusted_ancestor_owner_and_error_descriptor_cleanup(self):
+        functions = runpy.run_path(str(TOOL), run_name="ownership_fixture")
+        ancestor = self.root / "foreign-policy-fixture"
+        ancestor.mkdir(mode=0o755)
+        nested = ancestor / "private"
+        nested.mkdir(mode=0o700)
+        target_inode = ancestor.stat().st_ino
+        real_fstat, real_open = os.fstat, os.open
+        opened = []
+
+        def foreign_owner(fd):
+            info = real_fstat(fd)
+            if info.st_ino == target_inode:
+                values = list(info)
+                values[4] = max(2001, os.geteuid() + 1)
+                return os.stat_result(values)
+            return info
+
+        def record_open(*args, **kwargs):
+            fd = real_open(*args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        # The host does not grant chown. Only UID policy is simulated; pathname
+        # rename/symlink attacks use real filesystem operations in the test above.
+        with mock.patch.object(os, "fstat", side_effect=foreign_owner):
+            with mock.patch.object(os, "open", side_effect=record_open):
+                with self.assertRaisesRegex(functions["Refusal"], "untrusted-ancestor-owner"):
+                    functions["private_dir"](str(nested))
+        for fd in set(opened):
+            with self.assertRaises(OSError):
+                real_fstat(fd)
+        with functions["open_directory"](self.root) as directory:
+            self.input.chmod(0o644)
+            opened.clear()
+            with mock.patch.object(os, "open", side_effect=record_open):
+                with self.assertRaisesRegex(functions["Refusal"], "private-owned-regular-input"):
+                    functions["read_at"](directory, self.input.name)
+            for fd in opened:
+                with self.assertRaises(OSError):
+                    real_fstat(fd)
+            self.input.chmod(0o600)
+
     def test_operation_conflict_preserves_stage(self):
         self.stage()
         before = self.snapshot(self.output)
@@ -184,7 +271,7 @@ class PackageTests(unittest.TestCase):
 
     def test_payload_and_receipt_tamper(self):
         self.stage()
-        for name in ("manifest.json", "disabled.service", "parent-gates.json", "receipt.json"):
+        for name in sorted(self.snapshot(self.output)):
             path = self.output / name
             original = path.read_bytes()
             path.write_bytes(b"tampered")
@@ -251,7 +338,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("offline-reboot-expiry-and-bridge-refusal", result["blockers"])
         self.assertEqual(before, self.snapshot(self.output))
 
-    def test_expired_inspection_and_retirement_preserve_evidence(self):
+    def test_repair3_expired_inspection_and_retirement_preserve_evidence(self):
         self.stage()
         before = self.snapshot(self.output)
         # Controlled clock only: this is metadata simulation, never runtime expiry proof.
@@ -267,16 +354,38 @@ functions["clock"] = lambda: functions["timestamp"](expiry) + dt.timedelta(days=
 sys.argv = [tool, action, "--output", output]
 print(json.dumps(module["main"]()))
 """
-        for action in ("inspect", "retire-stage"):
+        def after_expiry(action, output=self.output):
             result = subprocess.run([sys.executable, "-c", program, str(TOOL),
-                                     str(self.output), self.request["expires_at"], action],
+                                     str(output), self.request["expires_at"], action],
                                     env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
                                     capture_output=True, text=True, check=True)
             value = json.loads(result.stdout)
             self.assertFalse(value["live_qualified"])
-            self.assertIn(value["status"], ("expired-disabled", "retired-disabled"))
-        self.assertEqual(before, {k: v for k, v in self.snapshot(self.output).items()
-                                  if k != "retired.json"})
+            self.assertEqual(value["expires_at"], self.request["expires_at"])
+            return value
+
+        self.assertEqual(after_expiry("inspect")["status"], "expired-disabled")
+        self.assertEqual(before, self.snapshot(self.output))
+        first = after_expiry("retire-stage")
+        self.assertEqual(first["status"], "retired-disabled")
+        retired = self.snapshot(self.output)
+        self.assertEqual(first, after_expiry("retire-stage"))
+        self.assertEqual(first, after_expiry("inspect"))
+        self.assertEqual(retired, self.snapshot(self.output))
+        self.assertEqual(before, {k: v for k, v in retired.items() if k != "retired.json"})
+
+        # Retirement before expiry also remains terminal when the clock advances.
+        early_output = self.root / "early-retired"
+        early_output.mkdir(mode=0o700)
+        self.run_tool("stage", "--request", self.input, "--output", early_output)
+        original = self.snapshot(early_output)
+        early = self.run_tool("retire-stage", "--output", early_output)
+        self.assertEqual(early["status"], "retired-disabled")
+        early_bytes = self.snapshot(early_output)
+        self.assertEqual(early, after_expiry("inspect", early_output))
+        self.assertEqual(early, after_expiry("retire-stage", early_output))
+        self.assertEqual(early_bytes, self.snapshot(early_output))
+        self.assertEqual(original, {k: v for k, v in early_bytes.items() if k != "retired.json"})
 
     def test_same_host_reference_is_plan_only(self):
         self.request["auth_mode"] = "protected-same-host-reference"
@@ -288,6 +397,136 @@ print(json.dumps(module["main"]()))
         self.request["auth_path"] = "/home/igor/.provider/auth"
         self.save(self.input, self.request)
         self.stage(success=False)
+
+    def fixture(self):
+        functions = runpy.run_path(str(TOOL), run_name="fixture_builder")
+        self.request["artifact_sha256"] = hashlib.sha256(
+            functions["FIXTURE_RUNTIME"].encode()).hexdigest()
+        self.save(self.input, self.request)
+        self.stage()
+        fixture = self.root / "fixture"
+        fixture.mkdir(mode=0o700)
+        home = fixture / "home"
+        home.mkdir(mode=0o700)
+        personal = fixture / "personal"
+        personal.mkdir(mode=0o700)
+        (personal / "sentinel").write_text("SECRET-SENTINEL-DO-NOT-ECHO")
+        self.save(fixture / "fixture.json",
+                  {"kind": "disposable-laptop-qualification", "version": 1,
+                   "source_commit": self.request["source_commit"],
+                   "artifact_sha256": self.request["artifact_sha256"]})
+        (home / "fixture-auth.json").write_bytes(
+            functions["encode"]({"kind": "disposable-own-auth", "provider": "synthetic"}))
+        (home / "fixture-auth.json").chmod(0o600)
+        self.save(home / "provider-auth.fixture", {})  # then fixed noncredential marker
+        (home / "provider-auth.fixture").write_bytes(b"disposable-own-auth-only\n")
+        auth = home / ".config/upkeeper/secrets/f02-protocol/laptop-isolated"
+        auth.parent.mkdir(parents=True, mode=0o700)
+        auth.write_bytes(b"disposable-qualification-only\n")
+        auth.chmod(0o600)
+        return fixture, home
+
+    def qualify(self, fixture, success=True):
+        return self.run_tool("qualify-fixture", "--output", self.output,
+                             "--fixture", fixture, success=success,
+                             env={"SSH_ORIGINAL_COMMAND": "exec arbitrary-command",
+                                  "SSH_AUTH_SOCK": "/excluded/personal/agent.sock",
+                                  "DBUS_SESSION_BUS_ADDRESS": "unix:path=/excluded/personal/bus.sock",
+                                  "T3CODE_HOME": str(self.personal),
+                                  "HUYANG_SOCKET": str(self.personal / "huyang.sock")})
+
+    def test_repair1_supported_preparation_and_fixed_launch_refusal(self):
+        self.stage()
+        bootstrap = json.loads((self.output / "worker-bootstrap.json").read_text())
+        self.assertEqual(bootstrap["schema_version"], 1)
+        self.assertEqual(bootstrap["credential_ref"], "secretref:f02-protocol/laptop-isolated")
+        self.assertEqual(bootstrap["capabilities"], ["git", "huyang"])
+        preparation = json.loads((self.output / "preparation.json").read_text())
+        self.assertEqual(preparation["binding"]["artifact_sha256"], self.request["artifact_sha256"])
+        self.assertEqual(preparation["binding"]["source_commit"], self.request["source_commit"])
+        self.assertFalse(preparation["enabled"])
+        self.assertFalse(preparation["auth_provisioned"])
+        self.assertEqual(preparation["directory_modes"]["home"], "0700")
+        self.assertEqual(preparation["directory_modes"]["t3"], "0700")
+        self.assertEqual(preparation["directory_modes"]["huyang"], "0700")
+        unit = (self.output / "disabled.service").read_text()
+        self.assertNotIn("/usr/bin/false", unit)
+        self.assertNotIn("[Install]", unit)
+        for directive in ("CPUQuota=400%", "MemoryMax=12G", "KillMode=control-group"):
+            self.assertIn(directive, unit)
+        # Exercise generated production wrapper, not just inspect strings.
+        before = self.snapshot(self.output)
+        for mode in ("serve", "bridge", "worker;sh"):
+            result = subprocess.run([sys.executable, str(self.output / "worker-launcher.py"), mode],
+                                    env={"PATH": "/usr/bin:/bin", "SSH_ORIGINAL_COMMAND": "x;sh"},
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertFalse(json.loads(result.stdout)["live_qualified"])
+        self.assertEqual(before, self.snapshot(self.output))
+
+    def test_repair1_actual_sandbox_own_auth_and_negative_access(self):
+        fixture, home = self.fixture()
+        # Actual listening local fixture sockets exist outside the mount allowlist.
+        import socket
+        sockets = []
+        for name in ("agent", "bus", "t3", "huyang"):
+            listener = socket.socket(socket.AF_UNIX)
+            listener.bind(str(fixture / "personal" / (name + ".sock")))
+            listener.listen(1)
+            sockets.append(listener)
+        try:
+            before = self.snapshot(self.output)
+            result = self.qualify(fixture)
+            self.assertEqual(result["status"], "offline-fixture-qualified")
+            self.assertEqual(result["roles"], ["serve", "bridge", "verification"])
+            self.assertTrue(result["artifact_bound"])
+            self.assertEqual(result["own_auth"], "fixture-positive-only")
+            self.assertEqual(before, self.snapshot(self.output))
+            # Removal of the own provider prerequisite must fail through the same path.
+            (home / "provider-auth.fixture").unlink()
+            value = self.qualify(fixture, success=False)
+            self.assertEqual(value["reason"], "unprivileged-bwrap-fixture-unavailable-or-probe-failed")
+            self.assertEqual(before, self.snapshot(self.output))
+        finally:
+            for listener in sockets:
+                listener.close()
+
+    def test_repair1_artifact_and_fixture_identity_refuse(self):
+        fixture, home = self.fixture()
+        before = self.snapshot(self.output)
+        marker = json.loads((fixture / "fixture.json").read_text())
+        self.save(fixture / "fixture.json", dict(marker, artifact_sha256="3" * 64))
+        value = self.qualify(fixture, success=False)
+        self.assertEqual(value["reason"], "fixture-identity")
+        self.save(fixture / "fixture.json", marker)
+        (home / "fixture-auth.json").chmod(0o644)
+        self.qualify(fixture, success=False)
+        self.assertEqual(before, self.snapshot(self.output))
+        # A tampered exact candidate artifact must refuse before process execution.
+        path = self.output / "qualification-runtime.py"
+        original = path.read_bytes()
+        path.write_bytes(b"print('fake proof')")
+        self.qualify(fixture, success=False)
+        path.write_bytes(original)
+        self.assertEqual(before, self.snapshot(self.output))
+        self.run_tool("retire-stage", "--output", self.output)
+        retired = self.snapshot(self.output)
+        self.qualify(fixture, success=False)
+        self.assertEqual(retired, self.snapshot(self.output))
+
+    def test_repair1_exact_unsupported_fixture_capability(self):
+        # No substitute sandbox or declaration can make unavailable bwrap pass.
+        fixture, home = self.fixture()
+        functions = runpy.run_path(str(TOOL), run_name="unsupported_fixture")
+        real_run = subprocess.run
+        def unsupported(argv, **kwargs):
+            if argv[:2] == ["/usr/bin/bwrap", "--version"]:
+                return subprocess.CompletedProcess(argv, 0, b"bubblewrap 0.11.0\n", b"")
+            return real_run(argv, **kwargs)
+        with functions["private_dir"](str(self.output)) as directory:
+            with mock.patch.object(subprocess, "run", side_effect=unsupported):
+                with self.assertRaisesRegex(functions["Refusal"], "unsupported-bwrap-version"):
+                    functions["qualify_fixture"](self.request, directory, str(fixture))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

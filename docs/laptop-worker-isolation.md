@@ -1,174 +1,202 @@
-# Isolated laptop worker: disabled operator package v1
+# Isolated laptop worker: disabled preparation and offline qualification
 
-This opt-in tool stages a nonsecret, inert qualification package. It does **not**
-install or activate a worker. Source acceptance approves this limited package;
-it cannot establish live qualification, enrollment or a usable active worker.
-Ordinary setup may copy the standalone helper through 28-scripts, but never runs
-it. There are no automatic module changes or host/root assets.
+The opt-in helper stages private schema1 bootstrap and persistent-worker configuration,
+a fixed bridge, a disabled service, an artifact-bound launcher and a disposable sandbox
+qualifier. Ordinary setup only copies the helper; it never runs or activates it. There
+are no autoloaded host/root assets. Source review, source publication, operator
+installation, live qualification and enrollment remain separate decisions.
 
-Use Python 3 on the reviewed checkout:
+No-argument, help and plan are read-only. Use Python3 on the reviewed checkout:
+
 ```sh
 python3 config/bin/t3-laptop-worker-setup
 python3 config/bin/t3-laptop-worker-setup --help
 ```
-Both are read-only. Installed copies also work without adjoining assets.
 
-## Staging and integrity
+The installed helper is self-contained. It needs no adjoining repository files.
 
-Prepare a nonsecret request from config/t3-laptop-isolation/request.example.json.
-Replace the example source commit and runtime artifact SHA with the independently
-reviewed source and separately accepted nonsecret binary identity. These are
-**declared identities**, not a verified ACCEPT or artifact signature. Choose a
-unique operation ID, exact laptop host, unused dedicated UID >=2000, and absolute
-UTC creation/expiry timestamps. The creation time must be in the past and expiry
-in the future, no more than seven days after creation. Expiry is immutable on
-replay. Do not put keys, credential values, secret-file hashes or auth paths in
-this JSON. The account name is fixed; the worker ID is laptop-isolated.
+## Private staging and reconciliation
 
-The strict v1 field set is in request.schema.json and independently enforced by
-the tool, including duplicate-key refusal. It has no arbitrary command, mount,
-path, endpoint or environment fields. auth_mode selects a parent qualification
-lane only: dedicated-login or protected-same-host-reference. It neither opens nor
-provisions authentication. The same-host lane requires a proved narrow protected
-private leaf/reference and safe refresh/write behavior; broad Igor home access
-and copying auth to another host remain disallowed.
+Choose a unique operation ID, laptop identity and unused dedicated UID>=2000 from
+request.example.json. Set the exact reviewed source commit and separately accepted
+runtime artifact SHA256. Neither declaration establishes ACCEPT. The account is fixed
+to t3-laptop-isolated; worker ID laptop-isolated. No credential values, auth paths,
+secret hashes, arbitrary commands, mounts, endpoints or environment fields are accepted.
+auth_mode chooses dedicated-login or protected-same-host-reference as a later parent
+gate. Provisioning and real credential opening are outside this helper.
 
-Only explicit existing directories owned by the invoking operator, mode0700, are
-accepted. Requests must be owned regular mode0600 files with one link. Absolute
-canonical paths are required; symlink ancestors, world/group-writable nonsticky
-parents, input/output overlap and home/runtime/system directories are refused.
-For example, after parent approval to stage files (these are offline operations):
+Creation and expiry are strict absolute UTC, no more than seven days apart, with
+creation in the past and expiry in the future for staging. Replay cannot renew expiry.
+
+Outputs must already exist, be owner0700 and outside home/runtime/system directories.
+Inputs must be owner0600 regular files with one link, at most64KiB. Every directory
+component is opened with no-follow and verified through its descriptor. Ancestor
+owners must be root or the invoking UID; writable ancestors refuse except root-owned
+sticky directories such as /tmp and /var/tmp. A foreign-owned0755 ancestor refuses.
+Held descriptors anchor input reads, output inspection, locking, writes and fsync;
+ancestor rename/symlink replacement cannot redirect operations to a new pathname.
+Descriptors are CLOEXEC and closed on successful and failed operations. This does
+not claim security against the invoking UID modifying its own file bytes concurrently.
+
 ```sh
-umask 077
-mkdir -m 700 /var/tmp/laptop-isolation-review-OPID
-# Write reviewed request to /var/tmp/laptop-isolation-request-OPID.json; chmod 600.
 python3 config/bin/t3-laptop-worker-setup stage \
-  --request /var/tmp/laptop-isolation-request-OPID.json \
-  --output /var/tmp/laptop-isolation-review-OPID
+  --request /var/tmp/laptop-request-OPID.json \
+  --output /var/tmp/laptop-stage-OPID
 python3 config/bin/t3-laptop-worker-setup inspect \
-  --output /var/tmp/laptop-isolation-review-OPID
+  --output /var/tmp/laptop-stage-OPID
 ```
 
-Stage writes only manifest.json, disabled.service, parent-gates.json and
-receipt.json in that directory, all0600. The receipt is the durable commit marker;
-files and directory are fsynced. It records exact nonsecret payload hashes and
-tool hash, immutable operation/expiry, and zero live changes. Identical replay
-returns the same receipt without writes. Different identity, modified bytes,
-permissions, hardlinks, foreign files or missing receipt refuse without overwrite.
-Directory advisory locking serializes cooperating tool calls. This is an offline
-operator-owned package, not a privileged installer secure against the invoking
-UID replacing its own paths concurrently.
+Staging writes only the payload files and receipt.json, all0600. Files and the held
+directory are fsynced; the receipt is the final durable commit marker. It binds all
+nonsecret payload bytes, helper hash, stable operation ID and expiry. Identical replay
+returns the same receipt without writes. Changed identities/bytes/modes, symlinks,
+hardlinks, unknown files, incomplete crash output or a missing receipt refuse without
+overwrite. Preserve partial evidence and use a separately reviewed new directory;
+never blindly retry or delete. Advisory flock serializes cooperating invocations.
 
-Crash before receipt: preserve that directory unchanged as incomplete evidence,
-inspect the failure, and use a separately reviewed new operation/directory.
-Never delete or retry partial output blindly. Lost stdout after receipt: inspect
-and replay the same request; do not renew its expiry. Tool upgrades invalidate
-the tool-hash receipt; preserve the old accepted tool with its package.
-
-Inspect checks exact bytes and receipt schema, even after expiry; an expired
-stage reports expired-disabled. This is a metadata deadline, **not a working
-runtime expiry mechanism**. A live expiry implementation is an explicit blocker.
-
-## Offline prerequisite assessment
-
-Use gates.example.json with fresh declarations, matching request identities and
-auth lane. The exact field set is enforced. observed_at must be UTC, at most five
-minutes old and not future. Minimums: 8 logical CPUs, available RAM14GiB, free disk
-60GiB, zero conflicting heavy executors, locked dedicated account, no supplementary
-groups, HOME0700. In an eventual live implementation the parent must independently
-measure these immediately before **every mutation** and again before activation;
-stale audit data and this JSON are not proof.
-```sh
-python3 config/bin/t3-laptop-worker-setup assess \
-  --output /var/tmp/laptop-isolation-review-OPID \
-  --gates /var/tmp/laptop-isolation-gates-OPID.json
-```
-Valid declarations yield blocked/offline-declarations, never qualified.
-Malformed, stale, unsafe or mismatched declarations refuse, with fixed diagnostic
-codes and no input echo. Arbitrary ACCEPT, auth or live-qualified fields refuse.
-
-The manifest fixes intended caps: one executor, CPUQuota400%, MemoryHigh10GiB,
-MemoryMax12GiB, TasksMax256, tmp2GiB, workspace20GiB, disk reserve60GiB.
-disabled.service demonstrates cgroup hardening directives but executes only
-/usr/bin/false, has no Install section, no supported worker command and no auth
-or mount bindings. It must never be installed as an active worker. Its directives
-are not kernel proof, tmp/workspace quotas, admission control or bridge isolation.
-
-## Unsupported live stages and parent qualification
-
-apply, activate, inactivate, rollback and bridge unconditionally return exit2
-with unsupported-live-STAGE before opening inputs. SSH_ORIGINAL_COMMAND is never
-evaluated; no forwarding, socket, runner or arbitrary shell interface exists.
-No credential contents, probes or environment values are emitted. This tool
-does not supply a live backend or accept one from JSON.
-
-The verified mechanism map points to Steward's private schema1 bootstrap,
-f02-protocol credential reference, persistent-worker.yaml, fixed worker bridge
-and contained provider execution. It is not proof that a separately accepted
-ARM binary supports a daemon/bridge sandbox, all assignment paths, narrow auth
-refresh, single-executor guard, offline reboot-safe expiry or drain/stop
-acknowledgement. No guessed CLI or fabricated CredentialGrant API is supplied.
-
-Parent operations, in order, before any live mutation:
-1. Independently ACCEPT the exact source commit; verify accepted tool/payload
-   hashes and separately accepted runtime binary/version/hash and actual command
-   help. Resolve the blocked command compatibility seam.
-2. Measure fresh capacity, account/UID/group availability, platform/cgroup support,
-   no conflicting operation and no existing second heavy executor. Keep Igor's
-   personal services, masked worker, state, results and workspaces untouched.
-3. Prepare a separately reviewed exact runtime installer and rollback manifest.
-   Runtime roots must be dedicated under /var/lib/t3-laptop-isolated/OPID, root
-   control assets outside worker-writable paths, private account HOME0700, own
-   T3/Huyang endpoints, own f02 credential0600 (never f03), private bootstrap and
-   config0600. Do not symlink/bind Igor-installed tools or inherit agents/user bus.
-4. Parent provisions independent dedicated provider/repository authorization OR
-   proves a least-privilege protected same-laptop private auth reference/leaf,
-   including refresh/write behavior. If login actually needs Igor interactively,
-   record that precise blocker and keep disabled. Do not invent a grant service.
-5. Prove daemon, fixed bridge and actual provider child cannot list/read/write a
-   controlled sentinel under Igor's root or reach personal agent, bus, T3/Huyang.
-   Prove no whole /home, host /tmp or /run bind and selected off-allowlist access
-   fails. Use sentinels only, not Igor data.
-6. Prove capped cgroup membership/effective cpu.max/memory.max for wrappers,
-   agents AND verification/build/test descendants; bound pids/tmp/workspace;
-   prove catalog admission and failclosed runtime single-executor guard.
-7. Before activation arm <=7day absolute expiry with stable op ID. Prove bridge
-   refusal and worker stop across reboot/network outage without deadline renewal;
-   collect actual assignment/drain/stop acknowledgements. No journal deletion.
-8. Only after all preceding gates, parent performs separately reviewed
-   coordinator-local fenced enrollment and a narrow declared real assignment
-   smoke; collect real receipt. This tool has no enrollment operation.
-
-These are required operations, not executable commands: an exact live command
-sequence cannot honestly be provided until the accepted runtime's unsupported
-interfaces are resolved and independently reviewed. No live installer is shipped
-or promised by this v1 source package. The parent must not improvise broad mounts
-or enable disabled.service to clear blockers. Kernel/ARM/network/provider/bridge,
-expiry/drain and assignment qualification remain unperformed.
-
-## Retirement and rollback boundary
+Lost stdout after receipt: inspect and replay the identical operation. A helper upgrade
+invalidates its old tool-hash receipt, so retain the exact reviewed helper with its stage.
+Retirement writes only retired.json and preserves all payload/receipt evidence:
 
 ```sh
 python3 config/bin/t3-laptop-worker-setup retire-stage \
-  --output /var/tmp/laptop-isolation-review-OPID
+  --output /var/tmp/laptop-stage-OPID
 ```
-This writes only retired.json; it preserves every payload/receipt and performs
-zero live reversal. Repetition is idempotent; retired stages cannot be assessed
-or restaged. No recursive delete exists. The manifest has managed_live_paths=[]
-because no live changes were made. It cannot authorize removal of an account,
-HOME, source, evidence, services or any unrelated files.
 
-Eventual parent live rollback must first stop new assignment and close bridge
-access, collect drain/stop acknowledgement, then reverse only recorded managed
-isolated-account/unit/config changes after checking before/after identities.
-Preserve account HOME, journals and evidence; never recursively remove roots.
-Unknown stop/de-enrollment semantics remain blockers, not a stopped claim.
+retired-disabled is terminal: first/replayed retirement, inspection and assessment
+retain it before and after expiry. A stage that expires without retirement reports
+expired-disabled on inspection. Staging, assessment and fixture qualification cannot
+revive an expired stage. Retirement changes no live runtime and claims no stopped
+worker. There is no recursive deletion or live rollback.
+
+## Concrete supported preparation
+
+The generated files include:
+
+- worker-bootstrap.json: strict schema1, sorted Git/Huyang capabilities, SSH
+  transport and secretref:f02-protocol/laptop-isolated. The dedicated coordinator
+  identity is laptop-coordinator and provider routes are empty until separately
+  reviewed parent binding. No f03/admin credential is permitted.
+- persistent-worker.yaml: supported policy.dry_run=true, backlog_v2.mode=disabled,
+  private /worker/t3 data/token file and private /opt/runtime/t3 CLI. This prevents
+  fallback to personal T3 discovery. It provisions neither token nor provider auth.
+- preparation.json: exact source/artifact/operation/expiry binding, destination
+  mapping under /var/lib/t3-laptop-isolated/OPID, separate0700 home/state/tools/T3/
+  Huyang/control directories, private0600 files and parent root-owned control policy.
+- worker-launcher.py and fixed-bridge: fixed worker serve --config and worker bridge
+  commands, immutable disabled refusal and the actual Bubblewrap policy used by the
+  qualifier. They never evaluate SSH_ORIGINAL_COMMAND or arbitrary command arguments.
+- coordinator-worker.fragment.yaml: supported disabled coordinator worker fragment,
+  accept_backlog=false, persistent-ssh and executors slots1/cpu_units4/memory_mb12288/
+  scratch_mb20480. This is a parent merge fragment, not a complete config or enrollment.
+- disabled.service: concrete launcher command, no Install section, Restart=no,
+  ProtectHome/ProtectSystem/PrivateTmp/NoNewPrivileges, KillMode=control-group,
+  CPUQuota400%, MemoryHigh10G/MemoryMax12G and TasksMax256.
+- qualification-runtime.py: exact disposable local artifact exercising serve, bridge
+  and a verification child, synthetic own-auth prerequisites and namespace denial.
+- manifest.json, parent-gates.json and receipt.json: immutable redacted boundaries,
+  remaining real gates and durable reconciliation evidence.
+
+The supported command/schema map was inspected at Steward source
+04ad0aa85ac63fcf51bf38d8f9aace5d2b15a19a: docs/worker-operations.md,
+packaging/systemd/t3-steward-worker.service, internal/workerruntime/bootstrap.go,
+internal/config/config.go (T3, V2Worker, V2Executors) and
+internal/workerruntime/binding.go. This is source evidence, not proof of an accepted
+ARM binary/version. No invented runtime concurrency, Huyang config or grant API exists.
+
+The service always refuses live launch. Parent installation must separately prove
+root-owned worker-unwritable controls, account/groups, tool ownership, supported
+runtime/version and precise live isolation. Merely enabling this service cannot
+clear any gate. Caps apply to the intended complete execution cgroup, including agents
+AND verification/build/test descendants. Effective kernel limits and membership are
+unproved; tmp2GiB is enforced in the qualifier's Bubblewrap tmpfs, while live
+workspace/disk quotas and cgroup descendants remain explicit parent gates.
+
+## Disposable production-path qualifier
+
+qualify-fixture is the only subprocess-running mode. It uses an explicit private
+disposable fixture and the exact shipped synthetic artifact SHA256 in the request,
+rechecks the opened artifact and uses the generated launcher's policy. It does not
+run any supplied provider, live runtime or credential command.
+
+The fixture layout is documented by PackageTests.fixture in test/laptop-worker-isolation.py:
+fixture.json binds kind/version/source/artifact; home/fixture-auth.json is fixed
+nonsecret metadata; home/provider-auth.fixture and the private f02-protocol fixture
+leaf contain fixed disposable markers. personal/ holds controlled sentinels/sockets.
+These are test objects only. No real credentials, home, service or endpoint is allowed.
+A request binding a real runtime artifact refuses this fixture lane; it cannot produce
+a live receipt from that artifact.
+
+```sh
+python3 config/bin/t3-laptop-worker-setup qualify-fixture \
+  --output /var/tmp/laptop-fixture-stage-OPID \
+  --fixture /var/tmp/laptop-disposable-fixture-OPID
+```
+
+The policy uses Bubblewrap0.12.0, unshare-all (including network), clearenv,
+die-with-parent/new-session, explicit held-FD mounts of private HOME and exact fixture
+artifact, read-only public /usr,/lib,/lib64, isolated proc/dev and private tmp/state/
+T3/Huyang. It never mounts host home/tmp/run wholesale. All supplied descriptors are
+closed before the contained artifact runs; only the explicitly listed environment
+survives. Own fixture socket bind/connect succeeds. Excluded personal sentinel
+listing/read/write, agent/bus/T3/Huyang socket connection and inherited FD access fail.
+The serve fixture holds a one-executor flock across its verification child and proves
+a competing process refuses. This local guard test does not establish live runtime
+catalog admission or coordinator stop behavior.
+
+Exact artifact, mode, source binding, own fixture auth and capability failures refuse.
+Missing bwrap/timeouts, unsupported version and a failed namespace probe have fixed
+refusal codes. No fallback sandbox or declaration can yield success. Successful output
+is offline-fixture-qualified with live_qualified=false and enrolled=false. The helper
+writes no qualifier evidence into the stage; the caller retains redacted stdout.
+Actual provider auth/refresh, ARM/kernel live behavior, endpoint network policy,
+real assignment and effective live cgroup caps remain unqualified.
+
+## Fresh capacity assessment and later parent gates
+
+assess accepts gates.example.json only: matching host/UID/source/artifact/auth lane,
+UTC observed_at within five minutes, CPU>=8, RAM available>=14GiB, free disk>=60GiB,
+zero conflicting heavy executors, locked account, no supplementary groups, HOME0700.
+Valid declarations return blocked/offline-declarations. They never authorize mutation
+or prove capacity. Fake ACCEPT/auth/live-qualified fields refuse. A retired stage
+returns its terminal receipt without opening gate input.
+
+apply, activate, install, enroll, qualify-live, inactivate, rollback and bridge refuse
+before opening any inputs. The parent later owns these separately reviewed operations:
+
+1. Independently ACCEPT exact repaired source; bind the reviewed helper/payload and
+   separately accepted ARM binary/version/hash with actual supported help.
+2. Measure fresh capacity/platform/cgroup support and UID/account/group availability
+   before every live mutation and again before activation. Keep the personal worker
+   masked and personal services/state/results/workspaces untouched.
+3. Use a manifest-scoped reversible installer; enforce root controls, locked dedicated
+   UID/HOME, private tools/state/T3/Huyang and own f02 credential. No personal tools,
+   forwarded agents/bus/sockets or f03/admin authorization.
+4. Provision independent provider/repository authorization or prove a narrow protected
+   same-laptop auth leaf/reference with least privilege and safe refresh/write behavior.
+   No broad home mount, credential copying to another host, secret output or invented
+   CredentialGrant lifecycle. Unavoidable interactive login stays an exact blocker.
+5. Prove real daemon/bridge/provider-child sentinel denials and own-auth positive
+   behavior; qualify network and own endpoints with controlled probes only.
+6. Prove one executor through the accepted catalog AND fail-closed runtime guard;
+   inspect actual cpu.max/memory.max and membership for agents AND verification,
+   bounded pids/tmp/workspace and disk reserve.
+7. Arm immutable<=7day absolute expiry and prove refusal/stop across boot, outage,
+   bridge and retry without renewal. Collect real assignment/drain/stop acknowledgement.
+8. Only then perform separately fenced coordinator-local enrollment and a narrow
+   declared assignment smoke with real receipts. No fleet capture/publication here.
+
+Source acceptance cannot substitute for any live gate. Unknown live drain/de-enrollment,
+network, contained real provider preparation/verification/output custody and confirmed
+stop integration remain precise blockers in the mapped runtime source. Rollback must
+close new assignment/bridge, obtain stop acknowledgement, reverse only recorded managed
+changes after identity checks and preserve HOME/journals/evidence.
 
 ## Verification
 
-test/laptop-worker-isolation.py tests production staging, integrity, replay,
-crash refusal, lifecycle metadata, private paths, strict identities, capacity and
-account decisions, refusal of live modes/forged gates, and personal-fixture
-preservation. test/run.sh integrates the suite; the owning shellcheck and
-instruction-generation checks remain intact. Fixture success does not prove
-actual kernel, ARM, provider, socket, expiry or bridge behavior.
+The isolation suite preserves existing checks and adds real descriptor/ancestor attacks,
+exact terminal lifecycle assertions, generated-wrapper execution, artifact-bound local
+Bubblewrap serve/bridge/verification, own fixture auth positive/missing cases, socket/
+sentinel denials, competing executor guard and unsupported capability refusal.
+test/run.sh integrates it. Owning full ShellCheck/module/instruction-generation checks
+remain required. Offline tests never report live qualification or enrollment readiness.

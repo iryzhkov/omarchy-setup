@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline isolated-worker package. No subprocesses, credentials or live effects."""
+"""Disabled preparation and disposable local qualification; no live effects."""
 import argparse
 import datetime as dt
 import fcntl
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 
 VERSION = 1
@@ -28,9 +29,30 @@ BLOCKERS = [
     "assignment-drain-stop-acknowledgement",
     "ARM-kernel-network-and-real-assignment",
 ]
+BLOCKER_DETAILS = {
+    "accepted-runtime-command-compatibility":
+        "Source interfaces mapped at 04ad0aa; accepted ARM artifact/version/help still absent.",
+    "daemon-bridge-provider-negative-access":
+        "Disposable bwrap probes pass; real provider contained preparation/verification/output custody "
+        "and confirmed stop integration remain incomplete in mapped docs/worker-operations.md.",
+    "private-provider-auth-refresh-and-repository-auth":
+        "Only disposable own-auth positive/missing probes; real parent authorization and safe refresh unproved.",
+    "scoped-f02-bootstrap-and-coordinator-binding":
+        "Schema1/f02 payload exists; laptop-coordinator identity, routes and actual own f02 provisioning unbound.",
+    "single-executor-admission-and-runtime-guard":
+        "Supported slots1 catalog fragment and fixture flock/verification pass; live catalog/guard unproved.",
+    "descendant-cgroup-caps-including-verification":
+        "4CPU/12GiB service caps exist; actual agent AND verification cgroup membership/effective limits unmeasured.",
+    "offline-reboot-expiry-and-bridge-refusal":
+        "Immutable seven-day stage expiry/terminal retirement pass; no live boot-safe stop/bridge acknowledgement.",
+    "assignment-drain-stop-acknowledgement":
+        "No actual assignment or stop acknowledgement; never claim stopped from offline retirement.",
+    "ARM-kernel-network-and-real-assignment":
+        "Only unprivileged local x86_64 bwrap0.12.0 processes; ARM/live transport/assignment qualification unperformed.",
+}
 FIELDS = {"version", "operation_id", "host", "uid", "account", "source_commit",
           "artifact_sha256", "created_at", "expires_at", "auth_mode"}
-LIVE = {"apply", "activate", "inactivate", "rollback", "bridge"}
+LIVE = {"apply", "activate", "inactivate", "rollback", "bridge", "install", "enroll", "qualify-live"}
 
 class Refusal(Exception):
     pass
@@ -89,35 +111,78 @@ def canonical(path):
     for home in (Path(os.path.realpath("/home/igor")),
                  Path(os.path.realpath(os.environ.get("HOME", "/home/igor")))):
         require(p != home and home not in p.parents, "personal-home-alias")
-    for ancestor in reversed([p] + list(p.parents)[:-1]):
-        info = ancestor.lstat()
-        require(not stat.S_ISLNK(info.st_mode), "symlink-path")
     return p
+
+class HeldDirectory:
+    """Verified directory identity; no later operation reopens its pathname."""
+    def __init__(self, path, fd):
+        self.path, self.fd = path, fd
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *unused):
+        self.close()
+
+def trusted_directory(fd):
+    info = os.fstat(fd)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid in (0, os.geteuid()),
+            "untrusted-ancestor-owner")
+    require(not info.st_mode & 0o022 or
+            (info.st_uid == 0 and info.st_mode & stat.S_ISVTX), "writable-parent")
+
+def open_directory(path, private=False, source=False):
+    p = Path(path) if source else canonical(str(path))
+    require(p.is_absolute() and ".." not in p.parts, "canonical-path")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        trusted_directory(fd)
+        for part in p.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                            os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            trusted_directory(fd)
+        if private:
+            info = os.fstat(fd)
+            require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                    "private-owned-directory")
+        result = HeldDirectory(p, fd)
+        fd = None
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 def private_dir(path):
-    p = canonical(path)
-    info = p.lstat()
-    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
-            and stat.S_IMODE(info.st_mode) == 0o700, "private-owned-directory")
-    # Writable ancestors must be owned/private or root sticky (e.g. /tmp).
-    for parent in p.parents:
-        info = parent.lstat()
-        require(not (info.st_mode & 0o022) or
-                (info.st_uid == 0 and info.st_mode & stat.S_ISVTX), "writable-parent")
-    return p
+    return open_directory(path, private=True)
 
-def read_json(path):
-    p = canonical(path)
-    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+def read_at(directory, name):
+    require("/" not in name and name not in ("", ".", ".."), "input-name")
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                 dir_fd=directory.fd)
     try:
         info = os.fstat(fd)
         require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
                 info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600,
                 "private-owned-regular-input")
         require(info.st_size <= 65536, "input-too-large")
-        raw = os.read(fd, 65537)
+        raw = b""
+        while len(raw) <= 65536:
+            block = os.read(fd, 65537 - len(raw))
+            if not block:
+                return raw
+            raw += block
+        raise Refusal("input-too-large")
     finally:
         os.close(fd)
+
+def decode_json(raw):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -129,6 +194,24 @@ def read_json(path):
     except (ValueError, UnicodeError):
         raise Refusal("invalid-json") from None
 
+def read_json(path):
+    p = canonical(path)
+    with open_directory(p.parent) as directory:
+        return decode_json(read_at(directory, p.name))
+
+def tool_digest():
+    # The installed helper may live in /home; this is its code, never user auth.
+    p = Path(os.path.abspath(__file__))
+    with open_directory(p.parent, source=True) as directory:
+        fd = os.open(p.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=directory.fd)
+        try:
+            require(stat.S_ISREG(os.fstat(fd).st_mode), "tool-not-regular")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                return digest(stream.read())
+        finally:
+            os.close(fd)
+
 def manifest(request):
     return {"version": VERSION, "request": request, "worker_id": "laptop-isolated",
             "runtime_root": "/var/lib/t3-laptop-isolated/" + request["operation_id"],
@@ -136,56 +219,345 @@ def manifest(request):
             "caps": CAPS, "live_qualified": False, "enrolled": False,
             "managed_live_paths": [], "blockers": BLOCKERS}
 
+# Supported interface evidence: Steward source 04ad0aa85ac63fcf51bf38d8f9aace5d2b15a19a,
+# docs/worker-operations.md, internal/workerruntime/bootstrap.go, packaging/systemd.
+# These are source interfaces, not acceptance of an installed/ARM artifact.
+INTERFACE_SOURCE = "04ad0aa85ac63fcf51bf38d8f9aace5d2b15a19a"
+FIXTURE_RUNTIME = r'''#!/usr/bin/env python3
+"""Disposable local worker/bridge/verification artifact; never a live worker."""
+import json
+import fcntl
+import os
+import socket
+import subprocess
+import sys
+
+VERSION = "laptop-offline-fixture-v1"
+ARGS = sys.argv[1:]
+EXCLUDED = "/excluded/personal"
+if len(ARGS) >= 2 and ARGS[-2] == "--excluded-root":
+    EXCLUDED = ARGS[-1]
+    ARGS = ARGS[:-2]
+
+def probe(role):
+    if role == "serve":
+        lock = open("/worker/state/executor.lock", "w")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # A second local executor must refuse while the first owns the slot.
+        contender = subprocess.run([sys.executable, __file__, "contend"],
+                                   stdout=subprocess.DEVNULL, close_fds=True)
+        assert contender.returncode == 2
+    # All objects are generated disposable fixture data, not provider credentials.
+    with open("/worker/home/.config/upkeeper/secrets/f02-protocol/laptop-isolated", "rb") as f:
+        assert f.read() == b"disposable-qualification-only\n"
+    with open("/worker/home/provider-auth.fixture", "rb") as f:
+        assert f.read() == b"disposable-own-auth-only\n"
+    assert os.environ == {"HOME": "/worker/home", "PATH": "/usr/bin:/bin",
+                          "T3CODE_HOME": "/worker/t3", "XDG_STATE_HOME": "/worker/state",
+                          "HUYANG_SOCKET": "/worker/huyang/own.sock",
+                          "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
+                          "GOMAXPROCS": "1", "GOFLAGS": "-p=1", "MAKEFLAGS": "-j1",
+                          "CARGO_BUILD_JOBS": "1", "PWD": "/worker/home"}
+    for path in (EXCLUDED, EXCLUDED + "/sentinel", "/home/igor", "/run/user",
+                 "/tmp/host-agent.sock", EXCLUDED + "/t3.sock",
+                 EXCLUDED + "/huyang.sock"):
+        try:
+            os.listdir(path)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("off-allowlist-list")
+        assert not os.path.exists(path)
+        try:
+            open(path, "rb")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("off-allowlist-read")
+    try:
+        open(EXCLUDED + "/new", "wb")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("off-allowlist-write")
+    for path in tuple(EXCLUDED + "/" + name + ".sock" for name in ("agent", "bus", "t3", "huyang")):
+        s = socket.socket(socket.AF_UNIX)
+        try:
+            s.connect(path)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("off-allowlist-connect")
+        finally:
+            s.close()
+    # Namespace-local endpoints, not a connection to any personal/live service.
+    for root in ("t3", "huyang"):
+        path = "/worker/" + root + "/" + role + ".sock"
+        listener = socket.socket(socket.AF_UNIX)
+        client = socket.socket(socket.AF_UNIX)
+        try:
+            listener.bind(path)
+            listener.listen(1)
+            client.connect(path)
+            peer, _ = listener.accept()
+            peer.close()
+        finally:
+            listener.close()
+            client.close()
+            os.unlink(path)
+    for fd in range(3, 256):
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        if role == "serve" and fd == lock.fileno():
+            continue
+        raise AssertionError("inherited-descriptor")
+    if role == "serve":
+        subprocess.run([sys.executable, __file__, "verification", "--excluded-root", EXCLUDED], check=True,
+                       stdout=subprocess.DEVNULL, close_fds=True)
+        lock.close()
+    print(json.dumps({"role": role, "own_auth": "fixture-positive",
+                      "excluded_access": "denied", "inherited_fds": "closed"}))
+
+if ARGS == ["contend"]:
+    with open("/worker/state/executor.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(2)
+        sys.exit(0)
+elif ARGS == ["version"]:
+    print(VERSION)
+elif ARGS == ["worker", "--help"]:
+    print("worker serve --config PATH; worker bridge")
+elif ARGS == ["worker", "serve", "--config",
+                     "/worker/home/.config/t3-steward/persistent-worker.yaml"]:
+    probe("serve")
+elif ARGS == ["worker", "bridge"]:
+    probe("bridge")
+elif ARGS == ["verification"]:
+    probe("verification")
+else:
+    sys.exit(2)
+'''
+FIXTURE_VERSION = "laptop-offline-fixture-v1"
+LAUNCHER = r'''#!/usr/bin/env python3
+"""Fixed disabled command wrapper. No SSH command evaluation or live launch."""
+import json
+import sys
+BINDING = __BINDING__
+COMMANDS = {
+    "serve": ["/opt/runtime/t3-steward", "worker", "serve", "--config",
+              "/worker/home/.config/t3-steward/persistent-worker.yaml"],
+    "bridge": ["/opt/runtime/t3-steward", "worker", "bridge"],
+}
+def sandbox_argv(home_fd, runtime_fd):
+    # Descriptor sources are held through spawn; bwrap closes them before exec.
+    # No home, /tmp, /run, SSH agent or user bus from the host enters the namespace.
+    argv = ["/usr/bin/bwrap", "--chdir", "/worker/home", "--unshare-all", "--die-with-parent", "--new-session",
+            "--clearenv", "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib",
+            "--ro-bind", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+            "--size", str(2 * 1024 ** 3), "--tmpfs", "/tmp", "--dir", "/worker", "--ro-bind-fd",
+            str(home_fd), "/worker/home",
+            "--dir", "/opt", "--dir", "/opt/runtime", "--ro-bind-fd",
+            str(runtime_fd), "/opt/runtime/t3-steward"]
+    for name in ("state", "t3", "huyang"):
+        argv += ["--tmpfs", "/worker/" + name]
+    env = {"HOME": "/worker/home", "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
+           "T3CODE_HOME": "/worker/t3", "XDG_STATE_HOME": "/worker/state",
+           "HUYANG_SOCKET": "/worker/huyang/own.sock", "PYTHONDONTWRITEBYTECODE": "1",
+           "GOMAXPROCS": "1", "GOFLAGS": "-p=1", "MAKEFLAGS": "-j1",
+           "CARGO_BUILD_JOBS": "1"}
+    for key, value in env.items():
+        argv += ["--setenv", key, value]
+    return argv
+
+def main():
+    # A staged package confers no live authority. Qualifier imports only the policy.
+    mode = sys.argv[1:]
+    reason = "unsupported-live-command" if mode in (["serve"], ["bridge"]) else "fixed-command-only"
+    print(json.dumps({"status": "refused", "reason": reason, "binding": BINDING,
+                      "live_qualified": False, "enrolled": False}))
+    sys.exit(2)
+
+if __name__ == "__main__":
+    main()
+'''
+
+def bootstrap():
+    return {"schema_version": 1, "worker_id": "laptop-isolated",
+            "coordinator_id": "laptop-coordinator", "transport": "ssh",
+            "capabilities": ["git", "huyang"], "provider_routes": [],
+            "credential_ref": "secretref:f02-protocol/laptop-isolated"}
+
+def persistent_config():
+    # Real schema, no invented per-worker concurrency or Huyang config keys.
+    return ("policy:\n  dry_run: true\nbacklog_v2:\n  mode: disabled\n"
+            "log_level: info\nt3:\n  data_dir: /worker/t3\n"
+            "  token_file: /worker/t3/own-token\n"
+            "  t3_binary: /opt/runtime/t3\n").encode()
+
 def unit(request):
-    # Deliberately inert. No activation implementation is advertised by this unit.
-    return ("# DISABLED qualification placeholder; never install as an active worker.\n"
-            "[Unit]\nDescription=Blocked isolated laptop worker\n"
-            "[Service]\nType=oneshot\nUser=t3-laptop-isolated\n"
-            "ExecStart=/usr/bin/false\nRestart=no\n"
-            "ProtectHome=yes\nProtectSystem=strict\nPrivateTmp=yes\n"
-            "PrivateDevices=yes\nNoNewPrivileges=yes\n"
-            "RestrictSUIDSGID=yes\nKillMode=control-group\n"
-            "CPUQuota=400%\nMemoryHigh=10G\nMemoryMax=12G\nTasksMax=256\n"
-            "# No Install section, runtime mounts, auth, bridge or worker command.\n").encode()
+    root = manifest(request)["runtime_root"]
+    return ("# DISABLED, no Install section; parent acceptance and installation required.\n"
+            "[Unit]\nDescription=Isolated laptop worker (disabled preparation)\n"
+            "[Service]\nType=simple\nUser=t3-laptop-isolated\nUMask=0077\n"
+            "ExecStart=/usr/bin/python3 " + root + "/control/worker-launcher.py serve\n"
+            "Restart=no\nProtectHome=yes\nProtectSystem=strict\nPrivateTmp=yes\n"
+            "PrivateDevices=yes\nNoNewPrivileges=yes\nRestrictSUIDSGID=yes\n"
+            "KillMode=control-group\nCPUQuota=400%\nMemoryHigh=10G\nMemoryMax=12G\n"
+            "TasksMax=256\n").encode()
 
 def payload(request):
     m = manifest(request)
-    return {"manifest.json": encode(m),
-            "disabled.service": unit(request),
+    binding = {"source_commit": request["source_commit"],
+               "artifact_sha256": request["artifact_sha256"],
+               "operation_id": request["operation_id"], "expires_at": request["expires_at"],
+               "interface_source": INTERFACE_SOURCE}
+    preparation = {
+        "binding": binding, "enabled": False, "bootstrap_schema": 1,
+        "destinations": {
+            "worker-bootstrap.json": "home/.config/t3-steward/worker-bootstrap.json",
+            "persistent-worker.yaml": "home/.config/t3-steward/persistent-worker.yaml",
+            "worker-launcher.py": "control/worker-launcher.py",
+            "fixed-bridge": "control/fixed-bridge"},
+        "directory_modes": {"home": "0700", "state": "0700", "t3": "0700",
+                            "huyang": "0700", "tools": "0700", "control": "0700"},
+        "control_owner": "root (parent installation only)",
+        "file_mode": "0600", "auth_provisioned": False,
+        "own_auth_leaf": "home/.config/upkeeper/secrets/f02-protocol/laptop-isolated",
+        "provider_auth": "parent dedicated login or reviewed narrow same-host leaf",
+        "catalog_requirement": {"executors": 1, "cpu": 4, "memory_bytes": 12 * GIB},
+        "runtime_guard": "fixture flock held across agent and verification; live catalog/guard proof required",
+        "sandbox": {"launcher": "bwrap", "minimum_tested_version": "0.12.0",
+                    "unshare_all": True, "clearenv": True, "close_fds": True,
+                    "mounts": ["private home", "private state", "own T3", "own Huyang",
+                               "exact artifact", "public /usr,/lib,/lib64"],
+                    "network": "none in qualifier; live transport policy remains blocked"},
+        "expiry": {"absolute_UTC": request["expires_at"], "renewal": False,
+                   "retirement_terminal": True, "live_stop_ack": "unproved"},
+        "live_qualified": False, "enrolled": False}
+    root = m["runtime_root"]
+    bridge = ("#!/bin/sh\n# Fixed forced-command target; never evaluate SSH_ORIGINAL_COMMAND.\n"
+              "exec /usr/bin/python3 " + root + "/control/worker-launcher.py bridge\n").encode()
+    return {"manifest.json": encode(m), "disabled.service": unit(request),
             "parent-gates.json": encode({"version": VERSION, "required": BLOCKERS,
-                                        "activation_supported": False})}
+                                        "details": BLOCKER_DETAILS,
+                                        "activation_supported": False}),
+            "worker-bootstrap.json": encode(bootstrap()),
+            "persistent-worker.yaml": persistent_config(),
+            "worker-launcher.py": LAUNCHER.replace("__BINDING__", repr(binding)).encode(),
+            "fixed-bridge": bridge, "preparation.json": encode(preparation),
+            "qualification-runtime.py": FIXTURE_RUNTIME.encode(),
+            "coordinator-worker.fragment.yaml": (
+                "# Parent merge-only fragment, never a standalone config/enrollment.\n"
+                "backlog_v2:\n  workers:\n    laptop-isolated:\n"
+                "      accept_backlog: false\n      connection: persistent-ssh\n"
+                "      address: laptop-isolated\n      credential: secretref:f02-protocol/laptop-isolated\n"
+                "      executors:\n        slots: 1\n        cpu_units: 4\n"
+                "        memory_mb: 12288\n        scratch_mb: 20480\n").encode()}
+
+def qualify_fixture(request, directory, fixture_path):
+    validate(request)
+    # An explicit disposable fixture is the only process-running lane. The exact
+    # shipped synthetic artifact is required; arbitrary runtime/provider code refuses.
+    require(request["artifact_sha256"] == digest(FIXTURE_RUNTIME.encode()),
+            "fixture-artifact-binding")
+    with private_dir(fixture_path) as fixture:
+        marker = decode_json(read_at(fixture, "fixture.json"))
+        exact(marker, {"kind", "version", "source_commit", "artifact_sha256"})
+        require(marker == {"kind": "disposable-laptop-qualification", "version": 1,
+                           "source_commit": request["source_commit"],
+                           "artifact_sha256": request["artifact_sha256"]}, "fixture-identity")
+        require(set(os.listdir(fixture.fd)) == {"fixture.json", "home", "personal"},
+                "fixture-layout")
+        home_fd = os.open("home", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                          os.O_CLOEXEC, dir_fd=fixture.fd)
+        with HeldDirectory(fixture.path / "home", home_fd) as home:
+            info = os.fstat(home.fd)
+            require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700,
+                    "fixture-home-private")
+            trusted_directory(home.fd)
+            # Read only fixture-owned nonsecret metadata. Real auth is not opened.
+            require(read_at(home, "fixture-auth.json") ==
+                    encode({"kind": "disposable-own-auth", "provider": "synthetic"}),
+                    "fixture-own-auth-metadata")
+            runtime_fd = os.open("qualification-runtime.py", os.O_RDONLY | os.O_NOFOLLOW |
+                                 os.O_CLOEXEC, dir_fd=directory.fd)
+            try:
+                info = os.fstat(runtime_fd)
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and
+                        stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
+                        "fixture-artifact-permissions")
+                require(os.read(runtime_fd, 65537) == FIXTURE_RUNTIME.encode(),
+                        "fixture-artifact-changed")
+                os.lseek(runtime_fd, 0, os.SEEK_SET)
+                launch = read_at(directory, "worker-launcher.py")
+                require(launch == payload(request)["worker-launcher.py"], "launcher-changed")
+                namespace = {"__name__": "offline_policy"}
+                exec(compile(launch, "reviewed-worker-launcher", "exec"), namespace)
+                argv = namespace["sandbox_argv"](home.fd, runtime_fd)
+                bwrap = subprocess.run(["/usr/bin/bwrap", "--version"],
+                                       env={"PATH": "/usr/bin:/bin"}, close_fds=True,
+                                       capture_output=True, timeout=5, check=False)
+                require(bwrap.returncode == 0 and bwrap.stdout.strip() == b"bubblewrap 0.12.0",
+                        "unsupported-bwrap-version")
+                for mode in (["version"], ["worker", "--help"],
+                             ["worker", "serve", "--config",
+                              "/worker/home/.config/t3-steward/persistent-worker.yaml"],
+                             ["worker", "bridge"]):
+                    args = mode if mode in (["version"], ["worker", "--help"]) else (
+                        mode + ["--excluded-root", str(fixture.path / "personal")])
+                    result = subprocess.run(argv + ["--", "/usr/bin/python3",
+                                                     "/opt/runtime/t3-steward"] + args,
+                                            env={"PATH": "/usr/bin:/bin"},
+                                            pass_fds=(home.fd, runtime_fd), close_fds=True,
+                                            capture_output=True, timeout=15, check=False)
+                    require(result.returncode == 0, "unprivileged-bwrap-fixture-unavailable-or-probe-failed")
+                    if mode == ["version"]:
+                        require(result.stdout.strip() == FIXTURE_VERSION.encode(),
+                                "fixture-runtime-version")
+                    elif mode == ["worker", "--help"]:
+                        require(result.stdout.strip() == b"worker serve --config PATH; worker bridge",
+                                "fixture-runtime-interface")
+                    else:
+                        require(decode_json(result.stdout) ==
+                                {"role": mode[1], "own_auth": "fixture-positive",
+                                 "excluded_access": "denied", "inherited_fds": "closed"},
+                                "fixture-probe-result")
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                raise Refusal("unprivileged-bwrap-fixture-unavailable-or-timeout") from None
+            finally:
+                os.close(runtime_fd)
+    return {"version": VERSION, "status": "offline-fixture-qualified",
+            "evidence_kind": "disposable-local-bwrap-processes", "roles": ["serve", "bridge", "verification"],
+            "own_auth": "fixture-positive-only", "artifact_bound": True,
+            "live_qualified": False, "enrolled": False, "blockers": BLOCKERS}
 
 def receipt(request, files):
     return {"version": VERSION, "operation_id": request["operation_id"],
             "expires_at": request["expires_at"], "status": "staged-disabled",
             "live_qualified": False, "enrolled": False, "changes": [],
             "before": {}, "after": {name: digest(data) for name, data in files.items()},
-            "tool_sha256": digest(Path(__file__).read_bytes()),
+            "tool_sha256": tool_digest(),
             "rollback": "retire-stage (preserves all evidence; no live changes)"}
 
 def inspect_at(directory):
-    m = read_json(str(directory / "manifest.json"))
+    m = decode_json(read_at(directory, "manifest.json"))
     exact(m, manifest(m.get("request", {})).keys())
     request = validate(m["request"], active=False)
     require(m == manifest(request), "manifest-tampered")
     files = payload(request)
-    r = read_json(str(directory / "receipt.json"))
+    r = decode_json(read_at(directory, "receipt.json"))
     require(r == receipt(request, files), "receipt-or-tool-mismatch")
     for name, data in files.items():
-        path = canonical(str(directory / name))
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
-                    info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600,
-                    "payload-permissions")
-            require(os.read(fd, 65537) == data, "payload-tampered")
-        finally:
-            os.close(fd)
+        require(read_at(directory, name) == data, "payload-tampered")
     allowed = set(files) | {"receipt.json", "retired.json"}
-    require(set(os.listdir(directory)) <= allowed, "foreign-stage-files")
-    if (directory / "retired.json").exists():
-        require(read_json(str(directory / "retired.json")) ==
+    names = set(os.listdir(directory.fd))
+    require(names <= allowed, "foreign-stage-files")
+    if "retired.json" in names:
+        require(decode_json(read_at(directory, "retired.json")) ==
                 {"version": VERSION, "operation_id": request["operation_id"],
                  "status": "retired-disabled", "changes": [], "live_qualified": False},
                 "retirement-tampered")
@@ -193,20 +565,22 @@ def inspect_at(directory):
     return request, r
 
 def write_new(directory_fd, name, data):
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                  0o600, dir_fd=directory_fd)
     try:
-        os.write(fd, data)
+        remaining = memoryview(data)
+        while remaining:
+            remaining = remaining[os.write(fd, remaining):]
         os.fsync(fd)
     finally:
         os.close(fd)
 
 def stage(request, directory):
     # Root/live modes are unsupported; even root may only stage explicit private files.
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = directory.fd
+    fcntl.flock(fd, fcntl.LOCK_EX)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        if os.listdir(directory):
+        if os.listdir(fd):
             old, r = inspect_at(directory)
             require(old == request and r["status"] == "staged-disabled", "operation-conflict")
             return r
@@ -219,7 +593,7 @@ def stage(request, directory):
         os.fsync(fd)
         return r
     finally:
-        os.close(fd)
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 def assess(request, gates):
     keys = {"version", "observed_at", "host", "uid", "cpu_count",
@@ -246,32 +620,43 @@ def assess(request, gates):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", nargs="?", default="plan",
-                        choices=["plan", "stage", "inspect", "assess", "retire-stage"] + sorted(LIVE))
+                        choices=["plan", "stage", "inspect", "assess", "retire-stage", "qualify-fixture"] + sorted(LIVE))
     parser.add_argument("--request")
     parser.add_argument("--output")
     parser.add_argument("--gates")
+    parser.add_argument("--fixture")
     args = parser.parse_args()
     if args.action in LIVE:
         raise Refusal("unsupported-live-" + args.action)
     if args.action == "plan":
-        require(not any((args.request, args.output, args.gates)), "plan-no-inputs")
+        require(not any((args.request, args.output, args.gates, args.fixture)), "plan-no-inputs")
         return {"version": VERSION, "status": "source-package-only", "caps": CAPS,
                 "activation_supported": False, "live_qualified": False,
                 "enrolled": False, "blockers": BLOCKERS}
     require(args.output is not None, "explicit-private-output-required")
-    directory = private_dir(args.output)
+    with private_dir(args.output) as directory:
+        return dispatch(args, directory)
+
+def dispatch(args, directory):
+    require(args.action == "qualify-fixture" or args.fixture is None, "unexpected-fixture")
     if args.action == "stage":
         require(args.request is not None and args.gates is None, "stage-inputs")
         request_path = canonical(args.request)
-        require(directory not in request_path.parents, "input-output-overlap")
+        require(directory.path not in request_path.parents, "input-output-overlap")
         return stage(validate(read_json(args.request)), directory)
     require(args.request is None, "unexpected-request")
-    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = directory.fd
+    fcntl.flock(fd, fcntl.LOCK_EX)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
         request, r = inspect_at(directory)
+        if args.action == "qualify-fixture":
+            require(args.fixture is not None and args.gates is None and
+                    r["status"] == "staged-disabled", "fixture-inputs")
+            return qualify_fixture(request, directory, args.fixture)
         if args.action == "assess":
-            require(args.gates is not None and r["status"] == "staged-disabled", "assess-inputs")
+            require(args.gates is not None, "assess-inputs")
+            if r["status"] == "retired-disabled":
+                return r
             validate(request)
             return assess(request, read_json(args.gates))
         require(args.gates is None, "unexpected-gates")
@@ -280,12 +665,12 @@ def main():
                      "status": "retired-disabled", "changes": [], "live_qualified": False}
             write_new(fd, "retired.json", encode(value))
             os.fsync(fd)
-            return value
-        if clock() >= timestamp(request["expires_at"]):
+            r = dict(r, status="retired-disabled")
+        if r["status"] != "retired-disabled" and clock() >= timestamp(request["expires_at"]):
             r = dict(r, status="expired-disabled")
         return r
     finally:
-        os.close(fd)
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 if __name__ == "__main__":
     try:
