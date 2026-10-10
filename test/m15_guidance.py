@@ -35,8 +35,11 @@ def assert_m15_guidance(residents, reference):
                  "do not prove runtime deployment", "rollout", "lead",
                  "immutable rollback bundles", "never reenable", "marker-only cleanup",
                  "no automatic retry", "Keep disabled", "production diversity",
-                 "explicit route and effort pins", "Codex medium only"):
+                 "explicit route and effort pins", "when those restrictions apply",
+                 "verifies exact source, release and runtime state"):
         assert term in retirement, ("retirement", term)
+    assert "current fleet remains" not in retirement
+    assert "this checkpoint is Codex medium only" not in retirement
     for text in residents:
         interactive = section(text, "## Interactive work and the T3 steward") if (
             "## Interactive work and the T3 steward\n" in text

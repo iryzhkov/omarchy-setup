@@ -20,7 +20,9 @@ by turn. Once Igor has agreed a plan in the session, write the plan to Jocasta,
 author a campaign directory with a `ledger:` block, and submit with `--notify-thread current`. Agents
 may do this without another approval: announce the run id and Jocasta ledger
 reference. Ask first when estimated cost is large, operator-level access is
-needed, or the campaign releases to the fleet. Never submit exploration that is
+needed, or the campaign releases to the fleet, unless already explicitly authorized.
+User authorization persists; proceed within it while preserving technical gates.
+Never submit exploration that is
 not yet a plan. Keep only the run id and ledger reference in the session's working
 set after handoff. A successor session resumes from the ledger and run ids, not
 from a transcript.
@@ -337,8 +339,7 @@ runner, coordinator intake and file forwarding cannot execute file work. Old tru
 enable flags are rejected; false values are parsed for compatibility. Historical
 rc109 phase 1 staged behavior is prior-release evidence, not the new contract.
 Source publication and this guidance do not prove runtime deployment. The rollout
-lead verifies exact source, release and runtime state; the current fleet remains
-on rc109 until a separately reviewed coordinated release is deployed.
+lead verifies exact source, release and runtime state before declaring deployment.
 
 Preserve existing files and quarantine evidence under rollout lead custody.
 The lead retains previous reviewed immutable rollback bundles; rollback must
@@ -348,9 +349,9 @@ Public submission, persisted tasks, artifacts, worker planning, schedules and
 retained operator controls remain in scope for normal operation. Retiring file
 intake does not retire the `backlog` administration namespace. Keep disabled
 schedules disabled; there is no schedule resurrection or production diversity
-waiver. Provider/session restrictions require explicit route and effort pins;
-this checkpoint is Codex medium only. Ordered policy roles, candidates and tiers
-remain unchanged.
+waiver. Provider/session restrictions require explicit route and effort pins
+when those restrictions apply. Ordered policy roles, candidates and tiers remain
+unchanged.
 
 ## Operator-only administration
 

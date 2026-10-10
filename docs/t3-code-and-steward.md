@@ -50,11 +50,11 @@ are rejected; false values are parsed for compatibility. Historic quarantine
 read/release is authenticated marker-only cleanup and cannot retry or submit work.
 Preserve existing files, quarantine evidence and previous reviewed immutable
 rollback bundles under rollout lead custody; never reenable the retired scanner.
-Historical rc109 phase 1 staged behavior describes the current fleet, not the new
+Historical rc109 phase 1 staged behavior is prior-release evidence, not the new
 source contract. Source publication and new wording do not prove runtime deployment;
-the rollout lead owns the separately reviewed coordinated release. There is no
+the rollout lead verifies exact source, release and runtime state. There is no
 schedule resurrection or production diversity waiver. Provider/session restrictions
-require explicit route and effort pins; this checkpoint is Codex medium only.
+require explicit route and effort pins when those restrictions apply.
 
 Retained operator controls and authority safeguards live in the `t3-campaign`
 skill's operator section. Consult matching full help for `backlog`, `worker`,

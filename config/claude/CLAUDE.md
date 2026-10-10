@@ -100,7 +100,9 @@ Agree the plan, write it to Jocasta, turn it into a campaign with the
 (`--notify-thread current`). Once Igor has agreed the plan in the session,
 agents may submit it without another approval: say that the campaign started and
 give the run id and ledger reference. Ask first when the estimated cost is large,
-the work needs operator-level access, or it releases to the fleet. After handoff,
+the work needs operator-level access, or it releases to the fleet, unless already
+explicitly authorized. User authorization persists; proceed within it while
+preserving technical gates. After handoff,
 keep only the run id and Jocasta ledger reference in the session's working set;
 fetch detailed evidence when needed.
 
@@ -140,28 +142,21 @@ unanswered. Outside a task, use the session's own question tool.
 Use `t3-steward review` for cross-provider plan or diff review; the
 `t3-campaign` skill describes file inputs and the review digestion loop.
 
-- **One task** (`t3-task` skill): one independent unattended outcome uses
-  `t3-steward task run --model [INSTANCE/]MODEL -- "<prompt>"` from a checkout.
-  Use `--input FILE` for pinned inputs and `--dry-run` before submission.
-  The start is synchronous; a refusal is its exit code. Take the run id from
-  the first line (`run <id>`) or JSON, never from the closing result command.
-  Follow the record's closing instruction: end the turn only when it promises
-  a wake; collect immediately when the run already ended.
-- **Campaign** (`t3-campaign` skill): dependent tasks, artifact handoffs,
-  declared reviews and recurring schedules use a version 2 workflow directory.
-  Run `campaign validate`, `campaign plan` and read-only `campaign check`;
-  submit with an idempotency key and the session as notify thread.
-  Tasks keep `continuation.md` current; details and the milestone ledger template
-  live in the skill. A caller intentionally wanting no wake uses `--no-notify`;
-  unresolved notify threads are refused before submission.
-- **Wait** (`t3-wait` skill): use a foreground blocking command such as
-  `t3-steward task result <run> --wait` or `campaign show <run> --wait` in a plain CLI.
-  In a steward task, register `wait add --task current` for external waits and
-  end the turn immediately. Conditions are `--at`/`--for` time, `--github`,
-  `--node`, `--quota`, or `-- COMMAND` (0 met, 2 give up, else not yet).
-  `--or-timeout` makes a deadline an outcome. Ordinary sessions register a
-  thread wait and end the turn. Never poll in an agent loop.
-  Use `t3-steward triage` for operator attention and ready-to-run recovery commands.
+- **One task**: read the `t3-task` skill for `t3-steward task run`, pinned inputs,
+  dry-run and collection. The start is synchronous; a refusal is its exit code.
+  Take the run id from the first line or JSON. End only when the record promises
+  a wake; collect immediately if it already ended.
+- **Campaign**: read the `t3-campaign` skill for version 2 workflows,
+  dependencies, artifacts, independent reviews and schedules. Validate, plan and
+  check before submission with an idempotency key and `--notify-thread current`.
+  Keep `continuation.md` current. Intentional no-wake submission uses
+  `--no-notify`; unresolved notify threads are refused.
+- **Wait**: read the `t3-wait` skill for external conditions and deadlines.
+  Inside a task register `wait add --task current` and end the turn immediately.
+  Ordinary sessions register a durable wait on their own thread and end the turn.
+  Inspect actual outcomes and verdicts on resume; never poll in an agent loop.
+  Plain CLI users can block with `t3-steward task result <run> --wait`.
+  Use `t3-steward triage` for operator attention.
 
 # Working documents: Jocasta
 
@@ -234,18 +229,8 @@ find a symbol that `search` would find, `sed -n 'a,bp'` where `read` with a line
 does the same. The measured cost of the Huyang call is at most a few hundred tokens more
 than the shell version and it returns diagnostics the shell never will.
 
-| Need | Huyang tool |
-|---|---|
-| Understand the project or current state | `workspace_inspect` |
-| Search names, text, paths, or symbols | `search` |
-| Go to a definition, references, implementation, or type | `navigate` |
-| Read a file or semantic region | `read` |
-| Inspect diagnostics and their provenance | `diagnostics`, `evidence_get` |
-| Apply one direct revision-guarded edit | `edit_apply` |
-| Stage several related edits atomically | `change_plan`, then prepare/commit |
-| Review a revision delta | `revision_diff` |
-| Run trusted checks or tests | `verify_run` |
-| Start or inspect a debugger session | `debug_session`, `debug_breakpoints`, `debug_control`, `debug_inspect` |
+Tool mapping and the cheapest correct call for each need: the `huyang` skill,
+or **~/.config/agents/huyang.md**.
 
 Shell still runs these jobs, and only these:
 

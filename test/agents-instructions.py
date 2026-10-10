@@ -124,7 +124,12 @@ with tempfile.TemporaryDirectory() as temporary:
     # with its line breaks collapsed.
     flat = " ".join(shared.split())
     assert "t3-steward task run" in flat
-    assert "t3-steward task result" in flat
+    assert "read the `t3-wait` skill" in flat
+    assert "wait add --task current" in flat
+    assert "end the turn immediately" in flat
+    assert "durable wait on their own thread" in flat
+    assert "Inspect actual outcomes and verdicts on resume" in flat
+    assert "never poll in an agent loop" in flat
     assert "backlog list" not in flat, "the obsolete intake verification is gone"
     assert "backlog start" not in flat, "the operator override is not advertised here"
     assert "<T3 project>" not in flat, "--project takes a fleet project name"
@@ -132,8 +137,11 @@ with tempfile.TemporaryDirectory() as temporary:
     assert "](t3-campaign-executor-briefs.md)" in steward_reference
     campaign_briefs = home / ".config/agents/t3-campaign-executor-briefs.md"
     assert campaign_briefs.read_text() == "# Executor brief fixture\n"
+    assert "t3-steward task result" in flat
+    # Recipe flags live in the real on-demand skill; the fixture above contains only headings.
+    wait_skill = (root / "config/claude/skills/t3-wait/SKILL.md").read_text()
     for flag in ("--at", "--for", "--github", "--node", "--quota", "--or-timeout"):
-        assert flag in flat, f"the wait kinds must name {flag}"
+        assert flag in wait_skill, f"the on-demand wait recipe must name {flag}"
 
     guidance = (home / ".config/agents/jocasta.md").read_text()
     assert "30 days without a read or update" in guidance
@@ -299,8 +307,10 @@ with tempfile.TemporaryDirectory() as temporary:
                 "marker-only cleanup", "cannot retry", "immutable",
                 "never reenable", "rc109", "do not prove runtime deployment",
                 "production diversity waiver", "explicit route and effort pins",
-                "Codex medium only", "schedule mutations require explicit operator")))
-    for obsolete in ("retired in stages", "Final removal is pending",
+                "when those restrictions apply", "verifies exact source, release and runtime state",
+                "schedule mutations require explicit operator")))
+    for obsolete in ("describes the current fleet", "this checkpoint is Codex medium only",
+                     "retired in stages", "Final removal is pending",
                      "temporary compatibility opt-in", "next intake cycle retries"):
         require(f"deployment doc obsolete retirement: {obsolete}",
                 obsolete not in deployment_work)
