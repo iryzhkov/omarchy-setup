@@ -16,6 +16,26 @@ import unittest
 TOOL = Path(__file__).resolve().parents[1] / "config/bin/t3-laptop-worker-setup"
 GIB = 1024 ** 3
 
+def sandbox_unavailable():
+    """Probe prerequisites only; qualification assertions must never become skips."""
+    try:
+        version = subprocess.run(["/usr/bin/bwrap", "--version"],
+                                 capture_output=True, timeout=5, check=False)
+        if version.returncode != 0 or version.stdout.strip() != b"bubblewrap 0.12.0":
+            return "unsupported-bwrap-version (requires exactly 0.12.0)"
+        probe = subprocess.run(
+            ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session",
+             "--clearenv", "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib",
+             "--ro-bind", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+             "--tmpfs", "/tmp", "--", "/usr/bin/true"],
+            capture_output=True, timeout=5, check=False)
+        if probe.returncode != 0:
+            return "unprivileged-namespace-unavailable"
+    except (OSError, subprocess.TimeoutExpired):
+        return "bwrap-unavailable-or-timeout"
+    return None
+
+
 def utc(value):
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -465,6 +485,11 @@ print(json.dumps(module["main"]()))
         self.assertEqual(before, self.snapshot(self.output))
 
     def test_repair1_actual_sandbox_own_auth_and_negative_access(self):
+        unavailable = sandbox_unavailable()
+        if unavailable:
+            if os.environ.get("T3_LAPTOP_REQUIRE_SANDBOX") == "1":
+                self.fail("required sandbox prerequisite: " + unavailable)
+            self.skipTest("optional local real sandbox unavailable: " + unavailable)
         fixture, home = self.fixture()
         # Actual listening local fixture sockets exist outside the mount allowlist.
         import socket
@@ -513,6 +538,49 @@ print(json.dumps(module["main"]()))
         retired = self.snapshot(self.output)
         self.qualify(fixture, success=False)
         self.assertEqual(retired, self.snapshot(self.output))
+
+    def test_ci1_workflow_prerequisite_contract(self):
+        contract = runpy.run_path(str(TOOL.parents[2] / "test/sandbox-ci-contract.py"))
+        text = (TOOL.parents[2] / ".github/workflows/test.yml").read_text()
+        self.assertTrue(contract["validate"](text))
+        for old, new in (
+            ('T3_LAPTOP_REQUIRE_SANDBOX: "1"', 'T3_LAPTOP_REQUIRE_SANDBOX: "0"'),
+            ('  sandbox-qualification:', '  optional-qualification:'),
+            ('    runs-on: ubuntu-24.04', '    if: false\n    runs-on: ubuntu-24.04'),
+            ('sha256sum -c -', 'true'),
+            (contract["SHA256"], "0" * 64),
+            ('sudo install -m 0755 "$sandbox_build/build/bwrap" /usr/bin/bwrap', 'sudo install -m 0755 "$sandbox_build/build/bwrap" /tmp/bwrap'),
+            ('sudo sysctl -w kernel.unprivileged_userns_clone=1', 'true'),
+            ('-- /usr/bin/true', '-- /usr/bin/false'),
+            ('run: python3 test/laptop-worker-isolation.py', 'run: echo passed'),
+        ):
+            with self.subTest(missing=old):
+                self.assertIn(old, text)
+                with self.assertRaises(AssertionError):
+                    contract["validate"](text.replace(old, new))
+
+    def test_ci1_missing_and_blocked_sandbox_production_refusals(self):
+        fixture, home = self.fixture()
+        functions = runpy.run_path(str(TOOL), run_name="blocked_fixture")
+        real_run = subprocess.run
+        for failure, reason in (
+            ("missing", "unprivileged-bwrap-fixture-unavailable-or-timeout"),
+            ("blocked", "unprivileged-bwrap-fixture-unavailable-or-probe-failed"),
+        ):
+            def unavailable(argv, **kwargs):
+                if argv[0] != "/usr/bin/bwrap":
+                    return real_run(argv, **kwargs)
+                if failure == "missing":
+                    raise FileNotFoundError("/usr/bin/bwrap")
+                if argv[1:] == ["--version"]:
+                    return subprocess.CompletedProcess(argv, 0, b"bubblewrap 0.12.0" + bytes([10]), b"")
+                return subprocess.CompletedProcess(argv, 1, b"", b"namespace blocked")
+            before = self.snapshot(self.output)
+            with self.subTest(failure=failure), functions["private_dir"](str(self.output)) as directory:
+                with mock.patch.object(subprocess, "run", side_effect=unavailable):
+                    with self.assertRaisesRegex(functions["Refusal"], reason):
+                        functions["qualify_fixture"](self.request, directory, str(fixture))
+            self.assertEqual(before, self.snapshot(self.output))
 
     def test_repair1_exact_unsupported_fixture_capability(self):
         # No substitute sandbox or declaration can make unavailable bwrap pass.
