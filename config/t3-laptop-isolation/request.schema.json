@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Disabled laptop staging request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "operation_id",
+    "host",
+    "uid",
+    "account",
+    "source_commit",
+    "artifact_sha256",
+    "created_at",
+    "expires_at",
+    "auth_mode"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+    },
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}$"
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 2000
+    },
+    "account": {
+      "const": "t3-laptop-isolated"
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"
+    },
+    "expires_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\dZ$"
+    },
+    "auth_mode": {
+      "enum": [
+        "dedicated-login",
+        "protected-same-host-reference"
+      ]
+    }
+  }
+}

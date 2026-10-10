@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "observed_at": "2026-10-10T00:00:00Z",
+  "host": "laptop",
+  "uid": 2400,
+  "cpu_count": 8,
+  "ram_available_bytes": 15032385536,
+  "disk_free_bytes": 64424509440,
+  "conflicting_executors": 0,
+  "account_locked": true,
+  "groups": [],
+  "home_mode": "0700",
+  "auth_mode": "dedicated-login",
+  "source_commit": "1111111111111111111111111111111111111111",
+  "artifact_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+}

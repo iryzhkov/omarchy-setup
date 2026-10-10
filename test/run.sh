@@ -64,6 +64,10 @@ done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/bin/
 section "agent-scratch-reap"
 check "arguments, dry run and sandbox cleanup" bash "$ROOT/test/agent-scratch-reap.sh"
 
+# ------------------------------------------------ isolated laptop package --
+section "isolated laptop worker (offline only)"
+check "staging, integrity and qualification refusals" python3 "$ROOT/test/laptop-worker-isolation.py"
+
 # -------------------------------------------------------- managed blocks --
 section "write_managed_block"
 (

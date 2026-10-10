@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Offline isolated-worker package. No subprocesses, credentials or live effects."""
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+VERSION = 1
+GIB = 1024 ** 3
+CAPS = {"cpu_quota_percent": 400, "memory_high_bytes": 10 * GIB,
+        "memory_max_bytes": 12 * GIB, "tasks_max": 256,
+        "executors": 1, "workspace_max_bytes": 20 * GIB,
+        "tmp_max_bytes": 2 * GIB, "disk_reserve_bytes": 60 * GIB}
+BLOCKERS = [
+    "accepted-runtime-command-compatibility",
+    "daemon-bridge-provider-negative-access",
+    "private-provider-auth-refresh-and-repository-auth",
+    "scoped-f02-bootstrap-and-coordinator-binding",
+    "single-executor-admission-and-runtime-guard",
+    "descendant-cgroup-caps-including-verification",
+    "offline-reboot-expiry-and-bridge-refusal",
+    "assignment-drain-stop-acknowledgement",
+    "ARM-kernel-network-and-real-assignment",
+]
+FIELDS = {"version", "operation_id", "host", "uid", "account", "source_commit",
+          "artifact_sha256", "created_at", "expires_at", "auth_mode"}
+LIVE = {"apply", "activate", "inactivate", "rollback", "bridge"}
+
+class Refusal(Exception):
+    pass
+
+def require(condition, code):
+    if not condition:
+        raise Refusal(code)
+
+def encode(value):
+    return (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+def exact(value, keys):
+    require(type(value) is dict and set(value) == set(keys), "schema-fields")
+
+def timestamp(value):
+    require(type(value) is str and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value),
+            "timestamp-UTC")
+    try:
+        return dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        raise Refusal("timestamp-invalid") from None
+
+def clock():
+    return dt.datetime.now(dt.timezone.utc)
+
+def validate(request, active=True):
+    exact(request, FIELDS)
+    require(type(request["version"]) is int and request["version"] == VERSION, "schema-version")
+    for key in ("operation_id", "host"):
+        require(type(request[key]) is str and
+                re.fullmatch(r"[a-z][a-z0-9-]{0,47}", request[key]), "identity-invalid")
+    require(type(request["uid"]) is int and request["uid"] >= 2000, "dedicated-uid")
+    require(request["account"] == "t3-laptop-isolated", "dedicated-account")
+    require(type(request["source_commit"]) is str and
+            re.fullmatch(r"[0-9a-f]{40}", request["source_commit"]), "source-identity")
+    require(type(request["artifact_sha256"]) is str and
+            re.fullmatch(r"[0-9a-f]{64}", request["artifact_sha256"]), "artifact-identity")
+    require(request["auth_mode"] in ("dedicated-login", "protected-same-host-reference"),
+            "auth-mode")
+    start, expiry = timestamp(request["created_at"]), timestamp(request["expires_at"])
+    require(dt.timedelta(0) < expiry - start <= dt.timedelta(days=7), "expiry-window")
+    if active:
+        require(start <= clock() < expiry, "expired-or-future")
+    return request
+
+def canonical(path):
+    p = Path(path)
+    require(p.is_absolute() and str(p) == path and ".." not in p.parts, "canonical-path")
+    # No home/runtime/system directory can be used as an offline output/input alias.
+    require(not any(p == Path(x) or Path(x) in p.parents
+                    for x in ("/home", "/root", "/run", "/proc", "/sys", "/dev", "/etc")),
+            "forbidden-path")
+    for home in (Path(os.path.realpath("/home/igor")),
+                 Path(os.path.realpath(os.environ.get("HOME", "/home/igor")))):
+        require(p != home and home not in p.parents, "personal-home-alias")
+    for ancestor in reversed([p] + list(p.parents)[:-1]):
+        info = ancestor.lstat()
+        require(not stat.S_ISLNK(info.st_mode), "symlink-path")
+    return p
+
+def private_dir(path):
+    p = canonical(path)
+    info = p.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == 0o700, "private-owned-directory")
+    # Writable ancestors must be owned/private or root sticky (e.g. /tmp).
+    for parent in p.parents:
+        info = parent.lstat()
+        require(not (info.st_mode & 0o022) or
+                (info.st_uid == 0 and info.st_mode & stat.S_ISVTX), "writable-parent")
+    return p
+
+def read_json(path):
+    p = canonical(path)
+    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
+                info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600,
+                "private-owned-regular-input")
+        require(info.st_size <= 65536, "input-too-large")
+        raw = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "duplicate-field")
+            result[key] = value
+        return result
+    try:
+        return json.loads(raw, object_pairs_hook=pairs)
+    except (ValueError, UnicodeError):
+        raise Refusal("invalid-json") from None
+
+def manifest(request):
+    return {"version": VERSION, "request": request, "worker_id": "laptop-isolated",
+            "runtime_root": "/var/lib/t3-laptop-isolated/" + request["operation_id"],
+            "units": ["t3-laptop-isolated.service"],
+            "caps": CAPS, "live_qualified": False, "enrolled": False,
+            "managed_live_paths": [], "blockers": BLOCKERS}
+
+def unit(request):
+    # Deliberately inert. No activation implementation is advertised by this unit.
+    return ("# DISABLED qualification placeholder; never install as an active worker.\n"
+            "[Unit]\nDescription=Blocked isolated laptop worker\n"
+            "[Service]\nType=oneshot\nUser=t3-laptop-isolated\n"
+            "ExecStart=/usr/bin/false\nRestart=no\n"
+            "ProtectHome=yes\nProtectSystem=strict\nPrivateTmp=yes\n"
+            "PrivateDevices=yes\nNoNewPrivileges=yes\n"
+            "RestrictSUIDSGID=yes\nKillMode=control-group\n"
+            "CPUQuota=400%\nMemoryHigh=10G\nMemoryMax=12G\nTasksMax=256\n"
+            "# No Install section, runtime mounts, auth, bridge or worker command.\n").encode()
+
+def payload(request):
+    m = manifest(request)
+    return {"manifest.json": encode(m),
+            "disabled.service": unit(request),
+            "parent-gates.json": encode({"version": VERSION, "required": BLOCKERS,
+                                        "activation_supported": False})}
+
+def receipt(request, files):
+    return {"version": VERSION, "operation_id": request["operation_id"],
+            "expires_at": request["expires_at"], "status": "staged-disabled",
+            "live_qualified": False, "enrolled": False, "changes": [],
+            "before": {}, "after": {name: digest(data) for name, data in files.items()},
+            "tool_sha256": digest(Path(__file__).read_bytes()),
+            "rollback": "retire-stage (preserves all evidence; no live changes)"}
+
+def inspect_at(directory):
+    m = read_json(str(directory / "manifest.json"))
+    exact(m, manifest(m.get("request", {})).keys())
+    request = validate(m["request"], active=False)
+    require(m == manifest(request), "manifest-tampered")
+    files = payload(request)
+    r = read_json(str(directory / "receipt.json"))
+    require(r == receipt(request, files), "receipt-or-tool-mismatch")
+    for name, data in files.items():
+        path = canonical(str(directory / name))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
+                    info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600,
+                    "payload-permissions")
+            require(os.read(fd, 65537) == data, "payload-tampered")
+        finally:
+            os.close(fd)
+    allowed = set(files) | {"receipt.json", "retired.json"}
+    require(set(os.listdir(directory)) <= allowed, "foreign-stage-files")
+    if (directory / "retired.json").exists():
+        require(read_json(str(directory / "retired.json")) ==
+                {"version": VERSION, "operation_id": request["operation_id"],
+                 "status": "retired-disabled", "changes": [], "live_qualified": False},
+                "retirement-tampered")
+        r = dict(r, status="retired-disabled")
+    return request, r
+
+def write_new(directory_fd, name, data):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=directory_fd)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+def stage(request, directory):
+    # Root/live modes are unsupported; even root may only stage explicit private files.
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if os.listdir(directory):
+            old, r = inspect_at(directory)
+            require(old == request and r["status"] == "staged-disabled", "operation-conflict")
+            return r
+        files = payload(request)
+        # Receipt is the commit marker. Partial crash output refuses replay; never overwrite.
+        for name, data in files.items():
+            write_new(fd, name, data)
+        r = receipt(request, files)
+        write_new(fd, "receipt.json", encode(r))
+        os.fsync(fd)
+        return r
+    finally:
+        os.close(fd)
+
+def assess(request, gates):
+    keys = {"version", "observed_at", "host", "uid", "cpu_count",
+            "ram_available_bytes", "disk_free_bytes", "conflicting_executors",
+            "account_locked", "groups", "home_mode", "auth_mode",
+            "source_commit", "artifact_sha256"}
+    exact(gates, keys)
+    require(type(gates["version"]) is int and gates["version"] == VERSION, "gate-version")
+    observed = timestamp(gates["observed_at"])
+    require(dt.timedelta(0) <= clock() - observed <= dt.timedelta(minutes=5), "stale-capacity")
+    for key in ("host", "uid", "source_commit", "artifact_sha256", "auth_mode"):
+        require(gates[key] == request[key], "gate-identity")
+    for key, minimum in (("cpu_count", 8), ("ram_available_bytes", 14 * GIB),
+                         ("disk_free_bytes", 60 * GIB)):
+        require(type(gates[key]) is int and gates[key] >= minimum, "insufficient-capacity")
+    require(type(gates["conflicting_executors"]) is int and
+            gates["conflicting_executors"] == 0, "executor-conflict")
+    require(gates["account_locked"] is True and gates["groups"] == [] and
+            gates["home_mode"] == "0700", "unsafe-account")
+    # These are untrusted offline declarations, never authorization or kernel proof.
+    return {"version": VERSION, "status": "blocked", "evidence_kind": "offline-declarations",
+            "live_qualified": False, "enrolled": False, "blockers": BLOCKERS}
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", nargs="?", default="plan",
+                        choices=["plan", "stage", "inspect", "assess", "retire-stage"] + sorted(LIVE))
+    parser.add_argument("--request")
+    parser.add_argument("--output")
+    parser.add_argument("--gates")
+    args = parser.parse_args()
+    if args.action in LIVE:
+        raise Refusal("unsupported-live-" + args.action)
+    if args.action == "plan":
+        require(not any((args.request, args.output, args.gates)), "plan-no-inputs")
+        return {"version": VERSION, "status": "source-package-only", "caps": CAPS,
+                "activation_supported": False, "live_qualified": False,
+                "enrolled": False, "blockers": BLOCKERS}
+    require(args.output is not None, "explicit-private-output-required")
+    directory = private_dir(args.output)
+    if args.action == "stage":
+        require(args.request is not None and args.gates is None, "stage-inputs")
+        request_path = canonical(args.request)
+        require(directory not in request_path.parents, "input-output-overlap")
+        return stage(validate(read_json(args.request)), directory)
+    require(args.request is None, "unexpected-request")
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        request, r = inspect_at(directory)
+        if args.action == "assess":
+            require(args.gates is not None and r["status"] == "staged-disabled", "assess-inputs")
+            validate(request)
+            return assess(request, read_json(args.gates))
+        require(args.gates is None, "unexpected-gates")
+        if args.action == "retire-stage" and r["status"] != "retired-disabled":
+            value = {"version": VERSION, "operation_id": request["operation_id"],
+                     "status": "retired-disabled", "changes": [], "live_qualified": False}
+            write_new(fd, "retired.json", encode(value))
+            os.fsync(fd)
+            return value
+        if clock() >= timestamp(request["expires_at"]):
+            r = dict(r, status="expired-disabled")
+        return r
+    finally:
+        os.close(fd)
+
+if __name__ == "__main__":
+    try:
+        print(encode(main()).decode(), end="")
+    except Refusal as refusal:
+        print(encode({"version": VERSION, "status": "refused", "reason": str(refusal),
+                      "live_qualified": False, "enrolled": False}).decode(), end="")
+        sys.exit(2)
+    except (OSError, KeyError, TypeError, ValueError):
+        # Do not echo user JSON, paths, environment, credentials or exception data.
+        print(encode({"version": VERSION, "status": "refused",
+                      "reason": "validation-or-unsupported-operation",
+                      "live_qualified": False, "enrolled": False}).decode(), end="")
+        sys.exit(2)

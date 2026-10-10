@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "operation_id": "next-week-one",
+  "host": "laptop",
+  "uid": 2400,
+  "account": "t3-laptop-isolated",
+  "source_commit": "1111111111111111111111111111111111111111",
+  "artifact_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "created_at": "2026-10-10T00:00:00Z",
+  "expires_at": "2026-10-17T00:00:00Z",
+  "auth_mode": "dedicated-login"
+}
