@@ -1,0 +1,29 @@
+--- a/shell/plugins/notifications/Service.qml
++++ b/shell/plugins/notifications/Service.qml
+@@ -153,6 +153,17 @@
+     return transient || NotificationLogic.isEphemeralApp(String(notification.appName || ""))
+   }
+ 
++  // Omarchy only blanks the display while the session is locked, and
++  // Hyprland does not release a layer surface's replaced buffers until it
++  // presents a frame. A toast committed to the powered-off output therefore
++  // leaves a full-screen buffer behind until the display wakes, which is
++  // gigabytes after a night of notifications. Nothing can see a toast behind
++  // the lock anyway, so locked notifications go straight to history.
++  function sessionLocked() {
++    var lock = service.shell ? service.shell.serviceFor("omarchy.lock") : null
++    return !!(lock && lock.locked)
++  }
++
+   function handleNotification(notification) {
+     // Without `tracked = true` the Notification object is destroyed as soon
+     // as this signal handler returns, which would null out the `ref` we just
+@@ -170,7 +181,7 @@
+     // DND bypass rules: chat apps abuse urgency=critical to force
+     // visibility, so critical alone isn't enough — we also require the
+     // sender to be CLI-style. See shouldBypassDnd().
+-    if (service.doNotDisturb && !shouldBypassDnd(notification)) {
++    if (service.sessionLocked() || (service.doNotDisturb && !shouldBypassDnd(notification))) {
+       // The toast never shows, so the only record a silenced notification
+       // can leave is a history entry. Write it straight into history —
+       // "what did I miss while silenced" is exactly what history is for.
