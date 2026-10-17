@@ -10,7 +10,29 @@ This document says which file is authoritative for each installed artifact, whic
 derives it, which module installs it, how it reaches the other machines, and what to do
 when a host has drifted.
 
-## The map
+## Fleet-managed overlap (M5)
+
+chaldea-fleet-config now owns installed shared instructions through its `agent_config`
+role. Its `roles/agent_config/files/agents/{AGENTS.md,huyang.md}`,
+`claude/omarchy-setup/CLAUDE.md`, `codex/AGENTS.md` and `skills/huyang/SKILL.md` are
+reviewed role inputs, not files to overwrite by running this repository's generator.
+The role copies them directly; fleet's Codex file wraps its shared AGENTS.md in a fleet
+fence, and its Huyang reference combines its own Claude section and skill body.
+
+This repository still carries bootstrap/policy generation sources. The legacy map below
+describes those outputs, not authority to replace fleet-managed instructions. For a shared
+Huyang contract change, update both source trees in the same window: this repository's
+`config/claude/CLAUDE.md`, `config/claude/skills/huyang/SKILL.md` and
+`config/bin/agents-instructions-gen`, plus fleet's matching role inputs and references.
+Keep source-read, guarded-edit, Chaldea execution and prepare/trust guidance aligned.
+Preserve each repository's unrelated publishing and delegation rules; wholesale regeneration
+would silently replace those differences. Resolve other ownership migration separately.
+
+Validate generation only in disposable homes through `chaldea exec --host agent-a`.
+Do not run `agents-instructions-gen` against the real HOME to synchronize these sources.
+Source synchronization does not deploy, publish a release or prove host convergence.
+
+## The legacy Omarchy generation map
 
 | Installed artifact | Authoritative source | Derived by | Installed by |
 |---|---|---|---|

@@ -7,8 +7,8 @@ description: >
   Huyang for every file inside a repository; this skill says how. Read it before
   the first file operation in an unfamiliar repository, when a call is refused for
   a stale revision, conflict or incomplete evidence, when planning a multi-file or
-  atomic change, and when running builds or tests through verification. Triggers:
-  huyang, workspace_open, edit_apply, change_plan, verify_run, stale revision,
+  atomic change, and when handing builds or tests to Chaldea. Triggers:
+  huyang, workspace_open, edit_apply, change_plan, stale revision,
   prepared revision, replace_literal, symbol_locator, diagnostics evidence.
 ---
 
@@ -18,10 +18,10 @@ Costs below were measured in `bench/agent-efficiency` of the Huyang repository
 (cl100k tokens, Go fixture, 2026-09-12); the full table is in `docs/agent-guide.md`
 there. Use these without experimenting.
 
-- Name the repository with `root` on any call instead of calling `workspace_open`
-  first: the workspace is opened on the first call and reused after. `workspace_open`
-  is for when you want its overview and the verification commands. `idempotency_key`
-  is optional; omit it unless you will retry the same call.
+- Call `workspace_open` for the repository root before the first source operation.
+  Retain its workspace ID and revision, and route later reads and guarded edits by that
+  ID. `root` also opens or reuses a workspace, but does not override this session rule.
+  `idempotency_key` is optional; omit it unless you will retry the same call.
 - Change text you know (a line, a block, a local rename): `edit_apply` with
   `operation.kind=replace_literal`, `old`, `new`, optional `path`, and
   `expected_count` when the text occurs more than once. One call, about 70 request
@@ -55,13 +55,24 @@ there. Use these without experimenting.
   with `paths` (globs or substrings) to scope and `context_lines` for the surrounding
   numbered lines, which replaces `grep -rn -C` and the read after it. Hits carry handles
   for `edit_apply kind=replace_range` when a target cannot be named by content.
-- Build and test: `verify_run` with `revision_or_transaction=current` and the stages you
-  need (`check`, `tests`; `test_scope=affected` for only the tests covering edited files).
-  `workspace_open` reports the commands, whether they were declared in `.huyang.toml` or
-  detected from the repository (Makefile targets, `go.mod`, a Python project's pytest and
-  ruff through its own venv or `uv run`), and whether the root is trusted. An untrusted
-  root runs nothing; `huyang trust <root>` in the shell grants it, then retry. The reply
-  is one line per stage plus the output of a stage that did not pass.
+- Build and test: use a Git-independent make target or selected test command through
+  `chaldea exec --host agent-a -- ...`. For every `go test`, set `HUYANG_FRICTION=0`
+  inside the job, for example:
+  `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test ./...`.
+  Read the `chaldea` skill for snapshot, scratch and job-result rules. Huyang handles
+  source reads and guarded edits; Chaldea supplies build/test execution.
+  Chaldea jobs omit `.git`. Run Git-dependent selection/planning locally only when it does
+  no build or test, for example `TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>`.
+  Keep the approved pinned base; pass selected packages, flags and required checks to the
+  job, for example `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test -race <pkgs>`.
+  Split selection from execution for Git-dependent targets such as `test-affected`,
+  `check-fast` and `check-review` before dispatch. Actual builds/tests run only in Chaldea;
+  local selection is not verification.
+
+  Return generated outputs with `--artifact PATH` under `.chaldea/artifacts/<job-id>/`.
+  Review artifacts against current source and import through guarded Huyang edits:
+  `edit_apply kind=copy_file` for a missing destination, or a revision-guarded edit/change
+  plan for an existing file. Never overwrite repository source with shell commands.
 - Several files that must change atomically: `change_plan` (prepare, then apply).
 - A file outside any repository (config, script, note, a lone source file): no
   `workspace_open` needed. `read` with the path, and `edit_apply` (`replace_literal`,
@@ -82,15 +93,20 @@ assume the current directory identifies the intended workspace. A result is vali
 for the revision it names.
 
 Use semantic handles or exact revision-bound locators when available. For a multi-file
-change, prepare a change plan, inspect its evidence, and commit only the prepared
-revision. If Huyang reports a conflict, stale revision, incomplete evidence, or recovery
-requirement, do not bypass it with an unguarded overwrite.
+change, prepare a change plan, inspect its evidence, and apply only the returned
+`prepared_revision`. If Huyang reports a conflict, stale revision, incomplete evidence, or
+recovery requirement, do not bypass it with an unguarded overwrite.
+
+`change_plan` prepare retains its sandbox pipeline: `format_gate`, parser, check and tests.
+Project commands declared by `.huyang.toml` or detected from the repository run only when
+trusted by the user policy in `~/.config/huyang/config.toml`. An untrusted root skips
+project commands; report that missing evidence. `huyang trust <root>` grants trust when
+authorized. Chaldea verification does not grant trust or replace prepared-revision evidence.
 
 Diagnostics and test claims are evidence-bound. Distinguish affected-test coverage from a
-full test run, and treat provisional or partial evidence as such. Repository commands
-execute only when declared by `.huyang.toml` and trusted by the user policy in
-`~/.config/huyang/config.toml`.
+full test run, and treat provisional or partial evidence as such. Report the tested source
+revision, command, host and job outcome; a deferred or uncertain job is not a passing check.
 
-The native text path works without Neovim. Semantic navigation, formatting, LSP
-diagnostics, and debugging additionally depend on the corresponding parser, language
-server, formatter, or adapter being available.
+The native text path works without Neovim. Semantic navigation, formatting and LSP
+diagnostics additionally depend on the corresponding parser, language server or formatter
+being available.

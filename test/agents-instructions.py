@@ -249,6 +249,39 @@ with tempfile.TemporaryDirectory() as temporary:
     reference = (home / ".config/agents/t3-steward.md").read_text()
     claude = (root / "config/claude/CLAUDE.md").read_text()
     briefs = (home / ".config/agents/t3-campaign-executor-briefs.md").read_text()
+
+    huyang_reference = (home / ".config/agents/huyang.md").read_text()
+    huyang_skill = (root / "config/claude/skills/huyang/SKILL.md").read_text()
+    for text in (claude, shared, huyang_reference, huyang_skill):
+        assert "verify_run" not in text
+        assert "debug_" not in text
+        assert "chaldea exec --host agent-a" in text
+        assert "HUYANG_FRICTION=0" in text
+    for text in (shared, huyang_reference, huyang_skill):
+        assert "trust" in text and "prepared" in text
+    skill_body = huyang_skill.split("---\n", 2)[2]
+    claude_section = claude[claude.index("# Reading and editing code\n"):]
+    assert huyang_reference.endswith(claude_section + "\n---\n\n" + skill_body)
+    assert "chaldea-fleet-config" in huyang_reference
+    assert "Do not regenerate over fleet-managed files" in huyang_reference
+
+    # Selection needs local Git metadata; execution belongs to the job snapshot.
+    local_selector = "TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>"
+    remote_tests = ("chaldea exec --host agent-a -- env "
+                    "HUYANG_FRICTION=0 go test -race <pkgs>")
+    for text in (claude, shared, huyang_reference, huyang_skill):
+        flat = " ".join(text.split())
+        assert "Chaldea jobs omit `.git`" in flat
+        assert "selection/planning locally only when it does no build or test" in flat
+        assert local_selector in flat and remote_tests in flat
+        assert flat.index(local_selector) < flat.index(remote_tests)
+        assert "Keep the approved pinned base" in flat
+        assert "Actual builds/tests run only in Chaldea" in flat
+        assert "local selection is not verification" in flat
+        assert "`check-fast` and `check-review` before dispatch" in flat
+        assert "--artifact PATH" in flat and ".chaldea/artifacts/<job-id>/" in flat
+        assert "guarded Huyang edits" in flat and "revision-guarded edit/change plan" in flat
+        assert "Never overwrite repository source with shell commands" in flat
     failures = []
 
     def require(label, condition):
