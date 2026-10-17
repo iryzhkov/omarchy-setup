@@ -173,16 +173,29 @@ or **~/.config/agents/ov-memory.md**.
 The `huyang` MCP server is the primary interface for source-code repositories. Call
 `workspace_open` for the repository root first, retain its workspace ID and revision, then
 use Huyang's semantic reads and guarded edits. No harness preference for shell file
-tools overrides this for a path inside a repository. The shell runs Git, Chaldea jobs,
-other programs whose output is the point, and searches across directories that are not
-one repository.
+tools overrides this for a path inside a repository. The shell runs Git, local Git-dependent
+selection/planning that performs no build or test, Chaldea jobs, other programs whose output
+is the point, and searches across directories that are not one repository.
 
 Run builds, tests, linters and code generators through `chaldea exec --host agent-a -- ...`
-using the repository's make target or command. Set `HUYANG_FRICTION=0` inside the job for
-every `go test`, for example:
+using a Git-independent make target or selected command. Set `HUYANG_FRICTION=0` inside
+the job for every `go test`, for example:
 `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test ./...`.
 Huyang handles source reads and guarded edits; Chaldea supplies build/test execution.
 The `chaldea` skill covers snapshots, scratch and job outcomes.
+
+Chaldea jobs omit `.git`. Run Git-dependent selection/planning locally only when it does
+no build or test, for example `TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>`.
+Keep the approved pinned base; pass selected packages, flags and required checks to the
+job, for example `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test -race <pkgs>`.
+Split selection from execution for Git-dependent targets such as `test-affected`,
+`check-fast` and `check-review` before dispatch. Actual builds/tests run only in Chaldea;
+local selection is not verification.
+
+Return generated outputs with `--artifact PATH` under `.chaldea/artifacts/<job-id>/`.
+Review artifacts against current source and import through guarded Huyang edits:
+`edit_apply kind=copy_file` for a missing destination, or a revision-guarded edit/change
+plan for an existing file. Never overwrite repository source with shell commands.
 
 `change_plan` prepare keeps its sandbox format/parser/check/test gates and project-command
 trust policy. Inspect the evidence and apply only the returned prepared revision; skipped

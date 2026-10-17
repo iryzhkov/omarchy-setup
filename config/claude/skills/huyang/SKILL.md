@@ -55,12 +55,24 @@ there. Use these without experimenting.
   with `paths` (globs or substrings) to scope and `context_lines` for the surrounding
   numbered lines, which replaces `grep -rn -C` and the read after it. Hits carry handles
   for `edit_apply kind=replace_range` when a target cannot be named by content.
-- Build and test: use the repository's make target or test command through
+- Build and test: use a Git-independent make target or selected test command through
   `chaldea exec --host agent-a -- ...`. For every `go test`, set `HUYANG_FRICTION=0`
   inside the job, for example:
   `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test ./...`.
   Read the `chaldea` skill for snapshot, scratch and job-result rules. Huyang handles
   source reads and guarded edits; Chaldea supplies build/test execution.
+  Chaldea jobs omit `.git`. Run Git-dependent selection/planning locally only when it does
+  no build or test, for example `TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>`.
+  Keep the approved pinned base; pass selected packages, flags and required checks to the
+  job, for example `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test -race <pkgs>`.
+  Split selection from execution for Git-dependent targets such as `test-affected`,
+  `check-fast` and `check-review` before dispatch. Actual builds/tests run only in Chaldea;
+  local selection is not verification.
+
+  Return generated outputs with `--artifact PATH` under `.chaldea/artifacts/<job-id>/`.
+  Review artifacts against current source and import through guarded Huyang edits:
+  `edit_apply kind=copy_file` for a missing destination, or a revision-guarded edit/change
+  plan for an existing file. Never overwrite repository source with shell commands.
 - Several files that must change atomically: `change_plan` (prepare, then apply).
 - A file outside any repository (config, script, note, a lone source file): no
   `workspace_open` needed. `read` with the path, and `edit_apply` (`replace_literal`,

@@ -233,15 +233,29 @@ Tool mapping and the cheapest correct call for each need: the `huyang` skill,
 or **~/.config/agents/huyang.md**.
 
 Run builds, tests, linters and code generators through `chaldea exec --host agent-a -- ...`
-using the repository's make target or command. Set `HUYANG_FRICTION=0` inside the job for
-every `go test`, for example:
+using a Git-independent make target or selected command. Set `HUYANG_FRICTION=0` inside
+the job for every `go test`, for example:
 `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test ./...`.
 Huyang handles source reads and guarded edits; Chaldea supplies build/test execution.
 The `chaldea` skill covers snapshots, scratch and job outcomes.
 
+Chaldea jobs omit `.git`. Run Git-dependent selection/planning locally only when it does
+no build or test, for example `TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>`.
+Keep the approved pinned base; pass selected packages, flags and required checks to the
+job, for example `chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test -race <pkgs>`.
+Split selection from execution for Git-dependent targets such as `test-affected`,
+`check-fast` and `check-review` before dispatch. Actual builds/tests run only in Chaldea;
+local selection is not verification.
+
+Return generated outputs with `--artifact PATH` under `.chaldea/artifacts/<job-id>/`.
+Review artifacts against current source and import through guarded Huyang edits:
+`edit_apply kind=copy_file` for a missing destination, or a revision-guarded edit/change
+plan for an existing file. Never overwrite repository source with shell commands.
+
 Shell still runs these jobs, and only these:
 
 - Git, including `git status`, `git diff`, `git log`, `git add`, commits and pushes.
+- Local Git-dependent selection/planning that performs no build or test, as above.
 - Chaldea jobs for builds, tests, linters, formatters, generated-code tools and variant
   checks, using `chaldea exec --host agent-a -- ...`.
 - Running programs and services, such as `gh`, `systemctl`, `docker`, `uv` and the homelab

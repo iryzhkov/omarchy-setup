@@ -264,6 +264,24 @@ with tempfile.TemporaryDirectory() as temporary:
     assert huyang_reference.endswith(claude_section + "\n---\n\n" + skill_body)
     assert "chaldea-fleet-config" in huyang_reference
     assert "Do not regenerate over fleet-managed files" in huyang_reference
+
+    # Selection needs local Git metadata; execution belongs to the job snapshot.
+    local_selector = "TEST_AFFECTED_LIST=1 make test-affected BASE=<pinned>"
+    remote_tests = ("chaldea exec --host agent-a -- env "
+                    "HUYANG_FRICTION=0 go test -race <pkgs>")
+    for text in (claude, shared, huyang_reference, huyang_skill):
+        flat = " ".join(text.split())
+        assert "Chaldea jobs omit `.git`" in flat
+        assert "selection/planning locally only when it does no build or test" in flat
+        assert local_selector in flat and remote_tests in flat
+        assert flat.index(local_selector) < flat.index(remote_tests)
+        assert "Keep the approved pinned base" in flat
+        assert "Actual builds/tests run only in Chaldea" in flat
+        assert "local selection is not verification" in flat
+        assert "`check-fast` and `check-review` before dispatch" in flat
+        assert "--artifact PATH" in flat and ".chaldea/artifacts/<job-id>/" in flat
+        assert "guarded Huyang edits" in flat and "revision-guarded edit/change plan" in flat
+        assert "Never overwrite repository source with shell commands" in flat
     failures = []
 
     def require(label, condition):
