@@ -183,8 +183,8 @@ Fuller guidance, including the CLI configuration UpKeeper owns: `~/.config/agent
 # Reading and editing code
 
 The `huyang` MCP server is the primary interface for source-code repositories. It provides
-revision-aware semantic navigation, transactional edits, verification, and recovery through a
-long-lived local service.
+revision-aware semantic reads, guarded edits, transactional change plans and recovery through
+a long-lived local service.
 
 ## Publish validated agent-tooling changes
 
@@ -232,11 +232,18 @@ than the shell version and it returns diagnostics the shell never will.
 Tool mapping and the cheapest correct call for each need: the `huyang` skill,
 or **~/.config/agents/huyang.md**.
 
+Run builds, tests, linters and code generators through `chaldea exec --host agent-a -- ...`
+using the repository's make target or command. Set `HUYANG_FRICTION=0` inside the job for
+every `go test`, for example:
+`chaldea exec --host agent-a -- env HUYANG_FRICTION=0 go test ./...`.
+Huyang handles source reads and guarded edits; Chaldea supplies build/test execution.
+The `chaldea` skill covers snapshots, scratch and job outcomes.
+
 Shell still runs these jobs, and only these:
 
 - Git, including `git status`, `git diff`, `git log`, `git add`, commits and pushes.
-- Builds, tests, linters, formatters, generated-code tools, and variant checks whose output
-  is the point and which the selected verification policy does not represent.
+- Chaldea jobs for builds, tests, linters, formatters, generated-code tools and variant
+  checks, using `chaldea exec --host agent-a -- ...`.
 - Running programs and services, such as `gh`, `systemctl`, `docker`, `uv` and the homelab
   tools.
 - Locating a file across directories that are not one repository, such as `find` or `grep`

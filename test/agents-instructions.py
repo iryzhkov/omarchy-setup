@@ -249,6 +249,21 @@ with tempfile.TemporaryDirectory() as temporary:
     reference = (home / ".config/agents/t3-steward.md").read_text()
     claude = (root / "config/claude/CLAUDE.md").read_text()
     briefs = (home / ".config/agents/t3-campaign-executor-briefs.md").read_text()
+
+    huyang_reference = (home / ".config/agents/huyang.md").read_text()
+    huyang_skill = (root / "config/claude/skills/huyang/SKILL.md").read_text()
+    for text in (claude, shared, huyang_reference, huyang_skill):
+        assert "verify_run" not in text
+        assert "debug_" not in text
+        assert "chaldea exec --host agent-a" in text
+        assert "HUYANG_FRICTION=0" in text
+    for text in (shared, huyang_reference, huyang_skill):
+        assert "trust" in text and "prepared" in text
+    skill_body = huyang_skill.split("---\n", 2)[2]
+    claude_section = claude[claude.index("# Reading and editing code\n"):]
+    assert huyang_reference.endswith(claude_section + "\n---\n\n" + skill_body)
+    assert "chaldea-fleet-config" in huyang_reference
+    assert "Do not regenerate over fleet-managed files" in huyang_reference
     failures = []
 
     def require(label, condition):
