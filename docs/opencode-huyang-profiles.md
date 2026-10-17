@@ -1,9 +1,12 @@
 # OpenCode Huyang profiles (M7)
 
 Supported host API: **OpenCode 2.0.30 V2 server plugins**, upstream tag v2.0.30,
-commit `f16ef9ad8878279ea2be3cfab7baeed97aef61aa`. The plugin refuses requests on
-another reported version until its contract is verified. Source implementation is
-not evidence of runtime acceptance.
+commit `f16ef9ad8878279ea2be3cfab7baeed97aef61aa`. On another reported version the
+plugin withholds only Huyang: no profile connections are added, the recognized legacy
+connection is removed, and existing reserved/duplicate Huyang exposure is disabled.
+Normal chat and unrelated tools keep working. Fleet's existing OpenCode updater policy
+is unchanged; a later release does not require a global version pin. Source implementation
+is not evidence of runtime acceptance.
 
 ## Ownership and installation
 
@@ -36,9 +39,13 @@ preserved. Without a legacy entry, the executable policy remains
 `$HOME/.local/share/huyang/bin/huyang`, resolved with Node's home-directory API.
 No host-specific path, shell execution, credential discovery or environment logging
 is added. Remote/wrapped legacy entries, unknown profiles, conflicting reserved names
-and normalized namespace collisions leave configuration intact and refuse requests.
-The transform catches its own validation failures: throwing would disable V2's whole
-plugin group and unregister the refusing request hooks.
+and normalized namespace collisions withhold only Huyang. The recognized local legacy
+entry is removed; other entries in Huyang's reserved/colliding namespaces and local
+Huyang aliases are retained with runtime `disabled: true` and `codemode: false`.
+Their command/URL, environment and other settings are preserved; no persistent JSON
+is changed and somebody else's reserved-name connection is never deleted. Connections
+outside this Huyang boundary are untouched. The transform catches validation failures:
+throwing would disable V2's whole plugin group and remove its containment policy.
 
 Only exact `event.model.providerID === "ollama"` selects lean; every other resolved
 provider selects full. There are no endpoint, model-name or credential guesses.
@@ -48,18 +55,20 @@ content is not erased.
 
 The filter deletes the wrong profile and preserves surviving definition-object
 identity. It adds no permission-filtered tools and never falls back when the selected
-connection is unavailable. Both connections stay registered; selection controls the
-request surface, not process lifetime. Explicitly disabled connections stay disabled.
+connection is unavailable. With supported, valid configuration both connections stay
+registered; selection controls the request surface, not process lifetime. Explicitly
+disabled connections stay disabled.
 A missing selected catalog leaves no Huyang tools on that request.
 
 Registry metadata must prove managed tools are direct and have the expected effective
-IDs. Managed Code Mode tools, stale identities and surviving legacy tools refuse the
-request. ACP's late named `huyang` entry is handled by transform replay. Other aliases
-invoking a local Huyang executable are detected without rewriting their config.
-Conflicts and unexpected aliases latch request refusal until the plugin is reloaded
-after owner cleanup: an older in-flight snapshot could still contain their Code Mode
-inventory after live registry changes. This avoids direct/shared `execute` exposure.
-Unrelated Code Mode tools and `execute` are otherwise preserved.
+IDs. An invalid/missing model or managed-tool identity withholds Huyang definitions
+without throwing from the request hook. ACP's late named `huyang` entry is handled by
+transform replay. Duplicate/conflict containment latches only Huyang until owner
+cleanup and plugin reload. Recognized Huyang aliases are disabled in the MCP projection
+before catalog construction so they cannot enter shared Code Mode; the shared
+`execute` tool is never removed as a shortcut. Unrelated definitions preserve their
+identity, and requests with no Huyang tools continue normally. Missing selected catalogs
+still never fall back to the other Huyang profile.
 
 ## Native names and permissions
 
@@ -84,7 +93,9 @@ No tests, builds or generation have run for this source task. Run checks only th
 scratch and a disposable HOME.
 
 - Omarchy: `node --test test/opencode-huyang.test.mjs`, also wired into its GitHub
-  workflow.
+  workflow. Regression coverage includes unsupported versions, tool-free chat,
+  unrelated direct/Code Mode definitions, retained reserved-name records, and unavailable
+  selections in both provider directions on every tool-bearing hook.
 - Fleet: `python3 -m pytest -q tests/test_opencode_huyang.py`, then
   `bash tools/ci.sh` with its required scratch setup. The Python fixture invokes
   the identical Node suite against the role's copy.

@@ -135,13 +135,19 @@ test("simultaneous sessions do not mutate MCP, registry or definition objects", 
   assert.ok(f.registry().some((tool) => tool.id === "huyang_lean_read"));
 });
 
-test("unavailable or denied selected tools never fall back or get resurrected", async () => {
-  const f = await fixture();
-  f.setRegistry(f.registry().filter((tool) => tool.options.namespace !== "huyang_lean"));
-  const absent = await f.run(f.request("ollama"));
-  assert.equal(absent.tools.huyang_full_read, undefined);
-  assert.equal(absent.tools.huyang_lean_read, undefined);
-  assert.ok(absent.tools.execute);
+test("unavailable or denied selected tools never fall back or break unrelated requests", async () => {
+  for (const [provider, missing] of [["ollama", "huyang_lean"], ["openai", "huyang_full"]]) {
+    for (const kind of ["context", "compaction", "generate"]) {
+      const f = await fixture();
+      f.setRegistry(f.registry().filter((tool) => tool.options.namespace !== missing));
+      const event = f.request(provider, kind);
+      const unrelated = event.tools.execute;
+      const absent = await f.run(event);
+      assert.equal(absent.tools.huyang_full_read, undefined);
+      assert.equal(absent.tools.huyang_lean_read, undefined);
+      assert.equal(absent.tools.execute, unrelated);
+    }
+  }
   const permitted = await fixture();
   const denied = permitted.request("ollama");
   delete denied.tools.huyang_lean_edit_apply;
@@ -159,49 +165,114 @@ test("late ACP legacy registration is replaced, not duplicated", async () => {
   assert.ok((await f.run(f.request("openai"))).tools.huyang_full_read);
 });
 
-test("ACP alias and Code Mode duplicates refuse requests without altering foreign config", async () => {
-  const f = await fixture();
-  f.inject("acp_huyang", legacy);
-  assert.deepEqual(f.configured().get("acp_huyang"), legacy);
-  await assert.rejects(f.run(f.request("ollama")), /duplicate Huyang registration/);
-  f.setRegistry(f.registry().filter((tool) => tool.options.namespace !== "acp_huyang"));
-  // A request may still carry an older execute snapshot; live disappearance is not proof.
-  await assert.rejects(f.run(f.request("openai")), /duplicate Huyang registration/);
-  const code = await fixture();
-  code.setRegistry(code.registry().map((tool) => tool.options.namespace === "huyang_full"
-    ? { ...tool, options: { ...tool.options, codemode: true } } : tool));
-  await assert.rejects(code.run(code.request("ollama")), /direct exposure changed/);
+test("unsupported version withholds only Huyang and preserves normal chat and unrelated tools", async () => {
+  const direct = { type: "local", command: ["/review/other-server"], codemode: false };
+  const f = await fixture({ huyang: legacy, unrelated: foreign, direct }, "2.0.31");
+  assert.equal(f.configured().has("huyang"), false);
+  assert.equal(f.configured().has("huyang_lean"), false);
+  assert.equal(f.configured().has("huyang_full"), false);
+  assert.deepEqual(f.configured().get("unrelated"), foreign);
+  assert.deepEqual(f.configured().get("direct"), direct);
+  const empty = await fixture({}, "2.0.31");
+  assert.equal(empty.configured().size, 0);
+  await empty.run({ kind: "context", model: { providerID: "openai" }, tools: {} });
+  const runs = f.transformsRun();
+  for (const kind of ["context", "compaction", "generate"]) {
+    for (const provider of ["ollama", "openai"]) {
+      const event = f.request(provider, kind);
+      const directTool = event.tools.direct_read;
+      assert.ok(directTool);
+      const execute = event.tools.execute;
+      // A stale direct catalog cannot restore Huyang after containment.
+      event.tools.huyang_full_read = { description: "stale", input: {} };
+      event.tools.huyang_lean_read = { description: "stale", input: {} };
+      await f.run(event);
+      assert.equal(event.tools.huyang_full_read, undefined);
+      assert.equal(event.tools.huyang_lean_read, undefined);
+      assert.equal(event.tools.direct_read, directTool);
+      assert.equal(event.tools.execute, execute);
+      const chat = { kind, model: { providerID: provider }, tools: {} };
+      await f.run(chat);
+      assert.deepEqual(chat.tools, {});
+    }
+  }
+  assert.equal(f.transformsRun(), runs);
+  f.inject("huyang", legacy);
+  assert.equal(f.configured().has("huyang"), false);
+  assert.ok((await f.run(f.request("ollama"))).tools.direct_read);
+
+  // Do not delete another owner's reserved-name connection on a newer release.
+  const collision = await fixture({ huyang_full: foreign, direct }, "2.0.31");
+  assert.deepEqual(collision.configured().get("huyang_full"),
+    { ...foreign, disabled: true, codemode: false });
+  assert.equal(collision.configured().has("huyang_lean"), false);
+  assert.ok((await collision.run(collision.request("openai"))).tools.direct_read);
 });
 
-test("guarded conflicts preserve original configuration and never disclose environment values", async () => {
+test("ACP duplicate latch disables only Huyang and keeps connection records and chat", async () => {
+  const f = await fixture();
+  f.inject("acp_huyang", legacy);
+  assert.deepEqual(f.configured().get("acp_huyang"),
+    { ...legacy, disabled: true, codemode: false });
+  assert.deepEqual(f.configured().get("unrelated"), foreign);
+  assert.equal(f.configured().has("huyang"), false);
+  for (const kind of ["context", "compaction", "generate"]) {
+    const event = f.request("ollama", kind);
+    const execute = event.tools.execute;
+    await f.run(event);
+    assert.equal(event.tools.execute, execute);
+    assert.equal(event.tools.huyang_full_read, undefined);
+    assert.equal(event.tools.huyang_lean_read, undefined);
+    assert.equal(event.tools.acp_huyang_read, undefined);
+  }
+  f.inject("acp_huyang", { ...legacy, disabled: true });
+  assert.ok((await f.run(f.request("openai"))).tools.execute);
+});
+
+test("conflicts contain reserved Huyang exposure without deleting foreign connections", async () => {
+  const wrapper = { type: "local", command: ["sh", "-c", "huyang mcp"] };
   const cases = [
     { huyang: foreign },
-    { huyang: { type: "local", command: ["sh", "-c", "huyang mcp"] } },
+    { huyang: wrapper },
     { huyang: { ...legacy, command: ["huyang", "mcp", "--profile", "experimental"] } },
     { huyang: legacy, huyang_full: foreign },
     { huyang: legacy, "huyang.lean": foreign },
   ];
   for (const initial of cases) {
-    const f = await fixture(initial);
-    assert.deepEqual(Object.fromEntries(f.configured()), initial);
-    await assert.rejects(f.run(f.request("ollama")), (error) =>
-      error.message.startsWith("Huyang profile guard:") && !error.message.includes("DO-NOT-LOG"));
+    const f = await fixture({ ...initial, unrelated: foreign });
+    assert.deepEqual(f.configured().get("unrelated"), foreign);
+    for (const [name, config] of Object.entries(initial)) {
+      if (name === "huyang" && config !== foreign && config !== wrapper) {
+        assert.equal(f.configured().has(name), false);
+      } else {
+        assert.deepEqual(f.configured().get(name), { ...config, disabled: true, codemode: false });
+      }
+    }
+    const event = await f.run(f.request("ollama"));
+    assert.equal(event.tools.huyang_lean_read, undefined);
+    assert.equal(event.tools.huyang_full_read, undefined);
+    assert.ok(event.tools.execute);
+    // The latch also contains Huyang after a later unrelated configuration replay.
+    f.inject("another", foreign);
+    assert.ok((await f.run(f.request("openai"))).tools.execute);
   }
-  const unsupported = await fixture({ huyang: legacy }, "2.0.31");
-  assert.deepEqual(Object.fromEntries(unsupported.configured()), { huyang: legacy });
-  await assert.rejects(unsupported.run(unsupported.request("ollama")), /requires OpenCode 2.0.30/);
 });
 
-test("unknown definition names and identity drift refuse instead of trusting a prefix", async () => {
+test("unknown Huyang definitions and identity drift withhold only Huyang", async () => {
   const f = await fixture();
   const event = f.request("ollama");
+  const execute = event.tools.execute;
   event.tools.huyang_lean_invented = { description: "not registered", input: {} };
-  await assert.rejects(f.run(event), /stale or unknown managed tool/);
+  await f.run(event);
+  assert.equal(event.tools.huyang_lean_invented, undefined);
+  assert.equal(event.tools.execute, execute);
   f.setRegistry(f.registry().map((tool) => tool.id === "huyang_lean_read"
     ? { ...tool, name: "different_tool" } : tool));
-  await assert.rejects(f.run(f.request("ollama")), /identity or direct exposure changed/);
+  const drift = await f.run(f.request("ollama"));
+  assert.equal(drift.tools.huyang_lean_read, undefined);
+  assert.equal(drift.tools.huyang_full_read, undefined);
+  assert.ok(drift.tools.execute);
 });
-
 
 test("native normalization, explicit disablement and missing resolved model stay guarded", async () => {
   const f = await fixture();
@@ -220,7 +291,11 @@ test("native normalization, explicit disablement and missing resolved model stay
   const lean = await f.run(f.request("ollama"));
   assert.ok(lean.tools.huyang_full_backup_read);
   assert.equal(lean.tools.huyang_full_read, undefined);
-  await assert.rejects(f.run(f.request(undefined)), /resolved providerID is missing/);
+  const unresolved = await f.run(f.request(undefined));
+  assert.equal(unresolved.tools.huyang_full_read, undefined);
+  assert.equal(unresolved.tools.huyang_lean_read, undefined);
+  assert.ok(unresolved.tools.huyang_full_backup_read);
+  assert.ok(unresolved.tools.execute);
   const disabled = await fixture({ huyang: { ...legacy, disabled: true } });
   assert.equal(disabled.configured().get("huyang_lean").disabled, true);
   assert.equal(disabled.configured().get("huyang_full").disabled, true);
