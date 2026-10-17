@@ -29,6 +29,8 @@ jobs:
         run: test/run.sh
       - name: Shared agent instruction generation
         run: python3 test/agents-instructions.py
+      - name: OpenCode Huyang V2 synthetic contract
+        run: node --test test/opencode-huyang.test.mjs
   sandbox-qualification:
     # This job is unconditional; branch protection must require its exact-head result.
     runs-on: ubuntu-24.04
