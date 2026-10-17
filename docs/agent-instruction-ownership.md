@@ -32,6 +32,13 @@ Validate generation only in disposable homes through `chaldea exec --host agent-
 Do not run `agents-instructions-gen` against the real HOME to synchronize these sources.
 Source synchronization does not deploy, publish a release or prove host convergence.
 
+## OpenCode plugin ownership (M7)
+
+Omarchy owns the OpenCode Huyang plugin asset; fleet's `agent_config` role alone
+installs its reviewed copy at the exact owned plugin filename. Bootstrap and instruction
+generation do not manage OpenCode MCP JSON or its wrapper. Source synchronization,
+version support and pending acceptance: [OpenCode Huyang profiles](opencode-huyang-profiles.md).
+
 ## The legacy Omarchy generation map
 
 | Installed artifact | Authoritative source | Derived by | Installed by |
