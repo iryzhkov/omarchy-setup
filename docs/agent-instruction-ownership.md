@@ -22,5 +22,6 @@ separately authorized fleet migration before using them again.
 The optional laptop-worker staging helper and scratch reaper, with their
 configuration, tests and historical documentation, are preserved in fleet's
 `tooling/legacy-bootstrap/` with provenance. They are not activated by this
-repository. General fresh-machine prerequisites and the module 27 UpKeeper
-bootstrap handoff remain here.
+repository. An existing omarchy-pc reaper and its enabled timer keep running
+until a separately authorized fleet migration changes or retires them. General
+fresh-machine prerequisites and the module 27 UpKeeper bootstrap handoff remain here.

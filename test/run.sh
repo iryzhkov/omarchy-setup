@@ -17,6 +17,8 @@ export TMPDIR="${TMPDIR:-$HOME/.cache/chaldea-scratch/agent-tooling}"
 }
 mkdir -p "$TMPDIR"
 T=$(mktemp -d "$TMPDIR/omarchy-setup-test.XXXXXX")
+[[ $T == "$TMPDIR"/omarchy-setup-test.* && -d $T && ! -L $T && ! -e "$T/home" ]] || exit 1
+export HOME="$T/home"
 trap 'rm -rf "$T"' EXIT
 
 # A private copy of the repo, minus .git, so tests can add and remove config.
@@ -24,8 +26,6 @@ ROOT="$T/repo"
 mkdir -p "$ROOT"
 (cd "$SRC_ROOT" && tar --exclude=.git --exclude=.chaldea --exclude=.chaldea-home --exclude=.cache -cf - .) | tar -xf - -C "$ROOT"
 
-export HOME="$T/home"
-[[ $HOME == "$T/home" && $HOME != "$SRC_ROOT" ]] || exit 1
 export OMARCHY_SETUP_ROOT="$ROOT" OMARCHY_SETUP_LIB="$ROOT/lib"
 export OMARCHY_SETUP_STATE="$HOME/.local/state/omarchy-setup"
 export SETUP_PROFILE=client SETUP_HOST=testhost DRY_RUN=0 ASSUME_YES=1 NO_COLOR=1
@@ -34,6 +34,9 @@ mkdir -p "$HOME/.config/hypr" "$T/bin"
 # hyprctl stub: reload succeeds, no config errors, no instances.
 printf '#!/bin/sh\ncase "$1" in configerrors) echo "no errors";; esac\nexit 0\n' >"$T/bin/hyprctl"
 chmod +x "$T/bin/hyprctl"
+# Never let host/root overlays reach a real privileged command during tests.
+printf '#!/bin/sh\nprintf "sudo refused\\n" >>"%s/sudo.log"\nexit 97\n' "$T" >"$T/bin/sudo"
+chmod +x "$T/bin/sudo"
 export PATH="$T/bin:$PATH"
 module_fixture_path=$PATH
 # hypr_reload addresses the session through this variable; pin it so the stub
@@ -352,6 +355,7 @@ check "dry run succeeds" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instr
 check "dry run preserves fleet" test "$(fleet_snapshot)" = "$fleet_before"
 check "script bootstrap preserves fleet tools" module common/28-scripts.sh
 check "omarchy-pc overlay succeeds" env SETUP_HOST=omarchy-pc bash "$ROOT/modules/common/29-host-files.sh"
+check "host overlay invokes no sudo" test ! -e "$T/sudo.log"
 check "scripts and overlay preserve fleet" test "$(fleet_snapshot)" = "$fleet_before"
 
 # ---------------------------------------------------------------- dry run --
