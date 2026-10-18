@@ -125,6 +125,12 @@ Codex receives its own policy projection. Without that deployment, keep the manu
 guidance and explicit routes. Native roles cover bounded same-provider work only.
 Operator/session provider or effort restrictions require explicit pins in Steward.
 
+Before delegating, call `chaldea_route` or `chaldea route --role ROLE` with `builder`,
+`critical-review`, `bulk-read` or `general`. Pass its `providerInstanceId`, `model` and
+`options` as the T3 `delegate_task` target. For reviews, pass `authorProvider` as the
+writer's driver, `claudeAgent` or `codex`, to require the other provider. If routing is
+unavailable, use the model roles below and preserve that cross-provider review rule.
+
 Model roles are assigned by hand until a generated policy replaces them:
 Opus 5.5 or Sol 6.1 at high effort for planning and execution; Fable 5.1 or Astra
 at medium effort for critical review, including plan review; Sonnet 5.5 or Luna 6

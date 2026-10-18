@@ -32,6 +32,15 @@ Validate generation only in disposable homes through `chaldea exec --host agent-
 Do not run `agents-instructions-gen` against the real HOME to synchronize these sources.
 Source synchronization does not deploy, publish a release or prove host convergence.
 
+## Chaldea routing guidance
+
+Fleet's `agent_config` role owns the deployed Chaldea, review-delegation and
+roadmap-executor skills, plus shared CLAUDE.md and both AGENTS.md copies.
+This repository's CLAUDE.md and generator retain the same route-before-T3 rule
+for bootstrap outputs. Change those two sources together; do not regenerate over
+fleet-owned files. Chaldea's pinned client owns role pairs and the Slopalytics URL.
+Fleet renders its route/capacity settings and keeps Claude collection opt-in.
+
 ## OpenCode plugin ownership (M7)
 
 Omarchy owns the OpenCode Huyang plugin asset; fleet's `agent_config` role alone
