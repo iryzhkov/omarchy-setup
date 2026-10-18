@@ -6,17 +6,26 @@
 #   test/run.sh            run everything
 #   VERBOSE=1 test/run.sh  show module output
 set -uo pipefail
+umask 022
 
 SRC_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-T=$(mktemp -d)
+# Keep all temporary files on disk, including when invoked outside CI.
+export TMPDIR="${TMPDIR:-$HOME/.cache/chaldea-scratch/agent-tooling}"
+[[ $TMPDIR = /* && $TMPDIR != /tmp && $TMPDIR != /tmp/* ]] || {
+  printf 'TMPDIR must be an absolute on-disk scratch directory, not /tmp\n' >&2
+  exit 1
+}
+mkdir -p "$TMPDIR"
+T=$(mktemp -d "$TMPDIR/omarchy-setup-test.XXXXXX")
+[[ $T == "$TMPDIR"/omarchy-setup-test.* && -d $T && ! -L $T && ! -e "$T/home" ]] || exit 1
+export HOME="$T/home"
 trap 'rm -rf "$T"' EXIT
 
 # A private copy of the repo, minus .git, so tests can add and remove config.
 ROOT="$T/repo"
 mkdir -p "$ROOT"
-(cd "$SRC_ROOT" && tar --exclude=.git -cf - .) | tar -xf - -C "$ROOT"
+(cd "$SRC_ROOT" && tar --exclude=.git --exclude=.chaldea --exclude=.chaldea-home --exclude=.cache -cf - .) | tar -xf - -C "$ROOT"
 
-export HOME="$T/home"
 export OMARCHY_SETUP_ROOT="$ROOT" OMARCHY_SETUP_LIB="$ROOT/lib"
 export OMARCHY_SETUP_STATE="$HOME/.local/state/omarchy-setup"
 export SETUP_PROFILE=client SETUP_HOST=testhost DRY_RUN=0 ASSUME_YES=1 NO_COLOR=1
@@ -25,6 +34,9 @@ mkdir -p "$HOME/.config/hypr" "$T/bin"
 # hyprctl stub: reload succeeds, no config errors, no instances.
 printf '#!/bin/sh\ncase "$1" in configerrors) echo "no errors";; esac\nexit 0\n' >"$T/bin/hyprctl"
 chmod +x "$T/bin/hyprctl"
+# Never let host/root overlays reach a real privileged command during tests.
+printf '#!/bin/sh\nprintf "sudo refused\\n" >>"%s/sudo.log"\nexit 97\n' "$T" >"$T/bin/sudo"
+chmod +x "$T/bin/sudo"
 export PATH="$T/bin:$PATH"
 module_fixture_path=$PATH
 # hypr_reload addresses the session through this variable; pin it so the stub
@@ -60,14 +72,6 @@ while IFS= read -r f; do
   head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b' || continue   # python helpers, pacman hooks
   check "bash -n ${f#"$ROOT"/}" bash -n "$f"
 done < <(find "$ROOT" -type f \( -name '*.sh' -o -name '*.hook' -o -path '*/bin/*' -o -path '*/root/usr/local/bin/*' \) | sort)
-
-# -------------------------------------------------------- reaper arguments --
-section "agent-scratch-reap"
-check "arguments, dry run and sandbox cleanup" bash "$ROOT/test/agent-scratch-reap.sh"
-
-# ------------------------------------------------ isolated laptop package --
-section "isolated laptop worker (offline only)"
-check "staging, integrity and qualification refusals" python3 "$ROOT/test/laptop-worker-isolation.py"
 
 # -------------------------------------------------------- managed blocks --
 section "write_managed_block"
@@ -114,8 +118,8 @@ section "write_owned_file"
 )
 case $? in 0) ok "mode honoured, idempotent, rewritten on change" ;; *) bad "write_owned_file step $?" ;; esac
 
-# Fleet software moved to UpKeeper; setup must never recreate these entry points.
-section "UpKeeper owns fleet software"
+# Setup must never recreate retired agent deployment entry points.
+section "retired agent deployment entry points"
 check "T3 module removed" test ! -e "$ROOT/modules/common/26-t3.sh"
 check "agent module removed" test ! -e "$ROOT/modules/common/45-agents.sh"
 check "updater entry point removed" test ! -e "$ROOT/bin/t3-update"
@@ -153,8 +157,12 @@ check "dirty checkout refused" bash -c '! bash "$1"' _ "$ROOT/modules/common/27-
 check "dirty work preserved" grep -qx 'keep local work' "$HOME/.local/share/dev-fleet/untracked.txt"
 rm "$HOME/.local/share/dev-fleet/untracked.txt"
 # The numeric name is stable, but execution order puts the seam after host setup.
+# This checks selection only. Chaldea maps the job user to root, so bypass the
+# interactive-user guard in this subshell; production run.sh keeps its guard.
 check "selected handoff listed last" bash -c '
-  out=$(bash "$1/run.sh" --profile remote --only 27-upkeeper --only 85-hooks --list 2>&1) || exit
+  source "$1/lib/common.sh"
+  require_not_root() { :; }
+  out=$(source "$1/run.sh" --profile remote --only 27-upkeeper --only 85-hooks --list 2>&1) || exit
   [[ $(printf "%s\n" "$out" | tail -n 1) == *27-upkeeper* ]]
 ' _ "$ROOT"
 # The list command records setup state; later hook tests require no recorded checkout.
@@ -302,56 +310,53 @@ check "timer enablement is idempotent" [ "$(count 'enable --now hosttool.timer' 
 check "timer already enabled is reported" log_has "hosttool.timer: already enabled"
 # Keep the systemctl stub for uninstall as well.
 
-# -------------------------------------------------- resident instructions --
-# The layer every agent session holds before it reads anything. Nothing used to
-# install it, and the generator used to read the installed copies back, so a
-# host-local edit became the fleet's instructions. These two sections assert the
-# replacement: a module derives the host copies from the checkout, and a check
-# reports every installed copy that no longer matches it.
-section "31-agent-instructions"
-mkdir -p "$HOME/.codex"
-check "module runs" module common/31-agent-instructions.sh
-check "CLAUDE.md installed from the checkout" cmp -s "$ROOT/config/claude/CLAUDE.md" "$HOME/.claude/omarchy-setup/CLAUDE.md"
-check "shared pointer generated" test -f "$HOME/.config/agents/AGENTS.md"
-check "reference files generated" test -f "$HOME/.config/agents/t3-steward.md"
-check "campaign brief guidance generated" grep -qF "A task prompt is a self-contained execution contract" "$HOME/.config/agents/t3-steward.md"
-check "campaign brief link rewritten for shared reference" grep -qF "](t3-campaign-executor-briefs.md)" "$HOME/.config/agents/t3-steward.md"
-check "campaign brief reference generated" cmp -s "$ROOT/config/claude/skills/t3-campaign/references/executor-briefs.md" "$HOME/.config/agents/t3-campaign-executor-briefs.md"
-check "codex block written" grep -q '<!-- fleet:start -->' "$HOME/.codex/AGENTS.md"
-check "second run rewrites nothing" module common/31-agent-instructions.sh && ! log_has ': written'
+# -------------------------------------------------- fleet ownership --
+section "31-agent-instructions: pointer only"
+# A fresh bootstrap must not create a second instruction/config writer.
+check "fresh pointer runs" module common/31-agent-instructions.sh
+check "names canonical source" log_has "https://github.com/iryzhkov/chaldea-fleet-config"
+check "fresh agent roots absent" test ! -e "$HOME/.claude" -a ! -e "$HOME/.codex" -a ! -e "$HOME/.config/agents" -a ! -e "$HOME/.config/opencode"
 
-# A host whose copy drifted is brought back, and a dry run in that state still
-# changes nothing.
-printf 'stale\n' >"$HOME/.claude/omarchy-setup/CLAUDE.md"
-before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
-check "dry run exits 0" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instructions.sh"
-check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
-check "a drifted copy is rewritten" module common/31-agent-instructions.sh
-check "and matches the checkout again" cmp -s "$ROOT/config/claude/CLAUDE.md" "$HOME/.claude/omarchy-setup/CLAUDE.md"
-
-section "agents-instructions-gen: the checkout is the only source"
-GEN="$ROOT/config/bin/agents-instructions-gen"
-check "no checkout is a loud failure" env -u OMARCHY_SETUP_ROOT bash -c '! bash "$1" >"$2" 2>&1' _ "$HOME/.local/bin/agents-instructions-gen" "$T/gen.log"
-check "the failure names what it looked for" grep -q 'config/claude/CLAUDE.md' "$T/gen.log"
-check "and refuses to read \$HOME" grep -q 'never falls' "$T/gen.log"
-
-section "agents-instructions-gen --check"
-# UpKeeper publishes skills from the pinned source checkout; this setup check owns only
-# the generated resident instruction artifacts.
-check "a converged host passes" bash "$GEN" --root "$ROOT" --check
-printf 'stale\n' >"$HOME/.claude/omarchy-setup/CLAUDE.md"
-rm -f "$HOME/.config/agents/jocasta.md"
-printf 'leftover\n' >"$HOME/.config/agents/agent99.md"
-before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
-bash "$GEN" --root "$ROOT" --check >"$T/check.log" 2>&1
-check_rc=$?
-check "a diverged host exits 3" [ "$check_rc" = 3 ]
-check "the check changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
-check "the stale CLAUDE.md is named" grep -q 'omarchy-setup/CLAUDE.md: the host copy differs' "$T/check.log"
-check "the missing reference file is named" grep -q 'agents/jocasta.md: absent on this host' "$T/check.log"
-check "the file nothing generates is named" grep -q 'agents/agent99.md: present on this host' "$T/check.log"
-module common/31-agent-instructions.sh
-check "converging clears every difference" bash "$GEN" --root "$ROOT" --check
+# Seed independently managed files and executables, including historical writers.
+# Setup and uninstall must preserve their bytes, modes and names.
+FLEET="$T/fleet-files"
+cat >"$FLEET" <<'FILES'
+.claude/CLAUDE.md
+.claude/omarchy-setup/CLAUDE.md
+.claude/settings.json
+.claude/skills/huyang/SKILL.md
+.codex/AGENTS.md
+.config/agents/AGENTS.md
+.config/agents/jocasta.md
+.config/opencode/opencode.json
+.config/opencode/plugins/huyang-profiles.js
+.local/bin/agents-instructions-gen
+.local/bin/agents-role-project
+.local/bin/t3-laptop-worker-setup
+.local/bin/agent-scratch-reap
+.config/systemd/user/agent-scratch-reap.service
+.config/systemd/user/agent-scratch-reap.timer
+FILES
+while IFS= read -r rel; do
+  mkdir -p "$(dirname "$HOME/$rel")"
+  printf 'fleet owns %s\n' "$rel" >"$HOME/$rel"
+  chmod 0600 "$HOME/$rel"
+done <"$FLEET"
+fleet_snapshot() {
+  while IFS= read -r rel; do
+    sha256sum "$HOME/$rel"
+    stat -c '%a %n' "$HOME/$rel"
+  done <"$FLEET"
+}
+fleet_before=$(fleet_snapshot)
+check "pointer preserves existing files" module common/31-agent-instructions.sh
+check "pointer is read-only" test "$(fleet_snapshot)" = "$fleet_before"
+check "dry run succeeds" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instructions.sh"
+check "dry run preserves fleet" test "$(fleet_snapshot)" = "$fleet_before"
+check "script bootstrap preserves fleet tools" module common/28-scripts.sh
+check "omarchy-pc overlay succeeds" env SETUP_HOST=omarchy-pc bash "$ROOT/modules/common/29-host-files.sh"
+check "host overlay invokes no sudo" test ! -e "$T/sudo.log"
+check "scripts and overlay preserve fleet" test "$(fleet_snapshot)" = "$fleet_before"
 
 # ---------------------------------------------------------------- dry run --
 section "dry run changes nothing"
@@ -365,8 +370,6 @@ check "owned dir not created" [ ! -e "$HOME/.config/hypr/omarchy-setup" ]
 # -------------------------------------------------------------- uninstall --
 section "uninstall"
 module client/30-hypr.sh; module common/35-bash.sh; module common/28-scripts.sh; module common/85-hooks.sh
-mkdir -p "$HOME/.claude"; printf '# mine\n' >"$HOME/.claude/CLAUDE.md"
-printf '@x\n' | (source "$ROOT/lib/common.sh"; write_managed_block "$HOME/.claude/CLAUDE.md" claude '<!--' '-->') >/dev/null 2>&1
 before=$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)
 check "dry run exits 0" bash "$ROOT/uninstall.sh" --dry-run
 check "dry run changed nothing" [ "$(find "$HOME" -type f -exec md5sum {} + | sort | md5sum)" = "$before" ]
@@ -375,11 +378,10 @@ check "host files gone" [ ! -e "$HOME/.local/bin/hosttool" ] && [ ! -e "$HOME/.c
 check "timer removed" test ! -e "$HOME/.config/systemd/user/hosttool.timer"
 check "timer disabled" grep -q 'disable --now hosttool.timer' "$T/systemctl.log"
 check "no setup fence left" [ -z "$(grep -rl 'omarchy-setup:' "$HOME/.config/hypr" "$HOME/.bashrc" 2>/dev/null)" ]
-check "UpKeeper agent import preserved" grep -q 'omarchy-setup:claude' "$HOME/.claude/CLAUDE.md"
+check "uninstall preserves fleet files and tools" test "$(fleet_snapshot)" = "$fleet_before"
 check "owned dirs gone" [ ! -e "$HYPR/omarchy-setup" ] && [ ! -e "$HOME/.config/bash/omarchy-setup" ]
 check "scripts and hook gone" [ ! -e "$HOME/.local/bin/omarchy-setup" ] && [ ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook" ]
 check "Omarchy content kept" grep -q 'Omarchy default bindings' "$HYPR/bindings.lua"
-check "user CLAUDE.md content kept" grep -qx '# mine' "$HOME/.claude/CLAUDE.md"
 check "bashrc return kept" grep -q return "$HOME/.bashrc"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
