@@ -265,6 +265,12 @@ custody. Source publication does not prove runtime deployment; the rollout lead
 owns immutable rollback bundles, never scanner reenablement. The `t3-campaign`
 skill documents the authority and rollback boundary.
 
+Before delegating, call `chaldea_route` or `chaldea route --role ROLE` with `builder`,
+`critical-review`, `bulk-read` or `general`. Pass its `providerInstanceId`, `model` and
+`options` as the T3 `delegate_task` target. For reviews, pass `authorProvider` as the
+writer's driver, `claudeAgent` or `codex`, to require the other provider. If routing is
+unavailable, use the model roles below and preserve that cross-provider review rule.
+
 Model roles are assigned by hand until a generated policy replaces them:
 Opus 5.5 or Sol 6.1 at high effort for planning and execution; Fable 5.1 or Astra
 at medium effort for critical review, including plan review; Sonnet 5.5 or Luna 6
