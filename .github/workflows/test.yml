@@ -17,7 +17,7 @@ jobs:
           # the same way test/run.sh filters what it runs `bash -n` over.
           scripts=()
           for f in run.sh install.sh uninstall.sh lib/*.sh modules/*/*.sh \
-                   packages/*/*.sh bin/* config/bin/* config/hooks/*/*.hook test/run.sh; do
+                   packages/*/*.sh bin/* config/bin/* config/hooks/*/*.hook test/*.sh hosts/omarchy-pc/bin/*; do
             if head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b'; then
               scripts+=("$f")
             fi
@@ -34,3 +34,18 @@ jobs:
           chmod 700 "$scratch/home"
           HOME="$scratch/home" TMPDIR="$scratch/tmp" \
             DISPLAY_TEST_SCRATCH_HOME="$scratch/home" python3 test/display_controller_test.py
+  display-daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+      - name: Test and build pinned IPC-only daemon
+        run: |
+          DISPLAY_BUILD_SCRATCH="$HOME/.cache/display-daemon-build" \
+            bash test/build-display-daemon.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: display-daemon
+          path: build/display-controller/hyprmoncfgd

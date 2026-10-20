@@ -4,3 +4,5 @@
 secrets.local/
 *.key
 *.pem
+# Built only in Chaldea/CI; deployment uses the returned artifact.
+/build/display-controller/

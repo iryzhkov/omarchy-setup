@@ -1,8 +1,9 @@
 # Display coordination on omarchy-pc
 
 The local display coordinator runs under the existing hyprmoncfgd user service.
-It supervises one hyprmoncfgd process and sends layout transactions through its
-Unix socket. TV power/input selection and physical scanout recovery share that
+It supervises one hyprmoncfgd process in explicit IPC-only mode and sends layout
+transactions through its Unix socket. Automatic daemon matching is disabled so
+hotplug cannot override coordinator policy. TV power/input selection and physical scanout recovery share that
 coordinator. The daemon remains the display writer; Hyprland owns fullscreen
 HDR metadata.
 
@@ -11,6 +12,23 @@ calibration and audio commands stay machine-local. The coordinator must not
 rewrite them. The game launcher only executes its command.
 
 ## Installation and retirement
+
+The daemon executable is private to this controller at
+~/.local/libexec/display-controller/hyprmoncfgd. The system package stays intact.
+The patch under patches/ adds --ipc-only and a capability in daemon status.
+The controller refuses an incompatible daemon. Build the pinned 1.25.1 source
+and run its daemon/IPC tests in Chaldea:
+
+```sh
+chaldea exec --host agent-a --artifact build/display-controller/hyprmoncfgd -- \
+  env DISPLAY_BUILD_SCRATCH=/home/job/.cache/display-daemon-build \
+  bash test/build-display-daemon.sh
+```
+
+Install the returned, reviewed artifact at the private path before applying
+host files. The host-file module checks this dependency before replacing the
+working helpers. The build job never installs on the gaming PC. CI also builds
+and tests the pinned patch. Keep the artifact hash with the deployed revision.
 
 The host overlay installs display-controller, its service drop-in, passive
 compatibility commands, and the fullscreen HDR configuration. The host-specific
@@ -31,7 +49,8 @@ working SDR profile available.
 
 Before live HDR testing, verify:
 
-- One coordinator and one hyprmoncfgd child are running, without --profile.
+- One coordinator and one private hyprmoncfgd child are running with --ipc-only.
+- The daemon reports ipc_only=true, with no forced profile.
 - The old watchdog timer is disabled and no hotplug helper writes profiles.
 - display-controller --status reports current routing and health.
 - display-controller --check agrees with actual DRM scanout.

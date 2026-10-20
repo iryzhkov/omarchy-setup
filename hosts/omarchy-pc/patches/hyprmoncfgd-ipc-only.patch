@@ -1,0 +1,461 @@
+diff --git a/cmd/hyprmoncfgd/ipc_only_test.go b/cmd/hyprmoncfgd/ipc_only_test.go
+new file mode 100644
+index 0000000..65a0b6d
+--- /dev/null
++++ b/cmd/hyprmoncfgd/ipc_only_test.go
+@@ -0,0 +1,20 @@
++package main
++
++import "testing"
++
++func TestIPCOnlyFlag(t *testing.T) {
++	for _, args := range [][]string{nil, {"--ipc-only"}, {"--ipc-only=false"}} {
++		cmd := newRootCmd()
++		if err := cmd.ParseFlags(args); err != nil {
++			t.Fatal(err)
++		}
++		got, err := cmd.Flags().GetBool("ipc-only")
++		if err != nil {
++			t.Fatal(err)
++		}
++		want := len(args) == 1 && args[0] == "--ipc-only"
++		if got != want {
++			t.Fatalf("args=%v: ipc-only=%v, want %v", args, got, want)
++		}
++	}
++}
+diff --git a/cmd/hyprmoncfgd/main.go b/cmd/hyprmoncfgd/main.go
+index b79e5f1..d2009a9 100644
+--- a/cmd/hyprmoncfgd/main.go
++++ b/cmd/hyprmoncfgd/main.go
+@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
+ 	var lidPoll time.Duration
+ 	var forceProfile string
+ 	var quiet bool
++	var ipcOnly bool
+ 	var powerAwareRefresh bool
+ 	var monitorsConf string
+ 	var hyprConfig string
+@@ -78,6 +79,7 @@ func newRootCmd() *cobra.Command {
+ 			watcherOwner := omarchywatch.New(logf)
+ 
+ 			svc := daemon.New(client, store, daemon.Config{
++				IPCOnly:           ipcOnly,
+ 				PowerAwareRefresh: powerAwareRefresh,
+ 				Debounce:          debounce,
+ 				WakeSettle:        wakeSettle,
+@@ -151,6 +153,7 @@ func newRootCmd() *cobra.Command {
+ 	cmd.Flags().StringVar(&forceProfile, "profile", "", "Force this profile instead of auto-matching")
+ 	cmd.Flags().StringVar(&monitorsConf, "monitors-conf", "", "Generated monitor config target to write and reload (overrides HYPRMONCFG_MONITORS_CONF)")
+ 	cmd.Flags().StringVar(&hyprConfig, "hypr-config", "", "Hyprland root config for include verification (overrides HYPRLAND_CONFIG)")
++	cmd.Flags().BoolVar(&ipcOnly, "ipc-only", false, "Serve interactive IPC without automatic display or workspace changes")
+ 	cmd.Flags().BoolVar(&quiet, "quiet", false, "Suppress logs")
+ 	cmd.Flags().BoolVar(&powerAwareRefresh, "power-aware-refresh", false, "Adapt internal-panel refresh to AC/battery power (preserves resolution)")
+ 	cmd.AddCommand(newVersionCmd("hyprmoncfgd"))
+diff --git a/docs/_guide/daemon.md b/docs/_guide/daemon.md
+index 06f7b56..5762955 100644
+--- a/docs/_guide/daemon.md
++++ b/docs/_guide/daemon.md
+@@ -271,6 +271,34 @@ hyprmoncfgd --profile desk        # always apply this specific profile
+ hyprmoncfgd --quiet               # suppress log output
+ ```
+ 
++## IPC-only prototype
++
++The local prototype adds `hyprmoncfgd --ipc-only`, off by default. It keeps
++the IPC server, writer lock, generated include and Omarchy watcher suppression
++while managed. The TUI, panel and CLI can still discover hardware, edit profiles,
++preview changes, commit and save, or revert. Preview expiry and shutdown still
++roll back unconfirmed transactions, including workspace placement.
++
++Startup, hotplug, lid, resume, polling, power and orientation events cannot apply
++layouts, move workspaces, wake outputs or run display recovery in this mode.
++Forced-profile, management and automatic-selection requests cannot bypass that
++restriction. Explicit previews still use the existing apply engine, including
++its lid/orientation adjustments and targeted wake verification.
++
++An unmatched, sleeping, modeless or entirely disconnected setup remains available
++for IPC queries and explicit edits without automatic rescue. An external policy
++owner must make displays usable. Existing generated output rules still load
++whenever Hyprland reloads them. Startup leaves both files untouched, including
++missing or misplaced includes. An explicit preview repairs the managed include
++as part of its transaction, with the existing rollback safeguards.
++
++Status reports `daemon.ipc_only: true` when this mode is active. Older or ordinary
++daemons omit this field; external coordinators requiring exclusive policy must
++refuse an absent or false value. This local patch does not add panel controls:
++automatic selection controls have no layout effect in this mode. Rotation settings
++can be recorded, but immediate rotation reconciliation is suppressed. The host
++coordinator separately owns service configuration and installation.
++
+ ## Forcing a specific profile
+ 
+ Use `--profile <name>` to bypass automatic matching entirely. The daemon applies this one profile every time, regardless of what's connected. This is useful when you know exactly which setup you're on and want to eliminate any chance of a wrong match.
+diff --git a/internal/appstatus/status.go b/internal/appstatus/status.go
+index eda67a0..e71c549 100644
+--- a/internal/appstatus/status.go
++++ b/internal/appstatus/status.go
+@@ -74,6 +74,9 @@ type Rotation struct {
+ 
+ type Daemon struct {
+ 	Running bool `json:"running"`
++	// IPCOnly means an external coordinator owns automatic display policy.
++	// Absence on older daemons is false; clients requiring this mode must refuse it.
++	IPCOnly bool `json:"ipc_only,omitempty"`
+ 	// Unmanaged reports that monitor configuration was handed back to Hyprland.
+ 	// The zero value means managed, so a client that never sets it, or one too
+ 	// old to know the field, reads as the behavior hyprmoncfg has always had.
+diff --git a/internal/daemon/daemon.go b/internal/daemon/daemon.go
+index a9984cb..57939bb 100644
+--- a/internal/daemon/daemon.go
++++ b/internal/daemon/daemon.go
+@@ -24,6 +24,9 @@ import (
+ )
+ 
+ type Config struct {
++	// IPCOnly retains writer ownership and interactive transactions, but never
++	// reconciles layouts or wakes displays in response to background events.
++	IPCOnly             bool
+ 	PowerAwareRefresh   bool
+ 	ReadBatteryState    func() (battery bool, known bool)
+ 	Debounce            time.Duration
+@@ -233,6 +236,9 @@ func (s *Service) Run(ctx context.Context) error {
+ 		return err
+ 	}
+ 	s.ensureConfigInclude(ctx)
++	if s.cfg.IPCOnly {
++		s.cfg.Logf("IPC-only mode: automatic display and workspace changes disabled")
++	}
+ 
+ 	var probeGeneration uint64
+ 	type trigger struct {
+@@ -805,9 +811,9 @@ func (s *Service) ensureConfigInclude(ctx context.Context) {
+ 		return
+ 	}
+ 
+-	// Keep dialect discovery above read-only: wake must retain the right syntax
+-	// even when monitor configuration has been handed back to Hyprland.
+-	if !config.IsManaged(s.cfg.ConfigDir) {
++	// Keep dialect discovery above read-only. In IPC-only mode an include edit
++	// could trigger a compositor config reload; defer repairs to explicit apply.
++	if s.cfg.IPCOnly || !config.IsManaged(s.cfg.ConfigDir) {
+ 		return
+ 	}
+ 
+@@ -855,6 +861,9 @@ func (s *Service) refreshLidState(ctx context.Context) {
+ // a keypress, and an external monitor left undriven can take half a minute to
+ // come back on its own.
+ func (s *Service) wakeDisplays(ctx context.Context) {
++	if s.cfg.IPCOnly {
++		return
++	}
+ 	wakeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+ 	defer cancel()
+ 
+@@ -933,6 +942,12 @@ func (s *Service) applyAutomatic(ctx context.Context) error {
+ // applyBestLocked selects and applies the effective layout while writeMu is held.
+ // An incomplete explicit wake remains pending for the event loop to retry.
+ func (s *Service) applyBestLocked(ctx context.Context) (resultErr error) {
++	// Guard the common writer, including reconciliation requested by Manage,
++	// SetProfileAuto and SetRotation. Preview and its rollback use the engine
++	// directly under writeMu and remain available in IPC-only mode.
++	if s.cfg.IPCOnly {
++		return nil
++	}
+ 	started := time.Now()
+ 	defer func() {
+ 		s.cfg.Logf("automatic reconciliation completed elapsed=%s error=%v", time.Since(started).Round(time.Millisecond), resultErr)
+diff --git a/internal/daemon/ipc.go b/internal/daemon/ipc.go
+index c03d647..b1b9e5b 100644
+--- a/internal/daemon/ipc.go
++++ b/internal/daemon/ipc.go
+@@ -47,6 +47,7 @@ func (s *Service) Status() (appstatus.Document, error) {
+ 	}
+ 	document := appstatus.Build(buildinfo.Version, true, profiles, monitors, rules, s.matchOptions())
+ 	document.Daemon.Unmanaged = !config.IsManaged(s.cfg.ConfigDir)
++	document.Daemon.IPCOnly = s.cfg.IPCOnly
+ 	if s.cfg.WatchOrientation != nil {
+ 		document.Rotation = s.rotation.status()
+ 	}
+diff --git a/internal/daemon/ipc_only_test.go b/internal/daemon/ipc_only_test.go
+new file mode 100644
+index 0000000..239848b
+--- /dev/null
++++ b/internal/daemon/ipc_only_test.go
+@@ -0,0 +1,276 @@
++package daemon
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/crmne/hyprmoncfg/internal/hypr"
++	"github.com/crmne/hyprmoncfg/internal/ipc"
++	"github.com/crmne/hyprmoncfg/internal/lid"
++	"github.com/crmne/hyprmoncfg/internal/profile"
++)
++
++func ipcOnlyConfig(c *Config) {
++	c.IPCOnly = true
++	c.PollInterval = 20 * time.Millisecond
++	c.RecoveryInterval = 20 * time.Millisecond
++	c.RecoveryMaxInterval = 40 * time.Millisecond
++}
++
++func assertNoBackgroundWrites(t *testing.T, env runTestEnv, before []byte) {
++	t.Helper()
++	// Multiple poll, debounce, wake-settle and recovery intervals must elapse.
++	time.Sleep(250 * time.Millisecond)
++	data, err := os.ReadFile(env.logPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
++		if !strings.HasPrefix(line, "-j ") {
++			t.Fatalf("unexpected compositor mutation: %s\n%s", line, data)
++		}
++	}
++	root, err := os.ReadFile(env.svc.cfg.HyprConfig)
++	if err != nil || string(root) != "# human config\n" {
++		t.Fatalf("background repaired the root include: %s (%v)", root, err)
++	}
++	got, err := os.ReadFile(env.monitorsConfPath)
++	if err != nil || string(got) != string(before) {
++		t.Fatalf("background changed generated config: %s (%v)", got, err)
++	}
++}
++
++func TestIPCOnlyEventLoopNeverReconciles(t *testing.T) {
++	for _, state := range []string{"mismatch", "unmatched", "sleeping", "modeless", "disabled", "disconnected"} {
++		t.Run(state, func(t *testing.T) {
++			connected := listenMonitorEvents(t)
++			original := []hypr.Monitor{
++				{Name: "DP-1", Make: "Example", Model: "Desk", Serial: "DESK", Width: 1920, Height: 1080, RefreshRate: 60, Scale: 1, Disabled: true},
++				{Name: "HDMI-A-1", Make: "Sony", Model: "TV", Serial: "TV", Width: 3840, Height: 2160, RefreshRate: 60, Scale: 1, DPMSStatus: true},
++			}
++			switch state {
++			case "sleeping":
++				original[1].DPMSStatus = false
++			case "modeless":
++				original[1].Width, original[1].Height = 0, 0
++			case "disabled":
++				original[1].Disabled = true
++			}
++			env := newRunTestEnvConfigured(t, original, ipcOnlyConfig, func(s *Service) {
++				// Startup must not repair this missing include: writing the root
++				// config could trigger a compositor reload outside hyprctl.
++				if err := os.WriteFile(s.cfg.HyprConfig, []byte("# human config\n"), 0644); err != nil {
++					t.Fatal(err)
++				}
++				if state == "disconnected" {
++					if err := writeMonitorState(filepath.Join(filepath.Dir(s.cfg.MonitorsConf), "monitors.json"), nil); err != nil {
++						t.Fatal(err)
++					}
++				}
++				if state == "unmatched" {
++					if err := s.store.Delete("Home"); err != nil {
++						t.Fatal(err)
++					}
++					return
++				}
++				desk := append([]hypr.Monitor{}, original...)
++				if len(desk) > 0 {
++					desk[0].Disabled, desk[0].DPMSStatus = false, true
++					desk[1].Disabled = true
++				}
++				if err := s.store.Save(profile.FromMonitors("desk", desk)); err != nil {
++					t.Fatal(err)
++				}
++				s.setManualOverride(profile.MonitorSetHash(original), profile.FromMonitors("Home", original))
++			})
++			defer env.stop()
++			send := connected()
++			waitFor(t, time.Second, func() bool { return env.logs.contains("IPC-only mode:") }, "IPC-only startup")
++			status, err := env.svc.Status()
++			if err != nil || !status.Daemon.IPCOnly {
++				t.Fatalf("IPC-only capability absent: %+v (%v)", status.Daemon, err)
++			}
++			encoded, err := json.Marshal(status)
++			if err != nil || !strings.Contains(string(encoded), `"ipc_only":true`) {
++				t.Fatalf("IPC-only wire capability absent: %s (%v)", encoded, err)
++			}
++			before, err := os.ReadFile(env.monitorsConfPath)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if _, err := env.svc.EditorState(); err != nil {
++				t.Fatalf("editor unavailable at startup in %s state: %v", state, err)
++			}
++			assertNoBackgroundWrites(t, env, before)
++			// Exercise the actual socket2 event loop with changed hardware. A
++			// manual pin cannot provide this guarantee: it expires for this set.
++			changed := append(append([]hypr.Monitor{}, original...), hypr.Monitor{Name: "DP-9", Make: "Other", Model: "New", Serial: "NEW", Disabled: true})
++			if err := writeMonitorState(env.monitorStatePath, changed); err != nil {
++				t.Fatal(err)
++			}
++			send("monitoradded>>DP-9")
++			waitFor(t, time.Second, func() bool { return env.logs.contains("monitor event received: monitoradded") }, "topology event")
++			assertNoBackgroundWrites(t, env, before)
++
++			env.setLid(lid.Closed)
++			env.lidStates <- lid.Closed
++			env.setLid(lid.Open)
++			env.lidStates <- lid.Open
++			env.suspendEvents <- true
++			env.suspendEvents <- false
++			waitFor(t, time.Second, func() bool { return env.logs.contains("resumed from sleep") }, "resume event")
++			assertNoBackgroundWrites(t, env, before)
++			if _, err := env.svc.EditorState(); err != nil {
++				t.Fatalf("editor unavailable in %s state: %v", state, err)
++			}
++			// Shared entry points used by IPC management, rotation and recovery
++			// also stay fenced, even when explicitly asked to reconcile.
++			if err := env.svc.applyAutomatic(context.Background()); err != nil {
++				t.Fatal(err)
++			}
++			assertNoBackgroundWrites(t, env, before)
++		})
++	}
++}
++
++func TestIPCOnlyTransactionsWithRunningEventLoop(t *testing.T) {
++	connected := listenMonitorEvents(t)
++	monitors := []hypr.Monitor{
++		{Name: "DP-1", Make: "Example", Model: "Desk", Serial: "DESK", Width: 1920, Height: 1080, RefreshRate: 60, Scale: 1, DPMSStatus: true},
++		{Name: "HDMI-A-1", Make: "Sony", Model: "TV", Serial: "TV", Width: 3840, Height: 2160, RefreshRate: 60, X: 1920, Scale: 1, DPMSStatus: true},
++	}
++	env := newRunTestEnvConfigured(t, monitors, ipcOnlyConfig, func(s *Service) {
++		if err := os.WriteFile(s.cfg.HyprConfig, []byte("# human config\n"), 0644); err != nil {
++			t.Fatal(err)
++		}
++		// The compositor snapshot includes an existing workspace on the TV.
++		helper := filepath.Join(filepath.Dir(s.cfg.MonitorsConf), "hyprctl")
++		data, err := os.ReadFile(helper)
++		if err != nil {
++			t.Fatal(err)
++		}
++		script := strings.Replace(string(data),
++			"if [[ \"${1-}\" == \"-j\" && \"${2-}\" == \"workspaces\" ]]; then\n  printf '[]'",
++			"if [[ \"${1-}\" == \"-j\" && \"${2-}\" == \"workspaces\" ]]; then\n  printf '[{\"id\":2,\"name\":\"2\",\"monitor\":\"HDMI-A-1\"}]'", 1)
++		if string(data) == script {
++			t.Fatal("workspace fixture replacement missed")
++		}
++		if err := os.WriteFile(helper, []byte(script), 0755); err != nil {
++			t.Fatal(err)
++		}
++	})
++	defer env.stop()
++	send := connected()
++	socketPath := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "ipc.sock")
++	ctx, cancel := context.WithCancel(context.Background())
++	server := &ipc.Server{Path: socketPath, Handler: env.svc}
++	done := make(chan error, 1)
++	go func() { done <- server.Run(ctx) }()
++	defer func() {
++		cancel()
++		if err := <-done; err != nil {
++			t.Error(err)
++		}
++		if err := env.svc.Shutdown(); err != nil {
++			t.Error(err)
++		}
++	}()
++	waitFor(t, time.Second, func() bool { _, err := os.Stat(socketPath); return err == nil }, "IPC socket")
++	callCtx, stopCalls := context.WithTimeout(context.Background(), 15*time.Second)
++	defer stopCalls()
++	client, err := ipc.Dial(callCtx, socketPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer client.Close()
++	if _, err := client.EditorState(callCtx); err != nil {
++		t.Fatal(err)
++	}
++	before, err := os.ReadFile(env.monitorsConfPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	assertNoBackgroundWrites(t, env, before)
++	target := profile.FromMonitors("Explicit", monitors)
++	target.Workspaces = profile.WorkspaceSettings{Enabled: true, Strategy: profile.WorkspaceStrategyManual,
++		Rules: []profile.WorkspaceRule{{Workspace: "2", OutputKey: monitors[0].HardwareKey()}}}
++	tx, err := client.Preview(callCtx, ipc.PreviewParams{Profile: &target, TimeoutSeconds: 10})
++	if err != nil {
++		t.Fatal(err)
++	}
++	root, err := os.ReadFile(env.svc.cfg.HyprConfig)
++	if err != nil || !strings.Contains(string(root), "source = "+env.monitorsConfPath) {
++		t.Fatalf("explicit preview did not own its include: %s (%v)", root, err)
++	}
++	if !hyprctlLogContains(env.logPath, "dispatch moveworkspacetomonitor 2 DP-1") {
++		t.Fatal("explicit preview did not move the planned workspace")
++	}
++	// Topology events must not overwrite an active interactive preview.
++	send("monitoradded>>DP-9")
++	time.Sleep(200 * time.Millisecond)
++	if err := client.Revert(callCtx, tx.ID); err != nil {
++		t.Fatal(err)
++	}
++	if !hyprctlLogContains(env.logPath, "dispatch moveworkspacetomonitor 2 HDMI-A-1") {
++		t.Fatal("revert did not restore the original workspace placement")
++	}
++	if got, err := os.ReadFile(env.monitorsConfPath); err != nil || string(got) != string(before) {
++		t.Fatalf("revert did not restore generated config: %s (%v)", got, err)
++	}
++	root, err = os.ReadFile(env.svc.cfg.HyprConfig)
++	if err != nil || string(root) != "# human config\n" {
++		t.Fatalf("revert did not restore the root include: %s (%v)", root, err)
++	}
++	// Safety expiry remains enabled. It belongs to an explicit transaction.
++	tx, err = client.Preview(callCtx, ipc.PreviewParams{Profile: &target, TimeoutSeconds: 1})
++	if err != nil {
++		t.Fatal(err)
++	}
++	waitFor(t, 3*time.Second, func() bool { return env.logs.contains("profile preview expired and was reverted") }, "preview safety rollback")
++	if got, err := os.ReadFile(env.monitorsConfPath); err != nil || string(got) != string(before) {
++		t.Fatalf("expiry did not restore generated config: %s (%v)", got, err)
++	}
++	tx, err = client.Preview(callCtx, ipc.PreviewParams{Profile: &target, TimeoutSeconds: 10})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := client.Commit(callCtx, tx.ID, true); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := env.svc.store.Load("Explicit"); err != nil {
++		t.Fatalf("commit did not save the profile: %v", err)
++	}
++	// After commit, another hardware change and several polls must leave
++	// both the explicit generated file and the mutation log untouched.
++	written, err := os.ReadFile(env.monitorsConfPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	logBefore, err := os.ReadFile(env.logPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	changed := append(append([]hypr.Monitor{}, monitors...), hypr.Monitor{Name: "DP-9", Make: "Other", Model: "New", Serial: "NEW", Disabled: true})
++	if err := writeMonitorState(env.monitorStatePath, changed); err != nil {
++		t.Fatal(err)
++	}
++	send("monitoradded>>DP-9")
++	time.Sleep(250 * time.Millisecond)
++	logAfter, err := os.ReadFile(env.logPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, line := range strings.Split(strings.TrimSpace(string(logAfter[len(logBefore):])), "\n") {
++		if !strings.HasPrefix(line, "-j ") {
++			t.Fatalf("autonomous mutation after explicit commit: %s", line)
++		}
++	}
++	if got, err := os.ReadFile(env.monitorsConfPath); err != nil || string(got) != string(written) {
++		t.Fatalf("background overwrote committed layout: %s (%v)", got, err)
++	}
++}

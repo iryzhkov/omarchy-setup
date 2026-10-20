@@ -314,6 +314,14 @@ check "timer enabled" grep -q 'enable --now hosttool.timer' "$T/systemctl.log"
 check "service without Install is not enabled" [ "$(count 'enable --now helper.service' "$T/systemctl.log")" = 0 ]
 check "timer enablement is idempotent" [ "$(count 'enable --now hosttool.timer' "$T/systemctl.log")" = 1 ]
 check "timer already enabled is reported" log_has "hosttool.timer: already enabled"
+# Missing private daemon must fail before replacing any working host file.
+cp "$HF/bin/hosttool" "$T/hosttool.before"
+printf '#!/bin/sh\necho changed\n' >"$HF/bin/hosttool"
+touch "$HF/bin/display-controller"
+check "display dependency missing refuses overlay" bash -c '! bash "$1" >"$2" 2>&1' _ "$ROOT/modules/common/29-host-files.sh" "$T/last.log"
+check "display dependency refusal preserves helper" cmp -s "$HOME/.local/bin/hosttool" "$T/hosttool.before"
+rm "$HF/bin/display-controller"
+cp "$T/hosttool.before" "$HF/bin/hosttool"
 # Keep the systemctl stub for uninstall as well.
 
 # -------------------------------------------------- fleet ownership --
