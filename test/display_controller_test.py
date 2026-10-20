@@ -73,6 +73,7 @@ class FakeSystem:
         self.editor_name: Any = None
         self.preview: Any = None
         self.unmanaged = False
+        self.ipc_only: Any = True
         self.calls = []
         self.connect_error: Any = None
         self.fail = {}
@@ -137,15 +138,11 @@ class FakeSystem:
                     raise system.fail[method]
                 if method == "status":
                     return {"daemon": {"running": True, "preview": system.preview, "profile_override": system.override,
-                                       "unmanaged": system.unmanaged}}
+                                       "unmanaged": system.unmanaged,
+                                       **({"ipc_only": system.ipc_only} if system.ipc_only is not None else {})}}
                 if method == "editor_state":
                     return {"profiles": copy.deepcopy(list(system.profiles.values())),
                             "source_profile": system.live if system.editor_name is None else system.editor_name}
-                if method == "set_profile_auto":
-                    if params != {"enabled": False}:
-                        raise AssertionError("unexpected automatic selection request")
-                    system.override = system.live
-                    return None
                 if method == "preview":
                     if system.preview:
                         raise ValueError("another preview active")
@@ -178,7 +175,7 @@ class FakeSystem:
         yield Connection()
 
     def mutations(self):
-        return [(method, params) for _, method, params in self.calls if method in ("preview", "commit", "revert")]
+        return [(method, params) for _, method, params in self.calls if method not in ("status", "editor_state")]
 
 
 class CoordinatorTests(unittest.TestCase):
@@ -414,7 +411,7 @@ class CoordinatorTests(unittest.TestCase):
                 self.system.stop.set()
 
         dc.supervise(self.system, self.coordinator, child, publish)
-        child.spawn.assert_called_once_with(["/usr/bin/hyprmoncfgd", "--debounce", "30s"])
+        child.spawn.assert_called_once_with([str(Path.home() / ".local/libexec/display-controller/hyprmoncfgd"), "--ipc-only"])
         self.assertTrue(all(s["selected_route"] == "desk" for s in statuses))
         self.assertTrue(all(s["ha_route"] is None for s in statuses))
         self.assertTrue(statuses[0]["daemon_ready"])
@@ -428,9 +425,8 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.coordinator.selected, "tv-game")
         self.assertIsNone(self.coordinator.ha_route)
         self.assertEqual(self.coordinator.observed_profile, "tv-game")
-        self.assertEqual(self.system.override, "tv-game")
-        self.assertEqual([(m, p) for _, m, p in self.system.calls if m == "set_profile_auto"],
-                         [("set_profile_auto", {"enabled": False})])
+        self.assertEqual(self.system.override, "desk")
+        self.assertTrue(all(m in ("status", "editor_state") for _, m, _ in self.system.calls))
         self.assertEqual(self.system.mutations(), [])
         self.coordinator.selected = None
         self.system.actual = (1280, 720)
@@ -487,13 +483,13 @@ class CoordinatorTests(unittest.TestCase):
                 self.system.stop.set()
 
         dc.supervise(self.system, self.coordinator, child, publish)
-        spawn.assert_called_once_with(["/usr/bin/hyprmoncfgd", "--debounce", "30s"])
+        spawn.assert_called_once_with([str(Path.home() / ".local/libexec/display-controller/hyprmoncfgd"), "--ipc-only"])
         self.assertIn("tv-game", [s["selected_route"] for s in statuses])
         self.assertIn("desk", [s["selected_route"] for s in statuses])
         process.terminate.assert_called_once()
         process.wait.assert_called_once_with(timeout=8)
 
-    def test_startup_handshake_timeout_stops_child_before_debounce(self):
+    def test_startup_handshake_timeout_stops_child_within_deadline(self):
         self.system.connect_error = ConnectionRefusedError("not ready")
         process = mock.Mock(pid=77)
         process.poll.return_value = None
@@ -501,7 +497,7 @@ class CoordinatorTests(unittest.TestCase):
         statuses = []
         with self.assertRaises(TimeoutError):
             dc.supervise(self.system, self.coordinator, child, statuses.append)
-        self.assertLess(self.system.now, 30)
+        self.assertEqual(self.system.now, 15)
         process.terminate.assert_called_once()
         self.assertIn("startup", statuses[-1]["error"])
         self.assertEqual(self.system.mutations(), [])
@@ -513,15 +509,17 @@ class CoordinatorTests(unittest.TestCase):
             workspace["monitor"] = dc.TV_OUTPUT
         self.system.faults = {"tv-game": (1280, 720), "tv-recovery": "follow"}
         dc.startup(self.system, self.coordinator)
-        self.assertEqual(self.system.override, "tv-game")
-        self.assertEqual(self.system.mutations(), [])
+        self.assertEqual(self.system.override, "")
+        self.assertIsNone(self.coordinator.selected)
+        self.assertTrue(self.coordinator.status()["policy_deferred"])
+        self.assertEqual(self.system.calls, [(1, "status", {})])
         self.tick(3)
         self.assertEqual(self.system.live, "tv-recovery")
         self.assertEqual([p["profile"]["name"] for m, p in self.system.mutations() if m == "preview"],
                          ["tv-recovery", "tv-game"])
         self.assertEqual(self.system.mutations()[-1][0], "revert")
 
-    def test_startup_sleep_pins_compositor_route_and_defers_modesets(self):
+    def test_startup_sleep_keeps_daemon_and_defers_modesets(self):
         self.system.apply("tv-game")
         self.system.override = ""
         self.system.mon[1]["dpmsStatus"] = False
@@ -537,38 +535,109 @@ class CoordinatorTests(unittest.TestCase):
                 self.system.stop.set()
 
         dc.supervise(self.system, self.coordinator, child, publish)
-        self.assertEqual(self.system.override, "tv-game")
+        self.assertEqual(self.system.override, "")
         self.assertTrue(statuses[0]["daemon_ready"])
+        self.assertTrue(all(s["policy_deferred"] for s in statuses[:-1]))
         self.assertIn("topology unavailable or asleep", [s["health"] for s in statuses])
         self.assertEqual(self.system.mutations(), [])
         process.terminate.assert_called_once()  # Only normal requested shutdown.
 
-    def test_unverified_startup_stops_without_forcing_a_route(self):
+    def test_unmatched_startup_keeps_daemon_without_forcing_a_route(self):
         self.system.editor_name = ""
+        self.system.states = ha("")
+        self.system.mon[0]["width"] = 4000
         process = mock.Mock(pid=77)
         process.poll.return_value = None
         child = dc.Child(mock.Mock(return_value=process))
-        with self.assertRaisesRegex(ValueError, "verified saved route"):
-            dc.supervise(self.system, self.coordinator, child, lambda _: None)
-        process.terminate.assert_called_once()
-        self.assertIsNone(self.coordinator.selected)
+        statuses = []
+
+        def publish(state):
+            statuses.append(state)
+            if len(statuses) == 4:
+                self.system.stop.set()
+
+        dc.supervise(self.system, self.coordinator, child, publish)
+        self.assertTrue(all(s["daemon_ready"] and s["policy_deferred"] for s in statuses[:-1]))
+        self.assertTrue(all(s["selected_route"] is None for s in statuses))
+        self.assertEqual(self.system.mon[0]["width"], 4000)
         self.assertEqual(self.system.mutations(), [])
+        process.terminate.assert_called_once()
+
+    def test_unmatched_startup_leaves_known_route_to_regular_loop(self):
+        self.system.editor_name = ""
+        self.system.override = ""
+        self.system.mon[0]["width"] = 4000
+        dc.startup(self.system, self.coordinator)
+        self.assertTrue(self.coordinator.daemon_ready)
+        self.assertIsNone(self.coordinator.selected)
+        self.assertEqual(self.system.calls, [(1, "status", {})])
+        self.tick()
+        self.assertEqual(self.system.mutations(), [])
+        self.assertTrue(self.coordinator.status()["policy_deferred"])
+        self.tick()
+        self.assertEqual([p["profile"]["name"] for m, p in self.system.mutations() if m == "preview"],
+                         ["tv-game"])
 
     def test_startup_human_preview_is_untouched(self):
         self.system.preview = {"transaction_id": "human"}
         dc.startup(self.system, self.coordinator)
         self.assertEqual(self.system.calls, [(1, "status", {})])
-        self.assertEqual(self.coordinator.health, "preview")
+        self.assertEqual(self.coordinator.health, "ready; policy deferred")
 
-    def test_startup_pin_failure_stops_without_apply(self):
+    def test_startup_rejects_missing_or_incompatible_ipc_only(self):
+        for capability in (None, False, 1, "true"):
+            with self.subTest(capability=capability):
+                self.setUp()
+                self.system.ipc_only = capability
+                process = mock.Mock(pid=77)
+                process.poll.return_value = None
+                child = dc.Child(mock.Mock(return_value=process))
+                with self.assertRaisesRegex(ValueError, "ipc_only=true"):
+                    dc.supervise(self.system, self.coordinator, child, lambda _: None)
+                process.terminate.assert_called_once()
+                self.assertEqual(self.system.calls, [(1, "status", {})])
+                self.assertFalse(self.coordinator.daemon_ready)
+                self.assertEqual(self.system.mutations(), [])
+
+    def test_capability_loss_blocks_regular_loop_and_transaction(self):
+        self.tick()
+        self.system.ipc_only = False
+        self.tick(3)
+        self.assertFalse(self.coordinator.daemon_ready)
+        self.assertIn("ipc_only=true", self.coordinator.error)
+        with self.system.ipc() as ipc, self.assertRaisesRegex(ValueError, "ipc_only=true"):
+            self.coordinator.transaction(ipc, "tv-game", self.system.profiles)
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_startup_only_checks_capability_without_policy_queries(self):
+        with (mock.patch.object(self.system, "ha", side_effect=AssertionError("HA queried")),
+              mock.patch.object(self.system, "monitors", side_effect=AssertionError("monitors queried")),
+              mock.patch.object(self.system, "drm", side_effect=AssertionError("DRM queried"))):
+            dc.startup(self.system, self.coordinator)
+        self.assertEqual(self.system.calls, [(1, "status", {})])
+        self.assertTrue(self.coordinator.status()["daemon_ready"])
+        self.assertTrue(self.coordinator.status()["policy_deferred"])
+
+    def test_private_binary_missing_has_no_system_fallback(self):
+        spawn = mock.Mock(side_effect=FileNotFoundError("private daemon missing"))
+        child = dc.Child(spawn)
+        with self.assertRaises(FileNotFoundError):
+            child.start()
+        spawn.assert_called_once_with(
+            [str(Path.home() / ".local/libexec/display-controller/hyprmoncfgd"), "--ipc-only"])
+        self.assertIsNone(child.proc)
+
+    def test_unknown_ha_mismatch_keeps_daemon_without_modesets(self):
+        self.system.apply("tv-game")
         self.system.override = ""
-        self.system.fail["set_profile_auto"] = ValueError("pin failed")
-        process = mock.Mock(pid=77)
-        process.poll.return_value = None
-        child = dc.Child(mock.Mock(return_value=process))
-        with self.assertRaisesRegex(ValueError, "pin failed"):
-            dc.supervise(self.system, self.coordinator, child, lambda _: None)
-        process.terminate.assert_called_once()
+        self.system.actual = (1280, 720)
+        self.system.states = ha("")
+        dc.startup(self.system, self.coordinator)
+        self.tick(10)
+        self.assertTrue(self.coordinator.status()["daemon_ready"])
+        self.assertTrue(self.coordinator.status()["policy_deferred"])
+        self.assertIsNone(self.coordinator.selected)
+        self.assertEqual(self.system.override, "")
         self.assertEqual(self.system.mutations(), [])
 
     def test_child_exit_stops_instead_of_restart_storm(self):

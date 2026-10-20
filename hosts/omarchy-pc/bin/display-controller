@@ -233,6 +233,13 @@ def workspace_profile(profile, placement):
     return effective
 
 
+def require_ipc_only(daemon):
+    if daemon.get("ipc_only") is not True:
+        raise ValueError("hyprmoncfgd does not report ipc_only=true")
+    if daemon.get("running") is not True:
+        raise ValueError("hyprmoncfgd is not running")
+
+
 def topology(monitors, profiles, target):
     """Permit only the known connectors and one awake current output."""
     names = [m.get("name") for m in monitors]
@@ -277,6 +284,11 @@ class Coordinator:
         return {"selected_route": self.selected, "ha_route": self.ha_route,
                 "observed_profile": self.observed_profile, "daemon_ready": self.daemon_ready,
                 "health": self.health,
+                "policy_deferred": self.daemon_ready and self.health in (
+                    "ready; policy deferred", "preview", "unmanaged", "route debounce",
+                    "topology unavailable or asleep", "HA uncertain; live route verified",
+                    "HA uncertain; live layout unverified", "unavailable", "mismatch",
+                    "route attempt inhibited", "recovery inhibited"),
                 "daemon_pid": pid, "last_action": self.last_action,
                 "error": self.error, "recovery_inhibited": self.recovery_attempted}
 
@@ -285,7 +297,9 @@ class Coordinator:
 
     def transaction(self, ipc, name, profiles, verify=False):
         # Race with a human preview is also rejected atomically by the daemon.
-        if ipc.request("status")["daemon"].get("preview"):
+        daemon = ipc.request("status")["daemon"]
+        require_ipc_only(daemon)
+        if daemon.get("preview"):
             raise ValueError("human preview active")
         before = self.system.monitors()
         if verify and not any(m.get("name") == TV_OUTPUT and m.get("disabled") is False for m in before):
@@ -329,21 +343,18 @@ class Coordinator:
             raise
         self.last_action = "committed " + name
 
-    def adopt(self, editor, profiles, monitors, startup=False):
+    def adopt(self, editor, profiles, monitors, verify_scanout=True):
         """Observe a saved live match, without converting it into HA intent."""
         self.observed_profile = None
         name = editor.get("source_profile")
-        # Startup pins compositor configuration, which the daemon can match
-        # without waking a sleeping display or trusting physical scanout.
-        validation = [dict(m, dpmsStatus=True) for m in monitors] if startup else monitors
-        if name not in profiles or not topology(validation, profiles, profiles[name]):
+        if name not in profiles or not topology(monitors, profiles, profiles[name]):
             return False
         wanted = targets(profiles[name])[0]
         enabled = [m for m in monitors if m.get("disabled") is False]
         if (enabled[0]["name"] != wanted["name"]
                 or (enabled[0].get("width"), enabled[0].get("height")) != (wanted["width"], wanted["height"])):
             return False
-        if not startup and name.startswith("tv-") and check(monitors, self.system.drm())["health"] != "healthy":
+        if verify_scanout and name.startswith("tv-") and check(monitors, self.system.drm())["health"] != "healthy":
             return False
         self.selected = "desk" if name == "desk" else "tv-game"
         self.observed_profile = name
@@ -369,7 +380,8 @@ class Coordinator:
             with self.system.ipc() as ipc:
                 status = ipc.request("status")
                 daemon = status["daemon"]
-                self.daemon_ready = bool(daemon.get("running"))
+                require_ipc_only(daemon)
+                self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
                     self.reset_mismatch()
                     self.health = "preview" if daemon.get("preview") else "unmanaged"
@@ -380,16 +392,11 @@ class Coordinator:
                 monitors = self.system.monitors()
                 if desired is None:
                     verified = self.adopt(editor, profiles, monitors)
-                    if verified and daemon.get("profile_override") != self.observed_profile:
-                        # This method pins an exact saved live match in memory;
-                        # unlike preview it neither applies nor saves a layout.
-                        ipc.request("set_profile_auto", enabled=False)
-                        pinned = ipc.request("status")["daemon"].get("profile_override")
-                        if pinned != self.observed_profile:
-                            raise ValueError("live profile changed during adoption")
-                        self.last_action = "adopted " + str(self.observed_profile)
                     self.health = "HA uncertain; live route verified" if verified else "HA uncertain; live layout unverified"
                     return
+                # A compositor match is enough to retain the current route;
+                # physical mismatch is handled by bounded recovery below.
+                self.adopt(editor, profiles, monitors, verify_scanout=False)
                 if self.count < 2 or now - self.since < POLL:
                     self.health = "route debounce"
                     return
@@ -405,7 +412,7 @@ class Coordinator:
                     self.reset_mismatch()
                     self.health = "topology unavailable or asleep"
                     return
-                if self.selected != desired or daemon.get("profile_override") not in (
+                if self.selected != desired or (self.observed_profile or daemon.get("profile_override")) not in (
                         ("tv-game", "tv-recovery") if desired == "tv-game" else ("desk",)):
                     if self.route_attempted:
                         self.health = "route attempt inhibited"
@@ -486,7 +493,8 @@ class Child:
 
     def start(self):
         if self.proc is None:
-            self.proc = self.spawn(["/usr/bin/hyprmoncfgd", "--debounce", "30s"])
+            self.proc = self.spawn([str(Path.home() / ".local/libexec/display-controller/hyprmoncfgd"),
+                                    "--ipc-only"])
 
     def stop(self):
         if self.proc is not None:
@@ -502,63 +510,30 @@ class Child:
 
 
 def startup(system, coordinator):
-    """Pin a saved compositor match without requiring awake, healthy scanout."""
+    """Wait only for the private daemon's read-only capability handshake."""
     deadline = coordinator.clock() + 15
-
-    def bounded(operation):
-        if coordinator.clock() >= deadline:
-            raise TimeoutError("startup preservation deadline")
-        result = operation()
-        if coordinator.clock() >= deadline:
-            raise TimeoutError("startup preservation deadline")
-        return result
-
     while coordinator.clock() < deadline:
         try:
             with system.ipc(timeout=min(3, deadline - coordinator.clock())) as ipc:
-                daemon = bounded(lambda: ipc.request("status"))["daemon"]
-                coordinator.daemon_ready = bool(daemon.get("running"))
-                if daemon.get("preview"):
-                    # A human who opened a preview now owns the startup layout.
-                    # The daemon itself defers automatic selection during it.
-                    coordinator.health = "preview"
-                    return
-                if daemon.get("unmanaged"):
-                    raise ValueError("startup display management is disabled")
-                editor = bounded(lambda: ipc.request("editor_state"))
-                profiles = {p["name"]: p for p in editor["profiles"]
-                            if p["name"] in ("desk", "tv-game", "tv-recovery")}
-                monitors = bounded(system.monitors)
-                if not bounded(lambda: coordinator.adopt(editor, profiles, monitors, startup=True)):
-                    raise ValueError("startup live layout is not a verified saved route")
-                if daemon.get("profile_override") != coordinator.observed_profile:
-                    bounded(lambda: ipc.request("set_profile_auto", enabled=False))
-                    pinned = bounded(lambda: ipc.request("status"))["daemon"].get("profile_override")
-                    if pinned != coordinator.observed_profile:
-                        raise ValueError("startup layout changed during adoption")
-                coordinator.last_action = "adopted " + str(coordinator.observed_profile)
+                daemon = ipc.request("status")["daemon"]
+                if coordinator.clock() >= deadline:
+                    break
+                require_ipc_only(daemon)
+                coordinator.daemon_ready = True
+                coordinator.health = "ready; policy deferred"
                 return
         except OSError:
-            # Socket creation and initial read-only queries may lag child start.
-            # Every operation is bounded; the last can overrun by at most 5s,
-            # still leaving 10s before automatic reconciliation is possible.
+            # Socket creation and initial status may lag child start.
             if coordinator.clock() >= deadline:
                 break
             system.wait(min(0.25, deadline - coordinator.clock()))
-    raise TimeoutError("startup preservation failed before automatic reconciliation")
+    raise TimeoutError("startup IPC readiness timeout")
 
 
 def supervise(system, coordinator, child, publish):
     try:
         while not system.stop.is_set():
-            # Read HA first, but keep daemon management available even when
-            # intent is unknown. Adoption below is observational only.
-            initial = None
             if child.proc is None:
-                try:
-                    initial = system.ha()
-                except ERRORS as exc:
-                    initial, coordinator.error = [], "HA: " + str(exc)
                 child.start()
                 if child.proc is not None and child.proc.poll() is None:
                     try:
@@ -571,7 +546,7 @@ def supervise(system, coordinator, child, publish):
                     coordinator.health, coordinator.error = "stopped", "hyprmoncfgd exited"
                     publish(coordinator.status(child.proc.pid))
                     raise ChildProcessError("hyprmoncfgd exited unexpectedly")
-                coordinator.step(initial)
+                coordinator.step()
             publish(coordinator.status(child.proc.pid if child.proc else None))
             system.stop.wait(POLL)
     finally:
