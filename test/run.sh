@@ -368,6 +368,10 @@ check "pointer is read-only" test "$(fleet_snapshot)" = "$fleet_before"
 check "dry run succeeds" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instructions.sh"
 check "dry run preserves fleet" test "$(fleet_snapshot)" = "$fleet_before"
 check "script bootstrap preserves fleet tools" module common/28-scripts.sh
+# This fixture exercises a provisioned host. Missing dependency is tested above.
+mkdir -p "$HOME/.local/libexec/display-controller"
+printf '%s\n' '#!/bin/sh' 'echo "  --ipc-only"' >"$HOME/.local/libexec/display-controller/hyprmoncfgd"
+chmod +x "$HOME/.local/libexec/display-controller/hyprmoncfgd"
 check "omarchy-pc overlay succeeds" env SETUP_HOST=omarchy-pc bash "$ROOT/modules/common/29-host-files.sh"
 check "host overlay invokes no sudo" test ! -e "$T/sudo.log"
 check "scripts and overlay preserve fleet" test "$(fleet_snapshot)" = "$fleet_before"
