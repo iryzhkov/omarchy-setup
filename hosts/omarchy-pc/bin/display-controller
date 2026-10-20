@@ -2,6 +2,7 @@
 """Coordinate HA routing and bounded scanout recovery through hyprmoncfgd IPC."""
 import argparse
 import contextlib
+import copy
 import fcntl
 import json
 import os
@@ -173,6 +174,9 @@ class System:
             raise ValueError("invalid compositor monitor list")
         return result
 
+    def workspaces(self):
+        return workspace_placement(json.loads(run(["hyprctl", "workspaces", "-j"])))
+
     def drm(self):
         return drm_size(run(["modetest", "-M", "nvidia-drm", "-e", "-c", "-p"]))
 
@@ -183,6 +187,50 @@ class System:
 
 def targets(profile):
     return [o for o in profile["outputs"] if o.get("enabled") is True]
+
+
+def workspace_placement(workspaces):
+    """Read regular workspace selectors and their current output."""
+    if not isinstance(workspaces, list):
+        raise ValueError("invalid compositor workspace list")
+    placement = {}
+    for workspace in workspaces:
+        if not isinstance(workspace, dict):
+            raise ValueError("invalid compositor workspace")
+        name, number = workspace.get("name"), workspace.get("id")
+        monitor = workspace.get("monitor")
+        if (not isinstance(name, str) or not name or type(number) is not int
+                or not isinstance(monitor, str) or not monitor
+                or any(c in name for c in ";\r\n\x00")):
+            raise ValueError("invalid compositor workspace identity")
+        # The daemon also excludes special workspaces from its rollback moves.
+        if name.startswith("special:"):
+            continue
+        selector = str(number) if number > 0 else "name:" + name
+        if selector in placement:
+            raise ValueError("duplicate compositor workspace")
+        placement[selector] = monitor
+    if not placement:
+        raise ValueError("no regular workspaces available")
+    return placement
+
+
+def workspace_profile(profile, placement):
+    """Give this single-output preview explicit, unsaved workspace moves."""
+    effective = copy.deepcopy(profile)
+    output = targets(effective)[0]
+    settings = effective.setdefault("workspaces", {})
+    rules = {}
+    for rule in settings.get("rules", []):
+        selector = rule["workspace"]
+        if not selector.startswith("special:"):
+            rules[selector] = dict(rule)
+    for selector in placement:
+        rules.setdefault(selector, {"workspace": selector})
+    for rule in rules.values():
+        rule.update(output_key=output.get("key", ""), output_name=output["name"])
+    settings.update(enabled=True, strategy="manual", rules=list(rules.values()))
+    return effective
 
 
 def topology(monitors, profiles, target):
@@ -244,7 +292,9 @@ class Coordinator:
             raise ValueError("TV no longer active")
         if choose(self.system.ha()) != self.candidate or not topology(before, profiles, profiles[name]):
             raise ValueError("route or topology changed")
-        tx = ipc.request("preview", profile_name=name, timeout_seconds=120, save_on_commit=False)
+        placement = self.system.workspaces()
+        effective = workspace_profile(profiles[name], placement)
+        tx = ipc.request("preview", profile=effective, timeout_seconds=120, save_on_commit=False)
         transaction_id = tx["id"]
         try:
             if verify:
@@ -264,26 +314,36 @@ class Coordinator:
                 if (choose(self.system.ha()) != self.candidate or not topology(monitors, profiles, profiles[name])
                         or enabled_names != [targets(profiles[name])[0]["name"]]):
                     raise ValueError("route or topology changed during preview")
+            after = self.system.workspaces()
+            output = targets(effective)[0]["name"]
+            if not placement.keys() <= after.keys() or any(m != output for m in after.values()):
+                raise ValueError("workspace placement verification failed for " + name)
             ipc.request("commit", transaction_id=transaction_id, save=False)
         except ERRORS:
             # Revert only our own transaction on this connection. An IPC timeout
             # may leave the deadline armed; never reclaim someone else's preview.
             ipc.request("revert", transaction_id=transaction_id)
+            restored = self.system.workspaces()
+            if any(restored.get(w) != m for w, m in placement.items()):
+                raise ValueError("workspace rollback verification failed for " + name)
             raise
         self.last_action = "committed " + name
 
-    def adopt(self, editor, profiles, monitors):
+    def adopt(self, editor, profiles, monitors, startup=False):
         """Observe a saved live match, without converting it into HA intent."""
         self.observed_profile = None
         name = editor.get("source_profile")
-        if name not in profiles or not topology(monitors, profiles, profiles[name]):
+        # Startup pins compositor configuration, which the daemon can match
+        # without waking a sleeping display or trusting physical scanout.
+        validation = [dict(m, dpmsStatus=True) for m in monitors] if startup else monitors
+        if name not in profiles or not topology(validation, profiles, profiles[name]):
             return False
         wanted = targets(profiles[name])[0]
         enabled = [m for m in monitors if m.get("disabled") is False]
         if (enabled[0]["name"] != wanted["name"]
                 or (enabled[0].get("width"), enabled[0].get("height")) != (wanted["width"], wanted["height"])):
             return False
-        if name.startswith("tv-") and check(monitors, self.system.drm())["health"] != "healthy":
+        if not startup and name.startswith("tv-") and check(monitors, self.system.drm())["health"] != "healthy":
             return False
         self.selected = "desk" if name == "desk" else "tv-game"
         self.observed_profile = name
@@ -442,7 +502,7 @@ class Child:
 
 
 def startup(system, coordinator):
-    """Pin the verified live layout before the child's 30-second debounce."""
+    """Pin a saved compositor match without requiring awake, healthy scanout."""
     deadline = coordinator.clock() + 15
 
     def bounded(operation):
@@ -469,7 +529,7 @@ def startup(system, coordinator):
                 profiles = {p["name"]: p for p in editor["profiles"]
                             if p["name"] in ("desk", "tv-game", "tv-recovery")}
                 monitors = bounded(system.monitors)
-                if not bounded(lambda: coordinator.adopt(editor, profiles, monitors)):
+                if not bounded(lambda: coordinator.adopt(editor, profiles, monitors, startup=True)):
                     raise ValueError("startup live layout is not a verified saved route")
                 if daemon.get("profile_override") != coordinator.observed_profile:
                     bounded(lambda: ipc.request("set_profile_auto", enabled=False))
@@ -510,7 +570,7 @@ def supervise(system, coordinator, child, publish):
                 if child.proc.poll() is not None:
                     coordinator.health, coordinator.error = "stopped", "hyprmoncfgd exited"
                     publish(coordinator.status(child.proc.pid))
-                    break
+                    raise ChildProcessError("hyprmoncfgd exited unexpectedly")
                 coordinator.step(initial)
             publish(coordinator.status(child.proc.pid if child.proc else None))
             system.stop.wait(POLL)

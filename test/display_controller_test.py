@@ -53,7 +53,8 @@ def profile(name, output, width, height):
     return {"name": name, "outputs": [
         {"name": "DP-1", "enabled": output == "DP-1", "width": 5120, "height": 1440},
         {"name": dc.TV_OUTPUT, "enabled": output == dc.TV_OUTPUT, "width": width, "height": height},
-    ]}
+    ], "workspaces": {"enabled": True, "strategy": "manual",
+                       "rules": [{"workspace": "1", "output_key": ""}]}}
 
 
 class FakeSystem:
@@ -64,6 +65,9 @@ class FakeSystem:
                          "tv-recovery": profile("tv-recovery", dc.TV_OUTPUT, 1920, 1080)}
         self.saved = copy.deepcopy(self.profiles)
         self.mon = []
+        self.ws = [{"id": n, "name": str(n), "monitor": "DP-1"} for n in (1, 2)]
+        self.workspace_fault: Any = None
+        self.workspace_error: Any = None
         self.apply("desk")
         self.override = "desk"
         self.editor_name: Any = None
@@ -98,6 +102,11 @@ class FakeSystem:
 
     def monitors(self):
         return copy.deepcopy(self.mon)
+
+    def workspaces(self):
+        if self.workspace_error:
+            raise self.workspace_error
+        return dc.workspace_placement(copy.deepcopy(self.ws))
 
     def drm(self):
         value = self.faults.get(self.live, self.actual)
@@ -140,8 +149,20 @@ class FakeSystem:
                 if method == "preview":
                     if system.preview:
                         raise ValueError("another preview active")
-                    system.inflight = (copy.deepcopy(system.mon), system.live, system.override)
-                    system.apply(params["profile_name"])
+                    system.inflight = (copy.deepcopy(system.mon), system.live, system.override,
+                                       copy.deepcopy(system.ws))
+                    target = params["profile"] if "profile" in params else system.profiles[params["profile_name"]]
+                    system.apply(target["name"])
+                    settings = target.get("workspaces", {})
+                    if settings.get("enabled"):
+                        for rule in settings.get("rules", []):
+                            if not (rule.get("output_key") or rule.get("output_name")):
+                                continue  # Same unbound manual-rule behavior as the daemon.
+                            for workspace in system.ws:
+                                selector = str(workspace["id"]) if workspace["id"] > 0 else "name:" + workspace["name"]
+                                if selector == rule["workspace"] and selector != system.workspace_fault:
+                                    workspace["monitor"] = rule.get("output_name")
+
                     system.preview = {"transaction_id": "owned"}
                     return {"id": "owned"}
                 if params.get("transaction_id") != "owned":
@@ -149,7 +170,7 @@ class FakeSystem:
                 if method == "commit":
                     system.override = system.live
                 elif method == "revert":
-                    system.mon, system.live, system.override = system.inflight
+                    system.mon, system.live, system.override, system.ws = system.inflight
                 else:
                     raise AssertionError("unexpected method " + method)
                 system.preview = None
@@ -196,6 +217,47 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.coordinator.selected, "tv-game")
         self.tick()
         self.assertEqual(self.coordinator.selected, "desk")
+
+    def test_workspace_placement_both_directions_without_saving(self):
+        self.system.ws.append({"id": -1337, "name": "browser", "monitor": "DP-1"})
+        for states, output in ((ha(), dc.TV_OUTPUT), (ha("HDMI 2"), "DP-1")):
+            with self.subTest(output=output):
+                self.system.states = states
+                self.tick(2)
+                self.assertTrue(all(w["monitor"] == output for w in self.system.ws))
+                self.assertEqual(self.coordinator.last_action,
+                                 "committed " + ("desk" if output == "DP-1" else "tv-game"))
+                self.assertEqual(self.system.profiles, self.system.saved)
+        previews = [p for m, p in self.system.mutations() if m == "preview"]
+        self.assertTrue(all("profile_name" not in p and p["save_on_commit"] is False for p in previews))
+        self.assertTrue(all(p["save"] is False for m, p in self.system.mutations() if m == "commit"))
+
+    def test_stranded_workspace_reverts_both_directions(self):
+        for initial, states in (("desk", ha()), ("tv-game", ha("HDMI 2"))):
+            with self.subTest(initial=initial):
+                self.setUp()
+                self.system.apply(initial)
+                self.system.override = initial
+                self.coordinator.selected = initial
+                output = dc.targets(self.system.profiles[initial])[0]["name"]
+                for workspace in self.system.ws:
+                    workspace["monitor"] = output
+                before = copy.deepcopy(self.system.ws)
+                self.system.workspace_fault = "2"
+                self.system.states = states
+                self.tick(2)
+                self.assertEqual(self.system.live, initial)
+                self.assertEqual(self.system.ws, before)
+                self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "revert"])
+                self.assertIn("workspace placement", self.coordinator.error)
+                mutations = self.system.mutations()
+                self.tick(5)
+                self.assertEqual(self.system.mutations(), mutations)
+
+    def test_workspace_query_failure_prevents_preview(self):
+        self.system.workspace_error = TimeoutError("workspace query")
+        self.tick(3)
+        self.assertEqual(self.system.mutations(), [])
 
     def test_unknown_ha_retains_route_and_restarts_debounce(self):
         self.route_tv()
@@ -253,7 +315,7 @@ class CoordinatorTests(unittest.TestCase):
         self.system.faults = {"tv-recovery": "follow"}
         self.system.wait_hook = lambda: setattr(self.system, "actual", "follow")
         self.tick()
-        names = [p["profile_name"] for m, p in self.system.mutations() if m == "preview"]
+        names = [p["profile"]["name"] for m, p in self.system.mutations() if m == "preview"]
         self.assertEqual(names, ["tv-game", "tv-recovery", "tv-game"])
         self.assertEqual(self.system.live, "tv-game")
         self.assertEqual(self.coordinator.health, "recovered")
@@ -444,6 +506,43 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIn("startup", statuses[-1]["error"])
         self.assertEqual(self.system.mutations(), [])
 
+    def test_startup_tv_mismatch_reaches_bounded_recovery(self):
+        self.system.apply("tv-game")
+        self.system.override = ""
+        for workspace in self.system.ws:
+            workspace["monitor"] = dc.TV_OUTPUT
+        self.system.faults = {"tv-game": (1280, 720), "tv-recovery": "follow"}
+        dc.startup(self.system, self.coordinator)
+        self.assertEqual(self.system.override, "tv-game")
+        self.assertEqual(self.system.mutations(), [])
+        self.tick(3)
+        self.assertEqual(self.system.live, "tv-recovery")
+        self.assertEqual([p["profile"]["name"] for m, p in self.system.mutations() if m == "preview"],
+                         ["tv-recovery", "tv-game"])
+        self.assertEqual(self.system.mutations()[-1][0], "revert")
+
+    def test_startup_sleep_pins_compositor_route_and_defers_modesets(self):
+        self.system.apply("tv-game")
+        self.system.override = ""
+        self.system.mon[1]["dpmsStatus"] = False
+        self.system.actual = TimeoutError("sleeping DRM must not be queried")
+        process = mock.Mock(pid=77)
+        process.poll.return_value = None
+        child = dc.Child(mock.Mock(return_value=process))
+        statuses = []
+
+        def publish(state):
+            statuses.append(state)
+            if len(statuses) == 3:
+                self.system.stop.set()
+
+        dc.supervise(self.system, self.coordinator, child, publish)
+        self.assertEqual(self.system.override, "tv-game")
+        self.assertTrue(statuses[0]["daemon_ready"])
+        self.assertIn("topology unavailable or asleep", [s["health"] for s in statuses])
+        self.assertEqual(self.system.mutations(), [])
+        process.terminate.assert_called_once()  # Only normal requested shutdown.
+
     def test_unverified_startup_stops_without_forcing_a_route(self):
         self.system.editor_name = ""
         process = mock.Mock(pid=77)
@@ -477,9 +576,23 @@ class CoordinatorTests(unittest.TestCase):
         process.poll.return_value = 1
         child = dc.Child(mock.Mock(return_value=process))
         statuses = []
-        dc.supervise(self.system, self.coordinator, child, statuses.append)
+        with self.assertRaisesRegex(ChildProcessError, "hyprmoncfgd exited"):
+            dc.supervise(self.system, self.coordinator, child, statuses.append)
         child.spawn.assert_called_once()
         self.assertEqual(statuses[0]["error"], "hyprmoncfgd exited")
+
+    def test_child_crash_propagates_failure_exit_status(self):
+        process = mock.Mock(pid=77)
+        process.poll.return_value = 1
+        child = dc.Child(mock.Mock(return_value=process))
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            with (mock.patch.object(dc, "runtime_dir", return_value=runtime),
+                  mock.patch.object(dc, "System", return_value=self.system),
+                  mock.patch.object(dc, "Child", return_value=child),
+                  contextlib.redirect_stdout(io.StringIO()) as output):
+                self.assertEqual(dc.main([]), 2)
+            self.assertIn("hyprmoncfgd exited", output.getvalue())
 
 
 class BoundaryTests(unittest.TestCase):
