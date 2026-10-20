@@ -11,10 +11,12 @@ mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/source"
 export HOME="$scratch/home" HUYANG_FRICTION=0 GOMAXPROCS=2
 [[ $HOME == "$DISPLAY_BUILD_SCRATCH/home" ]] || exit 2
 # Unix-socket fixtures need a short pathname; the target stays on scratch disk.
-tmp_alias="${RUNNER_TEMP:-$root}/t"
-[[ ! -e $tmp_alias && ! -L $tmp_alias ]] || exit 2
-ln -s "$scratch/tmp" "$tmp_alias"
-trap 'rm -f -- "$tmp_alias"' EXIT
+tmp_alias="${DISPLAY_BUILD_TMP_ALIAS:-$root/t}"
+if [[ ! -L $tmp_alias ]]; then
+  [[ ! -e $tmp_alias ]] || exit 2
+  ln -s "$scratch/tmp" "$tmp_alias"
+  trap 'rm -f -- "$tmp_alias"' EXIT
+fi
 export TMPDIR="$tmp_alias"
 [[ $(readlink -f "$TMPDIR") == "$(readlink -f "$scratch/tmp")" ]] || exit 2
 umask 022

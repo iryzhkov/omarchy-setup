@@ -43,8 +43,10 @@ jobs:
           go-version: "1.26.1"
       - name: Test and build pinned IPC-only daemon
         run: |
+          # Unix socket fixture paths need an alias shorter than RUNNER_TEMP.
+          sudo ln -s "$HOME/.cache/display-daemon-build/tmp" /dt
           DISPLAY_BUILD_SCRATCH="$HOME/.cache/display-daemon-build" \
-            bash test/build-display-daemon.sh
+            DISPLAY_BUILD_TMP_ALIAS=/dt bash test/build-display-daemon.sh
       - uses: actions/upload-artifact@v4
         with:
           name: display-daemon
