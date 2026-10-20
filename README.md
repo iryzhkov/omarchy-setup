@@ -69,10 +69,11 @@ links are preserved. Git access and this machine's inventory identity must alrea
 be provisioned. UpKeeper retains component bootstrap prerequisites and reports
 missing prerequisites explicitly. No timer is installed by this seam.
 
-This is a bootstrap boundary, not a second fleet manager. omarchy-setup prepares a
-fresh machine and hands control to UpKeeper. It may hold reviewed configuration and
-skill sources, but it does not publish or converge fleet skills; UpKeeper alone builds
-the agent-environment release and projects it to each harness.
+This is the fresh-machine bootstrap boundary. omarchy-setup prepares the OS and
+hands control to UpKeeper. Shared agent instructions, skills, harness settings and
+fleet tooling have their canonical public source in
+[iryzhkov/chaldea-fleet-config](https://github.com/iryzhkov/chaldea-fleet-config).
+See [agent tooling ownership](docs/agent-instruction-ownership.md).
 
 ## Uninstalling
 
@@ -83,9 +84,8 @@ omarchy-setup --uninstall
 
 Removes every fence and every owned file this repo wrote and leaves
 Omarchy's files as they were. It does not remove what was *added*: packages,
-mise tools, plugins, skills, the ov-mcp checkout and MCP registration, merged
-`settings.json` keys, the nvim checkout, `secrets.env`. See the header of
-`uninstall.sh`.
+mise tools, plugins, the nvim checkout, `secrets.env` or fleet-owned agent files.
+See the header of `uninstall.sh`.
 
 ## Tests
 
@@ -163,7 +163,6 @@ packages/
 config/hypr/*.lua       shared Hyprland config (real .lua, edit directly)
 config/bin/*            helper scripts the bindings call, installed to ~/.local/bin
 config/bash/*           shell snippets sourced from one fence in ~/.bashrc
-config/claude/          Claude Code: CLAUDE.md, owned settings keys, skills
 hosts/<hostname>/       per-machine overrides, layered on top of config/
                         (hypr fragments, scripts, configs, units, root files;
                         see hosts/README.md)
@@ -275,28 +274,14 @@ again. Today:
 
 ## Agents
 
-UpKeeper owns harness settings, MCP registrations and the distribution of skills
-through its release manifest. The former 45-agents module is removed and existing
-agent settings stay installed; omarchy-setup no longer rewrites or uninstalls them.
-What this repository does own is the text itself, and `modules/common/31-agent-instructions.sh`
-installs it, because a source nothing installs is a source a host silently stops matching.
+[iryzhkov/chaldea-fleet-config](https://github.com/iryzhkov/chaldea-fleet-config)
+owns shared instructions, skills, harness configuration, the OpenCode Huyang
+plugin and fleet tooling. Module 31 prints a pointer to that repository and
+leaves installed agent files alone. The former instruction and Steward policy
+generators are retired.
 
-`config/claude/CLAUDE.md` carries what every Claude Code session must already know;
-anything a session only needs for one kind of task lives in a skill under
-`config/claude/skills/`, which is loaded on demand. `config/bin/agents-instructions-gen`
-turns those same sources into the files the other harnesses read: one shared
-`~/.config/agents/AGENTS.md`, written into `~/.codex/AGENTS.md` inside a managed block
-and named as OpenCode's only instruction file, plus the reference files beside it
-(`huyang.md`, `ov-memory.md`, `t3-steward.md`, `jocasta.md`) that those summaries point
-at. OpenCode loads the skills themselves from `~/.claude/skills`, so the reference files
-are the fallback for a harness without skill support, not a second always-on copy.
-
-The generator reads the checkout and never `$HOME`, so it needs `--root DIR` or
-`$OMARCHY_SETUP_ROOT` when it is run from `~/.local/bin`. `agents-instructions-gen --check`
-writes nothing and reports every installed copy that no longer matches the checkout, which
-is what a host must pass before an UpKeeper capture is taken from it. Which file is
-authoritative for which installed artifact, and what to do when a host has diverged:
-[docs/agent-instruction-ownership.md](docs/agent-instruction-ownership.md).
+See [agent tooling ownership](docs/agent-instruction-ownership.md) for the
+boundary and the preserved legacy bootstrap sources.
 
 ## Agent CLIs and dev tools
 
@@ -317,14 +302,12 @@ typed -- use `mise exec node -- node` when the version matters. It is *not* fine
 for `bw`, where the version has to match the server, which is why the secrets
 step resolves that binary through mise explicitly (see Secrets).
 
-## T3 Code and t3-steward
+## T3 tooling
 
-UpKeeper owns the pinned T3/steward pair, T3 service seeding, and release rollback.
-The former 26-t3 module, t3-update entry point and timer creation are removed.
-A pull disables and deletes old updater units on each selected host. omarchy-setup does not discover or install newer T3 releases.
-
-See [the deployment handoff](docs/t3-code-and-steward.md). Bootstrap prerequisites
-remain here; the automatic UpKeeper bootstrap seam belongs to Citadel U2.
+Shared agent tooling belongs to
+[chaldea-fleet-config](https://github.com/iryzhkov/chaldea-fleet-config).
+This repository retains the module 27 fresh-machine bootstrap handoff.
+See [the ownership pointer](docs/t3-code-and-steward.md).
 
 ## Packages
 
@@ -435,8 +418,6 @@ Deliberately left to hand configuration on each machine:
   existing machine and copied into `/etc/nebula/`.
 - Optional packages nobody depends on: `simple-scan` + `sane-airscan`,
   `tsukimi`, `powertop`, `try-cli`.
-- `~/.agents/bin/setup-issue-tracker` and `~/.agents/trackers/github.md`,
-  used by the wayfinder/triage/to-tickets skills when starting a repo.
 
 ## Non-goals
 

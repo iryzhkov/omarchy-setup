@@ -4,9 +4,8 @@
 # --dry-run. Usually reached as `omarchy-setup --uninstall`.
 #
 # Deliberately NOT undone, because each was an addition the user may rely on:
-# packages, mise tools, shell plugins, agent skills, the ov-mcp checkout and
-# its MCP registration, the merged settings.json keys, the nvim checkout,
-# secrets.env, the git identity. Remove those by hand if wanted.
+# packages, mise tools, shell plugins, the nvim checkout, secrets.env and
+# the git identity. Fleet-owned agent files and tools are left alone.
 set -euo pipefail
 
 OMARCHY_SETUP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,7 +65,7 @@ step "host files"
 # is a decision to make by hand on that machine.
 HOST_DIR="$OMARCHY_SETUP_ROOT/hosts/$SETUP_HOST"
 if [[ -d $HOST_DIR ]]; then
-  for f in "$HOST_DIR"/systemd/user/*.service; do
+  for f in "$HOST_DIR"/systemd/user/*.service "$HOST_DIR"/systemd/user/*.timer; do
     [[ -f $f ]] || continue
     systemctl --user disable --now "$(basename "$f")" >/dev/null 2>&1 || true
   done
@@ -86,7 +85,7 @@ for f in "$OMARCHY_SETUP_ROOT"/config/hooks/*.d/*.hook; do
   [[ -f $f ]] && remove_owned "$HOME/.config/omarchy/hooks/$(basename "$(dirname "$f")")/$(basename "$f")"
 done
 
-# Fleet services and agent-environment files are owned by UpKeeper.
+# Agent tooling and instructions are owned by chaldea-fleet-config.
 
 step "state"
 remove_owned "$OMARCHY_SETUP_STATE/root"

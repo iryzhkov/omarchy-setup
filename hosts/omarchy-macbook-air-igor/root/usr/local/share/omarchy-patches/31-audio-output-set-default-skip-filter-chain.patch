@@ -1,5 +1,5 @@
---- a/bin/omarchy-audio-output-set-default
-+++ b/bin/omarchy-audio-output-set-default
+--- a/usr/bin/omarchy-audio-output-set-default
++++ b/usr/bin/omarchy-audio-output-set-default
 @@ -1,5 +1,4 @@
  #!/bin/bash
 -

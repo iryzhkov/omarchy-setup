@@ -44,7 +44,7 @@ install_tree "$HOST_DIR/share"  "$HOME/.local/share"
 if [[ -d $HOST_DIR/systemd/user ]]; then
   install_tree "$HOST_DIR/systemd/user" "$HOME/.config/systemd/user" 0644
   run systemctl --user daemon-reload
-  for f in "$HOST_DIR"/systemd/user/*.service; do
+  for f in "$HOST_DIR"/systemd/user/*.service "$HOST_DIR"/systemd/user/*.timer; do
     [[ -f $f ]] || continue
     unit=$(basename "$f")
     grep -q '^\[Install\]' "$f" || continue

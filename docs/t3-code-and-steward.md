@@ -1,25 +1,11 @@
-# T3 Code and steward deployment
+# T3 tooling ownership
 
-UpKeeper in [dev-fleet](https://github.com/iryzhkov/UpKeeper) owns the pair and the
-agent environment. desired/release.json records exact versions and the steward's
-T3 compatibility range. Capture and publish with upkeeper push; converge selected
-inventory hosts with upkeeper pull.
+Shared T3 guidance, skills, harness settings and fleet tooling are maintained in
+[chaldea-fleet-config](https://github.com/iryzhkov/chaldea-fleet-config).
+omarchy-setup keeps fresh-machine prerequisites and the module 27 UpKeeper
+bootstrap handoff. It does not publish or converge agent tooling.
 
-Citadel U1 removes modules/common/26-t3.sh, modules/common/45-agents.sh and
-bin/t3-update. UpKeeper pull disables and deletes t3-update.timer and
-t3-update.service before deployment; an active updater defers deployment until it
-finishes. Rollback never recreates these units.
+The former Steward policy generator and campaign guidance are retired from this
+repository. Consult fleet's current instructions for interactive work and reviews.
 
-UpKeeper's T3 component seeds an absent t3code.service with loopback binding, the
-mise shim PATH and optional ~/.config/claude/oauth.env. Existing units and their
-host-local bind addresses, environment and credentials are preserved. Missing
-oauth.env produces a warning; secret provisioning remains a host responsibility.
-
-Use upkeeper rollback --to <release-commit> --hosts <host> --components t3-steward
-for a deliberate historical steward deployment. New manifests select the T3 pair
-together. UpKeeper verifies the pinned artifact and compatibility rather than
-discovering a newest release. The dev-fleet push/pull guide describes limitations
-and recovery evidence.
-
-omarchy-setup keeps OS packages, desktop, toolchains, secrets and sshd. Its
-UpKeeper bootstrap handoff and pull --self are Citadel U2, not part of U1.
+See [agent tooling ownership](agent-instruction-ownership.md).

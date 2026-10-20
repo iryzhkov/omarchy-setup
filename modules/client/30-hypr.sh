@@ -57,8 +57,11 @@ render() {
 
 # Catch a typo before Hyprland does: a broken owned file surfaces only as a
 # `hyprctl configerrors` line after reload, and not at all over ssh.
+# Without luac the input is still read to the end: returning without reading
+# would kill the writer with SIGPIPE, and pipefail would report that as a
+# syntax error.
 check_lua() {
-  command -v luac >/dev/null 2>&1 || return 0
+  command -v luac >/dev/null 2>&1 || { cat >/dev/null; return 0; }
   luac -p - 2>&1 | sed 's/^luac: stdin:/  line /' >&2
   return "${PIPESTATUS[0]}"
 }

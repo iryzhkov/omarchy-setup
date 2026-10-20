@@ -4,9 +4,13 @@
 # and safe to run by hand at any time.
 #
 # Patches live in /usr/local/share/omarchy-patches/*.patch as unified diffs
-# with a/ and b/ prefixes relative to /usr/share/omarchy. For each patch:
+# with a/ and b/ prefixes relative to /usr/share/omarchy. Omarchy 4 installs
+# its commands in /usr/bin and leaves only symlinks in /usr/share/omarchy/bin,
+# which patch refuses to edit, so a patch whose paths start with a/usr/ is
+# instead taken relative to /. For each patch:
 #   - already applied (reverse dry-run succeeds)  -> skip
-#   - applies cleanly (forward dry-run succeeds)   -> apply, keep a .orig
+#   - applies cleanly (forward dry-run succeeds)   -> apply, keep a .orig of
+#     files under /usr/share/omarchy (a .orig in /usr/bin would be a command)
 #   - neither                                       -> report; upstream changed
 #     the file and the patch needs a rebase (or has become unnecessary)
 #
@@ -14,19 +18,21 @@
 # output. Nothing is left half-applied: patch is only run for real after the
 # dry run passes.
 set -u
-ROOT=/usr/share/omarchy
+OMARCHY_ROOT=/usr/share/omarchy
 PATCHES=/usr/local/share/omarchy-patches
 status=0
 shopt -s nullglob
 for p in "$PATCHES"/*.patch; do
   name=$(basename "$p" .patch)
+  ROOT=$OMARCHY_ROOT
+  grep -qE '^\+\+\+ b/usr/' "$p" && ROOT=/
   if patch -p1 -d "$ROOT" -R --dry-run -s -f < "$p" >/dev/null 2>&1; then
     echo "omarchy-local-patches: $name: already applied"
     continue
   fi
   if patch -p1 -d "$ROOT" --dry-run -s -f -N < "$p" >/dev/null 2>&1; then
     # Keep a pristine copy of every file the patch touches, for diffing later.
-    grep -E '^\+\+\+ b/' "$p" | sed 's#^+++ b/##' | while read -r f; do
+    [[ $ROOT == "$OMARCHY_ROOT" ]] && grep -E '^\+\+\+ b/' "$p" | sed 's#^+++ b/##' | while read -r f; do
       [[ -f "$ROOT/$f" && ! -f "$ROOT/$f.orig" ]] && cp -p "$ROOT/$f" "$ROOT/$f.orig"
     done
     if patch -p1 -d "$ROOT" -s -f -N < "$p"; then
