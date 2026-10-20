@@ -1,0 +1,3 @@
+#!/bin/sh
+# Existing profile exec entry point; policy stays in the controller.
+exec "$HOME/.local/bin/display-controller" --audio-tv "$@"

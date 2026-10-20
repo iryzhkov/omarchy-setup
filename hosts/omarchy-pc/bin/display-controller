@@ -92,6 +92,136 @@ def run(args, timeout=5):
     return out
 
 
+DESK_SINK = "alsa_output.usb-Focusrite_Scarlett_2i2_4th_Gen_S2GWT264BA655C-00.HiFi__Line1__sink"
+
+
+def sony_product(properties):
+    if not isinstance(properties, dict):
+        raise ValueError("invalid audio product properties")
+    return any(re.search(r"\bSONY\b", str(properties.get(key, "")), re.I)
+               for key in ("device.product.name", "alsa.name"))
+
+
+def named_items(value):
+    """pactl versions expose ports/profiles as either maps or named arrays."""
+    if isinstance(value, dict):
+        items = list(value.items())
+    elif isinstance(value, list) and all(isinstance(item, dict) for item in value):
+        items = [(item["name"], item) for item in value]
+    else:
+        raise ValueError("invalid audio ports/profiles")
+    if any(not isinstance(name, str) or not isinstance(item, dict) for name, item in items):
+        raise ValueError("invalid audio port/profile entry")
+    return items
+
+
+class Audio:
+    """Only route playback; preserve channel mode, capture, volume and mute."""
+    def __init__(self, system, clock=time.monotonic):
+        self.system, self.clock = system, clock
+        self.profile_attempts = {}
+
+    def listing(self, kind):
+        value = json.loads(self.system.pactl("-f", "json", "list", kind))
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ValueError("invalid audio " + kind)
+        return value
+
+    def sony_sink(self, sinks, guard):
+        ports = []
+        for card in self.listing("cards"):
+            if not str(card.get("name", "")).startswith("alsa_card.pci-"):
+                continue
+            for name, port in named_items(card.get("ports", {})):
+                if (name.startswith("hdmi-output-") and port.get("availability") == "available"
+                        and sony_product(port.get("properties", {}))):
+                    ports.append((card, name, port))
+        if len(ports) != 1:
+            raise ValueError("Sony HDMI port unavailable or ambiguous")
+        card, name, port = ports[0]
+
+        def matching(items):
+            matches = []
+            for sink in items:
+                active = sink.get("active_port")
+                if isinstance(active, dict):
+                    active = active.get("name")
+                props = sink.get("properties", {})
+                if not isinstance(props, dict):
+                    raise ValueError("invalid sink properties")
+                same_card = (props["device.name"] == card["name"] if "device.name" in props else
+                             "card" in sink and str(sink["card"]) == str(card.get("index")))
+                if same_card and active == name and sony_product(props):
+                    matches.append(sink)
+            if len(matches) > 1:
+                raise ValueError("Sony sink ambiguous")
+            return matches[0] if matches else None
+
+        sink = matching(sinks)
+        if sink:
+            return sink  # Do not change an existing stereo/surround profile.
+        profiles = dict(named_items(card.get("profiles", {})))
+        available = [p for p in port.get("profiles", [])
+                     if p.startswith("output:hdmi-") and p in profiles
+                     and profiles[p].get("available") in (True, "yes", "available")]
+        active = card.get("active_profile")
+        if isinstance(active, dict):
+            active = active.get("name")
+        if not available:
+            raise ValueError("Sony HDMI has no available output profile")
+        chosen = active if active in available else min(
+            available, key=lambda p: (not p.startswith("output:hdmi-stereo"), p))
+        if chosen != active:
+            key = (card["name"], name, chosen)
+            if self.clock() - self.profile_attempts.get(key, float("-inf")) < 60:
+                raise ValueError("Sony profile retry deferred")
+            guard()
+            self.profile_attempts[key] = self.clock()
+            self.system.pactl("set-card-profile", card["name"], chosen)
+        # PipeWire can publish the sink after set-card-profile returns.
+        for attempt in range(4):
+            if attempt:
+                self.system.wait(0.25)
+            sink = matching(self.listing("sinks"))
+            if sink:
+                return sink
+        raise ValueError("Sony sink publication timed out")
+
+    def reconcile(self, route, guard):
+        sinks = self.listing("sinks")
+        if route == "tv-game":
+            target = self.sony_sink(sinks, guard)
+        else:
+            matches = [sink for sink in sinks if sink.get("name") == DESK_SINK]
+            if len(matches) != 1:
+                raise ValueError("Focusrite playback sink unavailable or ambiguous")
+            target = matches[0]
+        name, index = target["name"], target["index"]
+        default = self.system.pactl("get-default-sink").strip()
+        streams = [s for s in self.listing("sink-inputs") if str(s["sink"]) != str(index)]
+        if default != name or streams:
+            guard()  # Recheck sleep/preview/layout after discovery and publication waits.
+        if default != name:
+            self.system.pactl("set-default-sink", name)
+        for stream in streams:
+            self.system.pactl("move-sink-input", str(stream["index"]), name)
+
+
+def verified_audio_route(system, editor, profiles, monitors):
+    """Use the current saved layout and physical scanout, never pending HA intent."""
+    name = editor.get("source_profile")
+    if name not in profiles or not topology(monitors, profiles, profiles[name]):
+        return None
+    wanted = targets(profiles[name])[0]
+    enabled = [m for m in monitors if m.get("disabled") is False]
+    if (enabled[0]["name"] != wanted["name"]
+            or (enabled[0].get("width"), enabled[0].get("height")) != (wanted["width"], wanted["height"])):
+        return None
+    if name.startswith("tv-") and check(monitors, system.drm())["health"] != "healthy":
+        return None
+    return "desk" if name == "desk" else "tv-game"
+
+
 class IPC:
     """One connection owns the complete preview/commit/revert lifecycle."""
     def __init__(self, path, timeout=25, clock=time.monotonic, connect=socket.socket):
@@ -167,6 +297,12 @@ class System:
 
     def ipc(self, timeout=25):
         return IPC(self.runtime / "hyprmoncfgd.sock", timeout=timeout)
+
+    def pactl(self, *args):
+        return run(["pactl", *args], timeout=5)
+
+    def audio_lock(self):
+        return coordinator_lock(self.runtime, "display-controller-audio.lock")
 
     def monitors(self):
         result = json.loads(run(["hyprctl", "monitors", "all", "-j"]))
@@ -279,11 +415,14 @@ class Coordinator:
         self.health = "starting"
         self.last_action = None
         self.error = None
+        self.audio = Audio(system, clock)
+        self.audio_health, self.audio_error = "deferred", None
 
     def status(self, pid=None):
         return {"selected_route": self.selected, "ha_route": self.ha_route,
                 "observed_profile": self.observed_profile, "daemon_ready": self.daemon_ready,
-                "health": self.health,
+                "health": self.health, "audio_health": self.audio_health,
+                "audio_error": self.audio_error,
                 "policy_deferred": self.daemon_ready and self.health in (
                     "ready; policy deferred", "preview", "unmanaged", "route debounce",
                     "topology unavailable or asleep", "HA uncertain; live route verified",
@@ -360,7 +499,34 @@ class Coordinator:
         self.observed_profile = name
         return True
 
+    def reconcile_audio(self, editor, profiles, monitors, requested=None):
+        try:
+            with self.system.audio_lock():
+                route = verified_audio_route(self.system, editor, profiles, monitors)
+                if route is None or (requested is not None and requested != route):
+                    self.audio_health = "deferred"
+                    return
+                def guard():
+                    with self.system.ipc() as ipc:
+                        daemon = ipc.request("status")["daemon"]
+                        require_ipc_only(daemon)
+                        if daemon.get("preview") or daemon.get("unmanaged"):
+                            raise ValueError("audio deferred during preview or unmanaged layout")
+                        current = ipc.request("editor_state")
+                        current_profiles = {p["name"]: p for p in current["profiles"]
+                                            if p["name"] in ("desk", "tv-game", "tv-recovery")}
+                        if verified_audio_route(self.system, current, current_profiles,
+                                                self.system.monitors()) != route:
+                            raise ValueError("audio live route changed")
+                self.audio.reconcile(route, guard)
+                self.audio_health, self.audio_error = "healthy", None
+        except Exception as exc:
+            # Optional audio failures, including malformed nested pactl data,
+            # must never escape into display debounce/recovery or stop the daemon.
+            self.audio_health, self.audio_error = "unavailable", str(exc)
+
     def step(self, states=None):
+        self.audio_health, self.audio_error = "deferred", None
         self.observed_profile = None
         self.daemon_ready = False
         try:
@@ -390,6 +556,7 @@ class Coordinator:
                 profiles = {p["name"]: p for p in editor["profiles"]
                             if p["name"] in ("desk", "tv-game", "tv-recovery")}
                 monitors = self.system.monitors()
+                self.reconcile_audio(editor, profiles, monitors)
                 if desired is None:
                     verified = self.adopt(editor, profiles, monitors)
                     self.health = "HA uncertain; live route verified" if verified else "HA uncertain; live layout unverified"
@@ -466,8 +633,8 @@ def runtime_dir():
 
 
 @contextlib.contextmanager
-def coordinator_lock(runtime):
-    fd = os.open(runtime / "display-controller.lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+def coordinator_lock(runtime, name="display-controller.lock"):
+    fd = os.open(runtime / name, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
@@ -561,6 +728,8 @@ def main(argv=None):
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--status", action="store_true", help="print cached coordinator JSON")
     modes.add_argument("--check", action="store_true", help="read-only scanout check: 0 healthy, 1 mismatch, 2 unavailable")
+    modes.add_argument("--audio-tv", action="store_true", help="route audio only if the live TV layout is verified")
+    modes.add_argument("--audio-desk", action="store_true", help="route audio only if the live desk layout is verified")
     args = parser.parse_args(argv)
     stop = threading.Event()
     if args.check:
@@ -576,6 +745,21 @@ def main(argv=None):
         if args.status:
             print(json.dumps(json.loads((runtime / "display-controller-status.json").read_text())))
             return 0
+        if args.audio_tv or args.audio_desk:
+            system = System(runtime, stop)
+            coordinator = Coordinator(system)
+            with system.ipc() as ipc:
+                daemon = ipc.request("status")["daemon"]
+                require_ipc_only(daemon)
+                if not daemon.get("preview") and not daemon.get("unmanaged"):
+                    editor = ipc.request("editor_state")
+                    profiles = {p["name"]: p for p in editor["profiles"]
+                                if p["name"] in ("desk", "tv-game", "tv-recovery")}
+                    coordinator.reconcile_audio(editor, profiles, system.monitors(),
+                                                "tv-game" if args.audio_tv else "desk")
+            print(json.dumps({"audio_health": coordinator.audio_health,
+                              "audio_error": coordinator.audio_error}))
+            return 0 if coordinator.audio_health == "healthy" else 2
         with coordinator_lock(runtime):
             for sig in (signal.SIGTERM, signal.SIGINT):
                 signal.signal(sig, lambda *_: stop.set())
