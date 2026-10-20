@@ -8,8 +8,17 @@ coordinator. The daemon remains the display writer; Hyprland owns fullscreen
 HDR metadata.
 
 This host requires saved desk, tv-game and tv-recovery profiles. Their layout,
-calibration and audio commands stay machine-local. The coordinator must not
-rewrite them. The game launcher only executes its command.
+calibration and profile command settings stay machine-local. The coordinator
+must not rewrite them. The game launcher reports HDR availability inside
+Gamescope without changing monitor profiles.
+
+Audio follows the verified current display route in the same controller. TV mode
+selects the available Sony HDMI device; desk mode selects the Focusrite output.
+The controller updates the default and moves existing application streams,
+including a running game. Existing hyprmoncfg-audio-tv and -desk profile commands
+delegate to that same policy. An existing HDMI channel profile, mute and volume
+are preserved. Missing or ambiguous audio is reported separately and does not
+block display recovery. Sleep and human previews defer automatic audio changes.
 
 ## Installation and retirement
 

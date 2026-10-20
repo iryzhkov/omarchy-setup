@@ -57,8 +57,76 @@ def profile(name, output, width, height):
                        "rules": [{"workspace": "1", "output_key": ""}]}}
 
 
+
+class FakeAudio:
+    """pactl JSON fixture with actual device identity and arbitrary object IDs."""
+    def __init__(self):
+        self.card = "alsa_card.pci-0000_01_00.1"
+        self.tv_name = "alsa_output.pci-0000_01_00.1.hdmi-stereo-extra1"
+        self.profile = "output:hdmi-stereo-extra1"
+        self.cards = [{"index": 19, "name": self.card,
+                       "active_profile": self.profile,
+                       "profiles": {p: {"available": True} for p in (
+                           self.profile, "output:hdmi-surround-extra1", "output:hdmi-surround71-extra1")},
+                       "ports": {
+                           "hdmi-output-0": {"availability": "unavailable",
+                                             "properties": {"device.product.name": "SAMSUNG"},
+                                             "profiles": ["output:hdmi-surround"]},
+                           "hdmi-output-1": {"availability": "available",
+                                             "properties": {"device.product.name": "SONY TV  *30"},
+                                             "profiles": [self.profile, "output:hdmi-surround-extra1",
+                                                          "output:hdmi-surround71-extra1"]}}}]
+        self.sony = {"index": 73, "name": self.tv_name, "active_port": "hdmi-output-1",
+                     "properties": {"alsa.name": "SONY TV  *30", "device.name": self.card,
+                                    "device.bus": "pci", "device.bus_path": "pci-0000:01:00.1"}}
+        self.desk = {"index": 12, "name": dc.DESK_SINK, "properties": {"device.bus": "usb"}}
+        self.sinks = [self.desk, self.sony]
+        self.streams = [{"index": 808, "sink": 12}, {"index": 909, "sink": 73}]
+        self.default = dc.DESK_SINK
+        self.calls = []
+        self.error: Any = None
+        self.publish_after: Any = None
+        self.sink_queries = 0
+
+    def run(self, args, timeout=5):
+        if args[0] != "pactl":
+            raise AssertionError("unexpected real command " + repr(args))
+        if timeout != 5:
+            raise AssertionError("audio subprocess must be bounded")
+        return self.pactl(*args[1:])
+
+    def pactl(self, *args):
+        self.calls.append(args)
+        if self.error:
+            raise self.error
+        if args[:3] == ("-f", "json", "list"):
+            if args[3] == "sinks":
+                self.sink_queries += 1
+                if self.publish_after is not None and self.sink_queries >= self.publish_after:
+                    self.sinks = [self.desk, self.sony]
+            return json.dumps({"sinks": self.sinks, "cards": self.cards,
+                               "sink-inputs": self.streams}[args[3]])
+        if args == ("get-default-sink",):
+            return self.default + "\n"
+        if args[0] == "set-card-profile":
+            self.cards[0]["active_profile"] = args[2]
+        elif args[0] == "set-default-sink":
+            self.default = args[1]
+        elif args[0] == "move-sink-input":
+            target = next(s for s in self.sinks if s["name"] == args[2])
+            next(s for s in self.streams if str(s["index"]) == args[1])["sink"] = target["index"]
+        else:
+            raise AssertionError("unexpected pactl write " + repr(args))
+        return ""
+
+    def writes(self):
+        return [call for call in self.calls if call[0] in (
+            "set-card-profile", "set-default-sink", "move-sink-input")]
+
+
 class FakeSystem:
     def __init__(self):
+        self.audio = FakeAudio()
         self.states: Any = ha()
         self.profiles = {"desk": profile("desk", "DP-1", 3840, 2160),
                          "tv-game": profile("tv-game", dc.TV_OUTPUT, 3840, 2160),
@@ -100,6 +168,12 @@ class FakeSystem:
         if isinstance(self.states, Exception):
             raise self.states
         return copy.deepcopy(self.states)
+
+    def pactl(self, *args):
+        return self.audio.pactl(*args)
+
+    def audio_lock(self):
+        return contextlib.nullcontext()
 
     def monitors(self):
         return copy.deepcopy(self.mon)
@@ -662,6 +736,328 @@ class CoordinatorTests(unittest.TestCase):
                   contextlib.redirect_stdout(io.StringIO()) as output):
                 self.assertEqual(dc.main([]), 2)
             self.assertIn("hyprmoncfgd exited", output.getvalue())
+
+
+
+class AudioTests(unittest.TestCase):
+    def setUp(self):
+        self.system = FakeSystem()
+        self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)
+        # Exercise System's real bounded pactl adapter, with only run() mocked.
+        self.system.pactl = dc.System(None, self.system.stop).pactl
+        self.helper = mock.patch.object(dc, "run", side_effect=self.system.audio.run)
+        self.helper.start()
+        self.addCleanup(self.helper.stop)
+
+    def tick(self, n=1):
+        for _ in range(n):
+            self.coordinator.step()
+            self.system.advance(dc.POLL)
+
+    def tv(self):
+        self.system.apply("tv-game")
+
+    def test_startup_adopts_tv_and_routes_default_and_running_game_without_modeset(self):
+        self.tv()
+        self.tick()
+        self.assertEqual(self.system.audio.default, self.system.audio.tv_name)
+        self.assertEqual(self.system.audio.writes(), [
+            ("set-default-sink", self.system.audio.tv_name),
+            ("move-sink-input", "808", self.system.audio.tv_name)])
+        self.assertEqual(self.system.mutations(), [])
+        self.assertEqual(self.coordinator.status()["audio_health"], "healthy")
+
+    def test_tv_audio_idempotence(self):
+        self.tv()
+        self.tick()
+        self.system.audio.calls.clear()
+        self.tick(4)
+        self.assertEqual(self.system.audio.writes(), [])
+
+    def test_pending_ha_tv_intent_keeps_desk_audio_until_layout_changes(self):
+        self.system.audio.default = self.system.audio.tv_name
+        self.tick()
+        self.assertEqual(self.system.audio.default, dc.DESK_SINK)
+        self.assertEqual(self.system.mutations(), [])
+        self.tick()  # Display transaction changes the verified current layout.
+        self.assertEqual(self.system.live, "tv-game")
+        self.tick()
+        self.assertEqual(self.system.audio.default, self.system.audio.tv_name)
+
+    def test_unknown_ha_still_routes_verified_current_tv(self):
+        self.tv()
+        self.system.states = ha(source="")
+        self.tick()
+        self.assertEqual(self.system.audio.default, self.system.audio.tv_name)
+        self.assertEqual(self.system.mutations(), [])
+        self.assertEqual(self.coordinator.health, "HA uncertain; live route verified")
+
+    def test_current_surround_profile_is_preserved(self):
+        self.tv()
+        self.system.audio.cards[0]["active_profile"] = "output:hdmi-surround71-extra1"
+        self.system.audio.sony["name"] = "alsa_output.pci-0000_01_00.1.hdmi-surround71-extra1"
+        self.tick()
+        self.assertEqual(self.system.audio.default, self.system.audio.sony["name"])
+        self.assertFalse(any(c[0] == "set-card-profile" for c in self.system.audio.writes()))
+
+    def test_unavailable_wrong_or_ambiguous_sony_defers_without_writes(self):
+        for fault in ("unavailable", "samsung", "ambiguous", "usb"):
+            with self.subTest(fault=fault):
+                self.system.audio = FakeAudio()
+                card = self.system.audio.cards[0]
+                if fault == "unavailable":
+                    card["ports"]["hdmi-output-1"]["availability"] = "unavailable"
+                elif fault == "samsung":
+                    card["ports"]["hdmi-output-1"]["properties"]["device.product.name"] = "SAMSUNG"
+                elif fault == "usb":
+                    card["name"] = "alsa_card.usb-unrelated"
+                else:
+                    other = copy.deepcopy(card)
+                    other["name"] = "alsa_card.pci-0000_02_00.1"
+                    self.system.audio.cards.append(other)
+                with mock.patch.object(dc, "run", side_effect=self.system.audio.run):
+                    self.tv()
+                    self.tick()
+                self.assertEqual(self.system.audio.writes(), [])
+                self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_existing_sink_on_wrong_hdmi_output_is_never_selected(self):
+        self.tv()
+        self.system.audio.sony["active_port"] = "hdmi-output-0"
+        self.tick()
+        self.assertEqual(self.system.audio.writes(), [])
+        self.assertEqual(self.system.audio.default, dc.DESK_SINK)
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_contradictory_sink_product_is_never_selected(self):
+        self.tv()
+        self.system.audio.sony["properties"]["alsa.name"] = "SAMSUNG"
+        self.tick()
+        self.assertEqual(self.system.audio.writes(), [])
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_preview_or_sleep_during_publication_wait_prevents_routing(self):
+        for fault in ("preview", "sleep", "desk"):
+            with self.subTest(fault=fault):
+                system = FakeSystem()
+                system.apply("tv-game")
+                system.audio.sinks = [system.audio.desk]
+                system.audio.publish_after = 3
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+
+                def interrupt():
+                    if fault == "preview":
+                        system.preview = {"transaction_id": "human"}
+                    elif fault == "sleep":
+                        next(m for m in system.mon if not m["disabled"])["dpmsStatus"] = False
+                    else:
+                        system.apply("desk")
+
+                system.wait_hook = interrupt
+                coordinator.step()
+                self.assertEqual(system.audio.writes(), [])
+                self.assertEqual(coordinator.audio_health, "unavailable")
+
+    def test_malformed_nested_audio_data_does_not_escape_into_display_policy(self):
+        self.tv()
+        self.system.audio.sinks = [self.system.audio.desk]
+        self.system.audio.cards[0]["ports"]["hdmi-output-1"]["profiles"] = [None]
+        self.tick(2)
+        self.assertEqual(self.coordinator.health, "healthy")
+        self.assertEqual(self.coordinator.count, 2)
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_ambiguous_sinks_defer(self):
+        self.tv()
+        self.system.audio.sinks.append(dict(self.system.audio.sony, index=74, name="duplicate"))
+        self.tick()
+        self.assertEqual(self.system.audio.writes(), [])
+        self.assertIn("ambiguous", self.coordinator.audio_error)
+
+    def test_available_sony_profile_discovery_and_late_publication(self):
+        self.tv()
+        audio = self.system.audio
+        audio.sinks = [audio.desk]
+        audio.cards[0]["active_profile"] = "output:hdmi-surround"
+        audio.cards[0]["profiles"]["output:hdmi-surround"] = {"available": False}
+        audio.publish_after = 4
+        self.tick()
+        self.assertEqual(audio.writes()[0], ("set-card-profile", audio.card, audio.profile))
+        self.assertEqual(audio.default, audio.tv_name)
+        self.assertEqual(audio.cards[0]["active_profile"], audio.profile)
+        self.assertEqual(audio.sink_queries, 4)
+
+    def test_profile_already_active_waits_without_rewriting(self):
+        self.tv()
+        audio = self.system.audio
+        audio.sinks = [audio.desk]
+        audio.publish_after = 3
+        self.tick()
+        self.assertEqual(audio.default, audio.tv_name)
+        self.assertFalse(any(c[0] == "set-card-profile" for c in audio.writes()))
+
+    def test_sink_publication_wait_is_bounded_and_no_profile_storm(self):
+        self.tv()
+        audio = self.system.audio
+        audio.sinks = [audio.desk]
+        audio.cards[0]["active_profile"] = "off"
+        self.tick()
+        self.assertEqual(audio.sink_queries, 5)  # initial list plus four wait attempts
+        self.assertIn("timed out", self.coordinator.audio_error)
+        self.tick(4)
+        self.assertEqual([c for c in audio.writes() if c[0] == "set-card-profile"],
+                         [("set-card-profile", audio.card, audio.profile)])
+        self.assertFalse(any(c[0] == "set-default-sink" for c in audio.writes()))
+
+    def test_failed_profile_write_is_cooled_down(self):
+        self.tv()
+        audio = self.system.audio
+        audio.sinks = [audio.desk]
+        audio.cards[0]["active_profile"] = "off"
+        original = audio.pactl
+
+        def fail_profile(*args):
+            if args[0] == "set-card-profile":
+                audio.calls.append(args)
+                raise subprocess.TimeoutExpired("pactl", 5)
+            return original(*args)
+
+        with mock.patch.object(dc, "run", side_effect=lambda args, timeout=5: fail_profile(*args[1:])):
+            self.tick(4)
+        self.assertEqual(len([c for c in audio.writes() if c[0] == "set-card-profile"]), 1)
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_unavailable_profiles_never_enabled(self):
+        self.tv()
+        audio = self.system.audio
+        audio.sinks = [audio.desk]
+        for settings in audio.cards[0]["profiles"].values():
+            settings["available"] = False
+        self.tick()
+        self.assertEqual(audio.writes(), [])
+        self.assertIn("no available", self.coordinator.audio_error)
+
+    def test_desk_return_moves_playback_without_card_or_capture_changes(self):
+        self.tv()
+        self.tick()
+        self.system.apply("desk")
+        self.system.states = ha(screen="off")
+        self.system.audio.calls.clear()
+        self.tick()
+        self.assertEqual(self.system.audio.default, dc.DESK_SINK)
+        self.assertEqual(self.system.audio.writes(), [
+            ("set-default-sink", dc.DESK_SINK),
+            ("move-sink-input", "808", dc.DESK_SINK),
+            ("move-sink-input", "909", dc.DESK_SINK)])
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_missing_focusrite_does_not_choose_other_usb_sink(self):
+        self.system.audio.desk["name"] = "alsa_output.usb-unrelated"
+        self.tick()
+        self.assertEqual(self.system.audio.writes(), [])
+        self.assertIn("Focusrite", self.coordinator.audio_error)
+
+    def test_sleep_preview_unmanaged_and_unsupported_topology_yield(self):
+        for fault in ("sleep", "preview", "unmanaged", "unknown", "dual", "mismatch"):
+            with self.subTest(fault=fault):
+                self.system = FakeSystem()
+                self.tv()
+                self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)
+                if fault == "sleep":
+                    next(m for m in self.system.mon if not m["disabled"])["dpmsStatus"] = False
+                elif fault == "preview":
+                    self.system.preview = {"transaction_id": "human"}
+                elif fault == "unmanaged":
+                    self.system.unmanaged = True
+                elif fault == "unknown":
+                    self.system.mon.append({"name": "unknown"})
+                elif fault == "dual":
+                    self.system.mon[0].update(disabled=False, dpmsStatus=True)
+                else:
+                    self.system.actual = (1280, 720)
+                self.tick()
+                self.assertEqual(self.system.audio.calls, [])
+                self.assertEqual(self.coordinator.audio_health, "deferred")
+
+    def test_audio_errors_preserve_display_debounce_and_recovery(self):
+        self.tv()
+        self.system.audio.error = subprocess.TimeoutExpired("pactl", 5)
+        self.tick(2)
+        self.assertEqual(self.coordinator.health, "healthy")
+        self.assertEqual(self.coordinator.candidate, "tv-game")
+        self.assertEqual(self.coordinator.count, 2)
+        self.assertIn("timed out", self.coordinator.status()["audio_error"])
+        self.system.actual = (1920, 1080)
+        self.tick(2)
+        self.assertTrue(self.coordinator.recovery_attempted)
+        self.assertTrue(any(method == "preview" for method, _ in self.system.mutations()))
+        self.assertEqual(self.coordinator.audio_health, "deferred")
+
+    def test_audio_failure_does_not_prevent_display_route_change(self):
+        self.system.audio.error = ValueError("invalid pactl JSON")
+        self.tick(2)
+        self.assertEqual(self.system.live, "tv-game")
+        self.assertEqual(self.coordinator.health, "route applied")
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+        self.system.audio.error = None
+        self.tick()
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertIsNone(self.coordinator.audio_error)
+
+    def test_rollback_reconciles_restored_route_on_next_iteration(self):
+        self.system.workspace_fault = "2"
+        self.tick(2)
+        self.assertEqual(self.system.live, "desk")
+        # Simulate a legacy post-apply audio helper having changed playback.
+        self.system.audio.default = self.system.audio.tv_name
+        self.system.audio.streams[0]["sink"] = 73
+        self.tick()
+        self.assertEqual(self.system.audio.default, dc.DESK_SINK)
+        self.assertEqual(self.system.audio.streams[0]["sink"], 12)
+        self.assertEqual(self.system.live, "desk")
+
+    def test_busy_audio_lock_does_not_reset_display_policy(self):
+        self.tv()
+        self.system.audio_lock = mock.Mock(side_effect=BlockingIOError("audio busy"))
+        self.tick(2)
+        self.assertEqual(self.coordinator.health, "healthy")
+        self.assertEqual(self.coordinator.count, 2)
+        self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_audio_cli_modes_are_early_and_verify_live_route(self):
+        for mode, live, preview, expected in (
+                ("--audio-tv", "tv-game", None, 0),
+                ("--audio-desk", "desk", None, 0),
+                ("--audio-tv", "desk", None, 2),
+                ("--audio-desk", "tv-game", None, 2),
+                ("--audio-tv", "tv-game", {"transaction_id": "human"}, 2)):
+            with self.subTest(mode=mode, live=live, preview=preview):
+                system = FakeSystem()
+                system.apply(live)
+                system.preview = preview
+                with mock.patch.object(dc, "runtime_dir", return_value=Path("/unused")), \
+                        mock.patch.object(dc, "System", return_value=system), \
+                        mock.patch.object(dc, "Child", side_effect=AssertionError("must not start daemon")), \
+                        mock.patch.object(system, "ha", side_effect=AssertionError("must not read HA")), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(dc.main([mode]), expected)
+                self.assertEqual(system.mutations(), [])
+                if expected:
+                    self.assertEqual(system.audio.calls, [])
+
+    def test_three_line_shims_forward_to_controller_audio_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            binary = home / ".local/bin/display-controller"
+            binary.parent.mkdir(parents=True)
+            binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            binary.chmod(0o700)
+            for route in ("tv", "desk"):
+                shim = SOURCE.with_name("hyprmoncfg-audio-" + route)
+                self.assertEqual(len(shim.read_text().splitlines()), 3)
+                result = subprocess.run(["sh", str(shim), "extra"], env=dict(os.environ, HOME=directory),
+                                        text=True, capture_output=True, check=True, timeout=3)
+                self.assertEqual(result.stdout.splitlines(), ["--audio-" + route, "extra"])
 
 
 class BoundaryTests(unittest.TestCase):
