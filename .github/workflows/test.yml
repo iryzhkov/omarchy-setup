@@ -17,7 +17,7 @@ jobs:
           # the same way test/run.sh filters what it runs `bash -n` over.
           scripts=()
           for f in run.sh install.sh uninstall.sh lib/*.sh modules/*/*.sh \
-                   packages/*/*.sh bin/* config/bin/* config/hooks/*/*.hook test/run.sh; do
+                   packages/*/*.sh bin/* config/bin/* config/hooks/*/*.hook test/*.sh hosts/omarchy-pc/bin/*; do
             if head -c 64 "$f" | grep -qE '^#!.*\b(ba)?sh\b'; then
               scripts+=("$f")
             fi
@@ -27,3 +27,27 @@ jobs:
           shellcheck -x -e SC1090,SC1091,SC2094,SC2016 "${scripts[@]}"
       - name: Module tests against a throwaway HOME
         run: TMPDIR="$HOME/.cache/chaldea-scratch/agent-tooling" test/run.sh
+      - name: Display coordinator with simulated hardware
+        run: |
+          scratch="$HOME/.cache/display-controller-test"
+          mkdir -p "$scratch/home" "$scratch/tmp"
+          chmod 700 "$scratch/home"
+          HOME="$scratch/home" TMPDIR="$scratch/tmp" \
+            DISPLAY_TEST_SCRATCH_HOME="$scratch/home" python3 test/display_controller_test.py
+  display-daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+      - name: Test and build pinned IPC-only daemon
+        run: |
+          # Unix socket fixture paths need an alias shorter than RUNNER_TEMP.
+          sudo ln -s "$HOME/.cache/display-daemon-build/tmp" /dt
+          DISPLAY_BUILD_SCRATCH="$HOME/.cache/display-daemon-build" \
+            DISPLAY_BUILD_TMP_ALIAS=/dt bash test/build-display-daemon.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: display-daemon
+          path: build/display-controller/hyprmoncfgd

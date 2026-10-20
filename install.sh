@@ -4,8 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/iryzhkov/omarchy-setup/main/install.sh | bash -s -- --profile client
 #
 # Fetches the repo to ~/.local/share/omarchy-setup and runs it. The clone is
-# kept: the `omarchy-setup` command and the post-update hook re-run it from
-# there. Set OMARCHY_SETUP_KEEP=0 to remove it afterwards instead. State
+# kept so the `omarchy-setup` command can be run manually. Set OMARCHY_SETUP_KEEP=0 to remove it afterwards instead. State
 # (chosen profile, checkout path, last run log) lives in
 # ~/.local/state/omarchy-setup.
 #

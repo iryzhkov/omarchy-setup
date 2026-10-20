@@ -23,8 +23,7 @@ arguments reach the script when bash is reading it from a pipe.
 
 `install.sh` only bootstraps -- it verifies this is Omarchy, installs git,
 shallow-clones this repo to `~/.local/share/omarchy-setup` and runs it. The
-clone stays: the `omarchy-setup` command and the post-update hook (below)
-re-run it from there. All real logic lives in the repo, where it is
+clone stays so the `omarchy-setup` command can be run manually. All real logic lives in the repo, where it is
 reviewable and testable.
 
 What survives a run:
@@ -52,14 +51,9 @@ omarchy-setup --only hypr --dry-run
 checkout through `~/.local/state/omarchy-setup/root`, so it works whether the
 repo lives at the bootstrap location or somewhere you cloned it by hand.
 
-**After `omarchy update`**, the hook at
-`~/.config/omarchy/hooks/post-update.d/omarchy-setup.hook` (installed from
-`config/hooks/` by `modules/common/85-hooks.sh`) pulls the checkout and runs
-`run.sh --yes --skip-secrets`. Migrations are exactly what the include model
-guards against, so this is what keeps a machine converged without anyone
-remembering to re-run. It logs to `~/.local/state/omarchy-setup/post-update.log`
-and notifies only on failure; package removal is opt-in and never happens
-from the hook.
+`omarchy update` does not run setup. Setup configures a fresh host and hands
+ongoing maintenance to UpKeeper. `modules/common/85-hooks.sh` removes the legacy
+post-update setup hook, preserving a backup, when setup is run manually again.
 
 ## UpKeeper handoff
 

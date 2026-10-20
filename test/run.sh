@@ -266,9 +266,15 @@ section "28-scripts / 85-hooks"
 check "scripts run" module common/28-scripts.sh
 check "omarchy-setup wrapper executable" test -x "$HOME/.local/bin/omarchy-setup"
 check "layout cycle script executable" test -x "$HOME/.local/bin/omarchy-workspace-layout-cycle"
+mkdir -p "$HOME/.config/omarchy/hooks/post-update.d"
+printf '#!/bin/bash\nexit 0\n' >"$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "hooks dry run" env DRY_RUN=1 bash "$ROOT/modules/common/85-hooks.sh"
+check "dry run preserves legacy hook" test -f "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
 check "hooks run" module common/85-hooks.sh
-check "post-update hook executable" test -x "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
-check "hook is a no-op without a recorded checkout" bash "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "legacy update hook removed" test ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
+check "legacy update hook backed up" bash -c 'compgen -G "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook.omarchy-setup.bak.*" >/dev/null'
+check "hooks rerun" module common/85-hooks.sh
+check "setup update hook remains absent" test ! -e "$HOME/.config/omarchy/hooks/post-update.d/omarchy-setup.hook"
 check "wrapper refuses without a recorded checkout" env -u OMARCHY_SETUP_ROOT bash -c '! "$1"' _ "$HOME/.local/bin/omarchy-setup"
 
 # ------------------------------------------------------------ host files --
@@ -308,6 +314,14 @@ check "timer enabled" grep -q 'enable --now hosttool.timer' "$T/systemctl.log"
 check "service without Install is not enabled" [ "$(count 'enable --now helper.service' "$T/systemctl.log")" = 0 ]
 check "timer enablement is idempotent" [ "$(count 'enable --now hosttool.timer' "$T/systemctl.log")" = 1 ]
 check "timer already enabled is reported" log_has "hosttool.timer: already enabled"
+# Missing private daemon must fail before replacing any working host file.
+cp "$HF/bin/hosttool" "$T/hosttool.before"
+printf '#!/bin/sh\necho changed\n' >"$HF/bin/hosttool"
+touch "$HF/bin/display-controller"
+check "display dependency missing refuses overlay" bash -c '! bash "$1" >"$2" 2>&1' _ "$ROOT/modules/common/29-host-files.sh" "$T/last.log"
+check "display dependency refusal preserves helper" cmp -s "$HOME/.local/bin/hosttool" "$T/hosttool.before"
+rm "$HF/bin/display-controller"
+cp "$T/hosttool.before" "$HF/bin/hosttool"
 # Keep the systemctl stub for uninstall as well.
 
 # -------------------------------------------------- fleet ownership --
@@ -354,6 +368,10 @@ check "pointer is read-only" test "$(fleet_snapshot)" = "$fleet_before"
 check "dry run succeeds" env DRY_RUN=1 bash "$ROOT/modules/common/31-agent-instructions.sh"
 check "dry run preserves fleet" test "$(fleet_snapshot)" = "$fleet_before"
 check "script bootstrap preserves fleet tools" module common/28-scripts.sh
+# This fixture exercises a provisioned host. Missing dependency is tested above.
+mkdir -p "$HOME/.local/libexec/display-controller"
+printf '%s\n' '#!/bin/sh' 'echo "  --ipc-only"' >"$HOME/.local/libexec/display-controller/hyprmoncfgd"
+chmod +x "$HOME/.local/libexec/display-controller/hyprmoncfgd"
 check "omarchy-pc overlay succeeds" env SETUP_HOST=omarchy-pc bash "$ROOT/modules/common/29-host-files.sh"
 check "host overlay invokes no sudo" test ! -e "$T/sudo.log"
 check "scripts and overlay preserve fleet" test "$(fleet_snapshot)" = "$fleet_before"

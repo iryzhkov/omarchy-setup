@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Compatibility entry point. Only display-controller owns local display policy.
+exec "$HOME/.local/bin/display-controller" "$@"

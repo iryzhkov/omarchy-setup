@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Retired hotplug writer. Older hooks may call this; never change a display here.
+exec "$HOME/.local/bin/display-controller" --check

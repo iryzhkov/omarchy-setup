@@ -22,6 +22,15 @@ if [[ ! -d $HOST_DIR ]]; then
   exit 0
 fi
 
+# Check the display dependency before replacing any working host scripts.
+if [[ -f $HOST_DIR/bin/display-controller && $DRY_RUN != 1 ]]; then
+  display_daemon="$HOME/.local/libexec/display-controller/hyprmoncfgd"
+  if [[ ! -x $display_daemon ]] || ! "$display_daemon" --help | grep -q -- --ipc-only; then
+    fail "Install the reviewed IPC-only display daemon before applying this host overlay."
+    exit 1
+  fi
+fi
+
 # install_tree <source-dir> <dest-dir> [mode]
 # Owned copies of every file in a tree, keeping the relative path.
 install_tree() {

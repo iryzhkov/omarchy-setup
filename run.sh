@@ -89,8 +89,7 @@ if (( ! DRY_RUN )); then
 fi
 
 mkdir -p "$OMARCHY_SETUP_STATE"
-# Where this checkout lives, for the omarchy-setup wrapper and the
-# post-update hook. Recorded on every real run so a moved checkout is found.
+# Where this checkout lives, for the manual omarchy-setup wrapper. Recorded on every real run so a moved checkout is found.
 (( DRY_RUN )) || printf '%s\n' "$OMARCHY_SETUP_ROOT" >"$OMARCHY_SETUP_STATE/root"
 OMARCHY_SETUP_LOGFILE="$OMARCHY_SETUP_STATE/last-run.log"
 : >"$OMARCHY_SETUP_LOGFILE"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Hyprland owns fullscreen HDR metadata. Display routing belongs to the coordinator.
+exec "$@"
