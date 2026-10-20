@@ -1,0 +1,563 @@
+#!/usr/bin/python3
+"""Coordinate HA routing and bounded scanout recovery through hyprmoncfgd IPC."""
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import socket
+import stat
+import subprocess
+import threading
+import time
+
+TV = "media_player.sony_living_room_tv"
+SCREEN = "binary_sensor.living_room_tv_screen_on"
+AVR = "media_player.str_az5000es_2"
+BRAVIA = "media_player.bravia_4k_vh22"
+CAST = "media_player.sony_xr_77a80cl"
+ENTITIES = (TV, SCREEN, AVR, BRAVIA, CAST)
+TV_OUTPUT = "HDMI-A-1"
+POLL = 5
+ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+
+
+def choose(states):
+    """Existing source precedence, with incomplete evidence represented by None."""
+    by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
+    screen, avr = by_id.get(SCREEN, {}), by_id.get(AVR, {})
+    if screen.get("state") == "off" or avr.get("state") == "off":
+        return "desk"
+    if screen.get("state") != "on":
+        return None
+    if avr.get("state") in (None, "", "unknown", "unavailable"):
+        return None
+    tv = by_id.get(TV, {})
+    source = tv.get("attributes", {}).get("source", "") if tv.get("state") in ("on", "idle", "playing", "paused") else ""
+    fallback = by_id.get(BRAVIA, {})
+    if not source and fallback.get("state") not in (None, "", "unknown", "unavailable"):
+        source = fallback.get("attributes", {}).get("source", "")
+    if not source:
+        cast = by_id.get(CAST, {})
+        attrs = cast.get("attributes", {})
+        if cast.get("state") in ("playing", "paused") and attrs.get("app_name") == "TV":
+            source = attrs.get("media_title", "")
+    source = str(source).strip().lower()
+    if not source:
+        return None
+    return "tv-game" if source in ("hdmi 3", "hdmi 3 (earc/arc)", "str-az5000es") else "desk"
+
+
+def drm_size(report):
+    """Resolve this connector's encoder and CRTC, never an unrelated head."""
+    connector = re.search(r"^\d+\s+(\d+)\s+connected\s+HDMI-A-1\s", report, re.M)
+    if not connector:
+        return None
+    encoder = re.search(r"^" + connector[1] + r"\s+(\d+)\s+TMDS\s", report, re.M)
+    if not encoder or encoder[1] == "0":
+        return None
+    crtc = re.search(r"^" + encoder[1] + r"\s+\d+\s+\([^\n]*?\)\s+\((\d+)x(\d+)\)", report, re.M)
+    return (int(crtc[1]), int(crtc[2])) if crtc else None
+
+
+def check(monitors, actual):
+    enabled = [m for m in monitors if m.get("disabled") is False]
+    tv = next((m for m in enabled if m.get("name") == TV_OUTPUT), None)
+    if len(enabled) != 1 or not tv or tv.get("dpmsStatus") is not True or actual is None:
+        return {"health": "unavailable"}
+    expected = (tv.get("width"), tv.get("height"))
+    if not all(isinstance(v, int) and v > 0 for v in expected):
+        return {"health": "unavailable"}
+    return {"health": "healthy" if expected == actual else "mismatch",
+            "expected": expected, "actual": actual}
+
+
+def run(args, timeout=5):
+    """Kill the entire helper process group on timeout, including ha's jq."""
+    proc = subprocess.Popen(args, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate(timeout=2)
+        raise
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, args, out, err)
+    return out
+
+
+class IPC:
+    """One connection owns the complete preview/commit/revert lifecycle."""
+    def __init__(self, path, timeout=25, clock=time.monotonic, connect=socket.socket):
+        self.path, self.timeout, self.clock, self.connect = path, timeout, clock, connect
+        self.sock = None
+        self.buffer = b""
+        self.sequence = 0
+
+    def __enter__(self):
+        self.sock = self.connect(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            self.sock.settimeout(self.timeout)
+            self.sock.connect(str(self.path))
+        except BaseException:
+            self.sock.close()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        if self.sock is not None:
+            self.sock.close()
+
+    def request(self, method, **params):
+        if self.sock is None:
+            raise ValueError("IPC is not connected")
+        self.sequence += 1
+        request_id = str(self.sequence)
+        deadline = self.clock() + self.timeout
+        message = {"protocol_version": 1, "type": "request", "id": request_id,
+                   "method": method, "params": params}
+        self.sock.settimeout(self.timeout)
+        self.sock.sendall(json.dumps(message).encode() + b"\n")
+        while True:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError("IPC response timeout")
+            self.sock.settimeout(remaining)
+            if b"\n" not in self.buffer:
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    raise ConnectionError("IPC disconnected")
+                self.buffer += chunk
+                if len(self.buffer) > 4 * 1024 * 1024:
+                    raise ValueError("IPC message too large")
+                continue
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            reply = json.loads(line)
+            if reply.get("protocol_version") != 1:
+                raise ValueError("unsupported IPC protocol")
+            if reply.get("type") == "event":
+                continue
+            if reply.get("type") != "response" or reply.get("id") != request_id:
+                raise ValueError("unexpected IPC response")
+            if reply.get("error"):
+                raise ValueError("IPC: " + str(reply["error"]))
+            return reply.get("result")
+
+
+class System:
+    def __init__(self, runtime, stop):
+        self.runtime, self.stop = runtime, stop
+
+    def ha(self):
+        states = []
+        for entity in ENTITIES:
+            if self.stop.is_set():
+                raise InterruptedError("stopping")
+            states.append(json.loads(run([str(Path.home() / ".local/bin/ha"), "--json",
+                                          "api", "/api/states/" + entity], timeout=12)))
+            if choose(states) is not None:
+                break  # unused fallback helpers must not gate a valid source
+        return states
+
+    def ipc(self, timeout=25):
+        return IPC(self.runtime / "hyprmoncfgd.sock", timeout=timeout)
+
+    def monitors(self):
+        result = json.loads(run(["hyprctl", "monitors", "all", "-j"]))
+        if not isinstance(result, list) or any(not isinstance(m, dict) for m in result):
+            raise ValueError("invalid compositor monitor list")
+        return result
+
+    def drm(self):
+        return drm_size(run(["modetest", "-M", "nvidia-drm", "-e", "-c", "-p"]))
+
+    def wait(self, seconds):
+        if self.stop.wait(seconds):
+            raise InterruptedError("stopping")
+
+
+def targets(profile):
+    return [o for o in profile["outputs"] if o.get("enabled") is True]
+
+
+def topology(monitors, profiles, target):
+    """Permit only the known connectors and one awake current output."""
+    names = [m.get("name") for m in monitors]
+    known = {o["name"] for p in profiles.values() for o in p["outputs"]}
+    enabled = [m for m in monitors if m.get("disabled") is False]
+    wanted = targets(target)
+    if (not names or len(names) != len(set(names)) or not set(names) <= known
+            or len(enabled) != 1 or enabled[0].get("dpmsStatus") is not True
+            or len(wanted) != 1 or wanted[0]["name"] not in names):
+        return False
+    # Connector names alone cannot authorize an unfamiliar replacement display.
+    for m in monitors:
+        candidates = [o for p in profiles.values() for o in p["outputs"] if o["name"] == m["name"]]
+        identified = [o for o in candidates if any(o.get(k) for k in ("make", "model", "serial"))]
+        if not any(all(not o.get(k) or o[k] == m.get(k) for k in ("make", "model", "serial"))
+                   for o in (identified or candidates)):
+            return False
+    return True
+
+
+class Coordinator:
+    def __init__(self, system, clock=time.monotonic):
+        self.system, self.clock = system, clock
+        self.selected = None
+        self.ha_route = None
+        self.observed_profile = None
+        self.daemon_ready = False
+        self.candidate = None
+        self.since = 0
+        self.count = 0
+        self.key = None
+        self.route_attempted = False
+        self.recovery_attempted = False
+        self.mismatch = None
+        self.mismatch_since = 0
+        self.mismatch_count = 0
+        self.health = "starting"
+        self.last_action = None
+        self.error = None
+
+    def status(self, pid=None):
+        return {"selected_route": self.selected, "ha_route": self.ha_route,
+                "observed_profile": self.observed_profile, "daemon_ready": self.daemon_ready,
+                "health": self.health,
+                "daemon_pid": pid, "last_action": self.last_action,
+                "error": self.error, "recovery_inhibited": self.recovery_attempted}
+
+    def reset_mismatch(self):
+        self.mismatch, self.mismatch_count = None, 0
+
+    def transaction(self, ipc, name, profiles, verify=False):
+        # Race with a human preview is also rejected atomically by the daemon.
+        if ipc.request("status")["daemon"].get("preview"):
+            raise ValueError("human preview active")
+        before = self.system.monitors()
+        if verify and not any(m.get("name") == TV_OUTPUT and m.get("disabled") is False for m in before):
+            raise ValueError("TV no longer active")
+        if choose(self.system.ha()) != self.candidate or not topology(before, profiles, profiles[name]):
+            raise ValueError("route or topology changed")
+        tx = ipc.request("preview", profile_name=name, timeout_seconds=120, save_on_commit=False)
+        transaction_id = tx["id"]
+        try:
+            if verify:
+                self.system.wait(2)
+                monitors = self.system.monitors()
+                state = check(monitors, self.system.drm())
+                wanted = targets(profiles[name])[0]
+                if (choose(self.system.ha()) != "tv-game"
+                        or not topology(monitors, profiles, profiles[name])
+                        or state["health"] != "healthy"
+                        or state["expected"] != (wanted["width"], wanted["height"])):
+                    raise ValueError("physical verification failed for " + name)
+            else:
+                # No wake or second modeset when the user sleeps during apply.
+                monitors = self.system.monitors()
+                enabled_names = [m["name"] for m in monitors if m.get("disabled") is False]
+                if (choose(self.system.ha()) != self.candidate or not topology(monitors, profiles, profiles[name])
+                        or enabled_names != [targets(profiles[name])[0]["name"]]):
+                    raise ValueError("route or topology changed during preview")
+            ipc.request("commit", transaction_id=transaction_id, save=False)
+        except ERRORS:
+            # Revert only our own transaction on this connection. An IPC timeout
+            # may leave the deadline armed; never reclaim someone else's preview.
+            ipc.request("revert", transaction_id=transaction_id)
+            raise
+        self.last_action = "committed " + name
+
+    def adopt(self, editor, profiles, monitors):
+        """Observe a saved live match, without converting it into HA intent."""
+        self.observed_profile = None
+        name = editor.get("source_profile")
+        if name not in profiles or not topology(monitors, profiles, profiles[name]):
+            return False
+        wanted = targets(profiles[name])[0]
+        enabled = [m for m in monitors if m.get("disabled") is False]
+        if (enabled[0]["name"] != wanted["name"]
+                or (enabled[0].get("width"), enabled[0].get("height")) != (wanted["width"], wanted["height"])):
+            return False
+        if name.startswith("tv-") and check(monitors, self.system.drm())["health"] != "healthy":
+            return False
+        self.selected = "desk" if name == "desk" else "tv-game"
+        self.observed_profile = name
+        return True
+
+    def step(self, states=None):
+        self.observed_profile = None
+        self.daemon_ready = False
+        try:
+            try:
+                desired = choose(self.system.ha() if states is None else states)
+            except ERRORS as exc:
+                desired, self.error = None, "HA: " + str(exc)
+            self.ha_route = desired
+            now = self.clock()
+            if desired is None:
+                self.candidate, self.count = None, 0
+                self.reset_mismatch()
+            elif desired != self.candidate:
+                self.candidate, self.since, self.count = desired, now, 1
+            else:
+                self.count += 1
+            with self.system.ipc() as ipc:
+                status = ipc.request("status")
+                daemon = status["daemon"]
+                self.daemon_ready = bool(daemon.get("running"))
+                if daemon.get("preview") or daemon.get("unmanaged"):
+                    self.reset_mismatch()
+                    self.health = "preview" if daemon.get("preview") else "unmanaged"
+                    return
+                editor = ipc.request("editor_state")
+                profiles = {p["name"]: p for p in editor["profiles"]
+                            if p["name"] in ("desk", "tv-game", "tv-recovery")}
+                monitors = self.system.monitors()
+                if desired is None:
+                    verified = self.adopt(editor, profiles, monitors)
+                    if verified and daemon.get("profile_override") != self.observed_profile:
+                        # This method pins an exact saved live match in memory;
+                        # unlike preview it neither applies nor saves a layout.
+                        ipc.request("set_profile_auto", enabled=False)
+                        pinned = ipc.request("status")["daemon"].get("profile_override")
+                        if pinned != self.observed_profile:
+                            raise ValueError("live profile changed during adoption")
+                        self.last_action = "adopted " + str(self.observed_profile)
+                    self.health = "HA uncertain; live route verified" if verified else "HA uncertain; live layout unverified"
+                    return
+                if self.count < 2 or now - self.since < POLL:
+                    self.health = "route debounce"
+                    return
+                # Modes, DPMS and query errors do not rearm high-mode attempts.
+                key = (desired, json.dumps(profiles, sort_keys=True),
+                       tuple(sorted((m["name"], m.get("serial", "")) for m in monitors)))
+                if key != self.key:
+                    self.key = key
+                    self.route_attempted = self.recovery_attempted = False
+                    self.reset_mismatch()
+                if (desired not in profiles or not topology(monitors, profiles, profiles[desired])
+                        or (desired == "tv-game" and targets(profiles[desired])[0]["name"] != TV_OUTPUT)):
+                    self.reset_mismatch()
+                    self.health = "topology unavailable or asleep"
+                    return
+                if self.selected != desired or daemon.get("profile_override") not in (
+                        ("tv-game", "tv-recovery") if desired == "tv-game" else ("desk",)):
+                    if self.route_attempted:
+                        self.health = "route attempt inhibited"
+                        return
+                    self.route_attempted = True
+                    self.transaction(ipc, desired, profiles)
+                    self.selected, self.error = desired, None
+                    self.reset_mismatch()
+                    self.health = "route applied"
+                    return
+                if desired != "tv-game":
+                    self.health = "desk"
+                    self.reset_mismatch()
+                    return
+                state = check(monitors, self.system.drm())
+                self.health = state["health"]
+                if self.health != "mismatch":
+                    self.reset_mismatch()
+                    return
+                signature = (state["expected"], state["actual"])
+                if signature != self.mismatch:
+                    self.mismatch, self.mismatch_since, self.mismatch_count = signature, now, 1
+                else:
+                    self.mismatch_count += 1
+                if self.mismatch_count < 2 or now - self.mismatch_since < POLL:
+                    return
+                if self.recovery_attempted:
+                    self.health = "recovery inhibited"
+                    return
+                self.recovery_attempted = True
+                if "tv-recovery" not in profiles or targets(profiles["tv-recovery"])[0]["name"] != TV_OUTPUT:
+                    raise ValueError("TV recovery profile unavailable")
+                self.transaction(ipc, "tv-recovery", profiles, verify=True)
+                # The recovery snapshot is now committed. A rejected preferred
+                # preview rolls back to it rather than trying a mode ladder.
+                self.transaction(ipc, "tv-game", profiles, verify=True)
+                self.health, self.error = "recovered", None
+                self.reset_mismatch()
+        except ERRORS as exc:
+            self.candidate, self.count = None, 0
+            self.reset_mismatch()
+            self.health, self.error = "unavailable", str(exc)
+
+
+def runtime_dir():
+    path = Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/" + str(os.getuid())))
+    info = path.stat()
+    if not path.is_absolute() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("XDG_RUNTIME_DIR must be a private directory owned by this user")
+    return path
+
+
+@contextlib.contextmanager
+def coordinator_lock(runtime):
+    fd = os.open(runtime / "display-controller.lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path, text):
+    temporary = path.with_name(path.name + "." + str(os.getpid()))
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+class Child:
+    def __init__(self, spawn=subprocess.Popen):
+        self.spawn, self.proc = spawn, None
+
+    def start(self):
+        if self.proc is None:
+            self.proc = self.spawn(["/usr/bin/hyprmoncfgd", "--debounce", "30s"])
+
+    def stop(self):
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=2)
+            else:
+                self.proc.wait(timeout=2)
+
+
+def startup(system, coordinator):
+    """Pin the verified live layout before the child's 30-second debounce."""
+    deadline = coordinator.clock() + 15
+
+    def bounded(operation):
+        if coordinator.clock() >= deadline:
+            raise TimeoutError("startup preservation deadline")
+        result = operation()
+        if coordinator.clock() >= deadline:
+            raise TimeoutError("startup preservation deadline")
+        return result
+
+    while coordinator.clock() < deadline:
+        try:
+            with system.ipc(timeout=min(3, deadline - coordinator.clock())) as ipc:
+                daemon = bounded(lambda: ipc.request("status"))["daemon"]
+                coordinator.daemon_ready = bool(daemon.get("running"))
+                if daemon.get("preview"):
+                    # A human who opened a preview now owns the startup layout.
+                    # The daemon itself defers automatic selection during it.
+                    coordinator.health = "preview"
+                    return
+                if daemon.get("unmanaged"):
+                    raise ValueError("startup display management is disabled")
+                editor = bounded(lambda: ipc.request("editor_state"))
+                profiles = {p["name"]: p for p in editor["profiles"]
+                            if p["name"] in ("desk", "tv-game", "tv-recovery")}
+                monitors = bounded(system.monitors)
+                if not bounded(lambda: coordinator.adopt(editor, profiles, monitors)):
+                    raise ValueError("startup live layout is not a verified saved route")
+                if daemon.get("profile_override") != coordinator.observed_profile:
+                    bounded(lambda: ipc.request("set_profile_auto", enabled=False))
+                    pinned = bounded(lambda: ipc.request("status"))["daemon"].get("profile_override")
+                    if pinned != coordinator.observed_profile:
+                        raise ValueError("startup layout changed during adoption")
+                coordinator.last_action = "adopted " + str(coordinator.observed_profile)
+                return
+        except OSError:
+            # Socket creation and initial read-only queries may lag child start.
+            # Every operation is bounded; the last can overrun by at most 5s,
+            # still leaving 10s before automatic reconciliation is possible.
+            if coordinator.clock() >= deadline:
+                break
+            system.wait(min(0.25, deadline - coordinator.clock()))
+    raise TimeoutError("startup preservation failed before automatic reconciliation")
+
+
+def supervise(system, coordinator, child, publish):
+    try:
+        while not system.stop.is_set():
+            # Read HA first, but keep daemon management available even when
+            # intent is unknown. Adoption below is observational only.
+            initial = None
+            if child.proc is None:
+                try:
+                    initial = system.ha()
+                except ERRORS as exc:
+                    initial, coordinator.error = [], "HA: " + str(exc)
+                child.start()
+                if child.proc is not None and child.proc.poll() is None:
+                    try:
+                        startup(system, coordinator)
+                    except ERRORS as exc:
+                        coordinator.error = "startup: " + str(exc)
+                        raise
+            if child.proc is not None:
+                if child.proc.poll() is not None:
+                    coordinator.health, coordinator.error = "stopped", "hyprmoncfgd exited"
+                    publish(coordinator.status(child.proc.pid))
+                    break
+                coordinator.step(initial)
+            publish(coordinator.status(child.proc.pid if child.proc else None))
+            system.stop.wait(POLL)
+    finally:
+        child.stop()
+        coordinator.health = "stopped"
+        coordinator.daemon_ready = False
+        publish(coordinator.status())
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--status", action="store_true", help="print cached coordinator JSON")
+    modes.add_argument("--check", action="store_true", help="read-only scanout check: 0 healthy, 1 mismatch, 2 unavailable")
+    args = parser.parse_args(argv)
+    stop = threading.Event()
+    if args.check:
+        try:
+            system = System(None, stop)
+            state = check(system.monitors(), system.drm())
+        except ERRORS as exc:
+            state = {"health": "unavailable", "error": str(exc)}
+        print(json.dumps(state))
+        return {"healthy": 0, "mismatch": 1}.get(state["health"], 2)
+    try:
+        runtime = runtime_dir()
+        if args.status:
+            print(json.dumps(json.loads((runtime / "display-controller-status.json").read_text())))
+            return 0
+        with coordinator_lock(runtime):
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, lambda *_: stop.set())
+            system = System(runtime, stop)
+            coordinator = Coordinator(system)
+
+            def publish(state):
+                atomic_write(runtime / "display-controller-status.json", json.dumps(state) + "\n")
+                if state["selected_route"]:
+                    atomic_write(runtime / "ha-display-profile", state["selected_route"] + "\n")
+
+            supervise(system, coordinator, Child(), publish)
+        return 0
+    except ERRORS as exc:
+        print(json.dumps({"health": "unavailable", "error": str(exc)}))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
