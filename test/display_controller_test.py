@@ -781,6 +781,29 @@ class FakeSocket:
         self.closed = True
 
 
+
+class LauncherTests(unittest.TestCase):
+    def test_hdr_override_is_inside_gamescope_and_preserves_command(self):
+        launcher = SOURCE.with_name("hdr-game-launch")
+        with tempfile.TemporaryDirectory() as directory:
+            gamescope = Path(directory) / "gamescope"
+            gamescope.write_text("#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done\n"
+                                 "shift\nexport DXVK_HDR=0\nexec \"$@\"\n")
+            gamescope.chmod(0o700)
+            command = ["/usr/bin/python3", "-c",
+                       "import json,os,sys; print(json.dumps([os.getenv('DXVK_HDR'),sys.argv[1:]])); sys.exit(7)",
+                       "argument with spaces", "literal $argument"]
+            env = dict(os.environ, DXVK_HDR="0")
+            nested = subprocess.run([str(launcher), str(gamescope), "-f", "--", *command],
+                                    text=True, capture_output=True, env=env)
+            self.assertEqual(nested.returncode, 7, nested.stderr)
+            self.assertEqual(json.loads(nested.stdout), ["1", command[3:]])
+            direct = subprocess.run([str(launcher), *command],
+                                    text=True, capture_output=True, env=env)
+            self.assertEqual(direct.returncode, 7, direct.stderr)
+            self.assertEqual(json.loads(direct.stdout), ["0", command[3:]])
+
+
 class IPCTests(unittest.TestCase):
     def test_exact_envelopes_interleaved_events_and_same_connection(self):
         sock = FakeSocket()

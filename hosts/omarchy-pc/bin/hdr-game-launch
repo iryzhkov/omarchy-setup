@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
 # Hyprland owns fullscreen HDR metadata. Display routing belongs to the coordinator.
+# Gamescope may initialize the child with DXVK_HDR=0 before its Wayland output
+# advertises HDR. Override it inside Gamescope, after the command separator.
+if [[ ${1##*/} == gamescope ]]; then
+  args=("$@")
+  for ((i = 1; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == -- ]]; then
+      exec "${args[@]:0:i+1}" env DXVK_HDR=1 "${args[@]:i+1}"
+    fi
+  done
+fi
 exec "$@"
