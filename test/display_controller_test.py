@@ -135,6 +135,7 @@ class FakeSystem:
         self.mon = []
         self.ws = [{"id": n, "name": str(n), "monitor": "DP-1"} for n in (1, 2)]
         self.workspace_fault: Any = None
+        self.vanishing_workspace: Any = None
         self.workspace_error: Any = None
         self.apply("desk")
         self.override = "desk"
@@ -235,6 +236,7 @@ class FakeSystem:
                                 if selector == rule["workspace"] and selector != system.workspace_fault:
                                     workspace["monitor"] = rule.get("output_name")
 
+                    system.ws = [w for w in system.ws if str(w["id"]) != system.vanishing_workspace]
                     system.preview = {"transaction_id": "owned"}
                     return {"id": "owned"}
                 if params.get("transaction_id") != "owned":
@@ -304,6 +306,38 @@ class CoordinatorTests(unittest.TestCase):
         self.assertTrue(all("profile_name" not in p and p["save_on_commit"] is False for p in previews))
         self.assertTrue(all(p["save"] is False for m, p in self.system.mutations() if m == "commit"))
 
+    def test_empty_workspace_can_disappear_during_route_change(self):
+        for initial, states, target in (("desk", ha(), "tv-game"),
+                                        ("tv-game", ha("HDMI 2"), "desk")):
+            with self.subTest(initial=initial):
+                self.setUp()
+                self.system.apply(initial)
+                self.system.override = initial
+                self.coordinator.selected = initial
+                output = dc.targets(self.system.profiles[initial])[0]["name"]
+                for workspace in self.system.ws:
+                    workspace.update(monitor=output, windows=1)
+                self.system.ws[1].update(windows=0, ispersistent=False)
+                self.system.vanishing_workspace = "2"
+                self.system.states = states
+                self.tick(2)
+                self.assertEqual(self.system.live, target)
+                self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "commit"])
+                self.assertIsNone(self.coordinator.error)
+                self.assertEqual(self.system.profiles, self.system.saved)
+
+    def test_missing_occupied_persistent_or_unknown_workspace_reverts(self):
+        for metadata in ({"windows": 1}, {"windows": 0, "ispersistent": True},
+                         {"windows": 0}, {}):
+            with self.subTest(metadata=metadata):
+                self.setUp()
+                self.system.ws[1].update(metadata)
+                self.system.vanishing_workspace = "2"
+                self.tick(2)
+                self.assertEqual(self.system.live, "desk")
+                self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "revert"])
+                self.assertIn("workspace placement", self.coordinator.error)
+
     def test_stranded_workspace_reverts_both_directions(self):
         for initial, states in (("desk", ha()), ("tv-game", ha("HDMI 2"))):
             with self.subTest(initial=initial):
@@ -325,6 +359,26 @@ class CoordinatorTests(unittest.TestCase):
                 mutations = self.system.mutations()
                 self.tick(5)
                 self.assertEqual(self.system.mutations(), mutations)
+
+    def test_rollback_allows_only_missing_empty_nonpersistent_workspace(self):
+        for metadata, error in (
+                ({"windows": 0, "ispersistent": False}, "workspace placement verification"),
+                ({"windows": 1}, "workspace rollback verification"),
+                ({"windows": 0, "ispersistent": True}, "workspace rollback verification"),
+                ({"windows": 0}, "workspace rollback verification")):
+            with self.subTest(metadata=metadata):
+                self.setUp()
+                self.system.ws[1].update(metadata)
+                placement = self.system.workspaces()
+                self.coordinator.candidate = "tv-game"
+                # The target still has a stranded workspace, so revert. Hyprland
+                # may remove the old empty workspace during rollback as well.
+                with mock.patch.object(self.system, "workspaces", side_effect=[
+                        placement, {"1": "DP-1"}, {"1": "DP-1"}]):
+                    with self.system.ipc() as ipc, self.assertRaisesRegex(ValueError, error):
+                        self.coordinator.transaction(ipc, "tv-game", self.system.profiles)
+                self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "revert"])
+                self.assertEqual(self.system.live, "desk")
 
     def test_workspace_query_failure_prevents_preview(self):
         self.system.workspace_error = TimeoutError("workspace query")

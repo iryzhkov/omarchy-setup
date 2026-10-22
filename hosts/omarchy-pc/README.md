@@ -76,6 +76,19 @@ transition HDR metadata. Run that physical check separately, with the user
 ready to report loss of signal. Stop after a failed transition instead of
 repeatedly modesetting a stuck driver.
 
+## Workspace and Big Picture placement
+
+Route verification allows an empty, nonpersistent workspace to disappear when
+its old monitor is disabled. Occupied, persistent and unknown workspaces must
+survive, and every remaining regular workspace must be on the selected output.
+Rollback applies the same distinction. This avoids rejecting a good route just
+because Hyprland removed an unused workspace.
+
+The host overlay opens Steam Big Picture fullscreen on its workspace's current
+monitor. It does not pin Steam or games to a connector or a numbered workspace.
+The rule applies when the Big Picture window is created; an already-running
+off-screen window needs a one-time focus/fullscreen correction.
+
 ## Rollback
 
 Stop the display service before restoring the backed-up scripts and its previous

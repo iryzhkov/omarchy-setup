@@ -328,11 +328,19 @@ def targets(profile):
     return [o for o in profile["outputs"] if o.get("enabled") is True]
 
 
+class WorkspacePlacement(dict):
+    """Placement plus workspaces that cannot legitimately disappear while moving."""
+
+    def __init__(self):
+        super().__init__()
+        self.required = set()
+
+
 def workspace_placement(workspaces):
     """Read regular workspace selectors and their current output."""
     if not isinstance(workspaces, list):
         raise ValueError("invalid compositor workspace list")
-    placement = {}
+    placement = WorkspacePlacement()
     for workspace in workspaces:
         if not isinstance(workspace, dict):
             raise ValueError("invalid compositor workspace")
@@ -349,6 +357,10 @@ def workspace_placement(workspaces):
         if selector in placement:
             raise ValueError("duplicate compositor workspace")
         placement[selector] = monitor
+        # Hyprland may remove an empty, nonpersistent workspace after its monitor
+        # is disabled. Missing metadata is not evidence that a workspace is empty.
+        if workspace.get("windows") != 0 or workspace.get("ispersistent") is not False:
+            placement.required.add(selector)
     if not placement:
         raise ValueError("no regular workspaces available")
     return placement
@@ -478,7 +490,7 @@ class Coordinator:
                     raise ValueError("route or topology changed during preview")
             after = self.system.workspaces()
             output = targets(effective)[0]["name"]
-            if not placement.keys() <= after.keys() or any(m != output for m in after.values()):
+            if not placement.required <= after.keys() or any(m != output for m in after.values()):
                 raise ValueError("workspace placement verification failed for " + name)
             ipc.request("commit", transaction_id=transaction_id, save=False)
         except ERRORS:
@@ -486,7 +498,8 @@ class Coordinator:
             # may leave the deadline armed; never reclaim someone else's preview.
             ipc.request("revert", transaction_id=transaction_id)
             restored = self.system.workspaces()
-            if any(restored.get(w) != m for w, m in placement.items()):
+            if (not placement.required <= restored.keys()
+                    or any(restored[w] != m for w, m in placement.items() if w in restored)):
                 raise ValueError("workspace rollback verification failed for " + name)
             raise
         self.last_action = "committed " + name
