@@ -399,6 +399,42 @@ class CoordinatorTests(unittest.TestCase):
         self.tick(4)
         self.system.wake.assert_called_once_with()
 
+    def test_single_desk_glitch_does_not_authorize_tv_wake(self):
+        self.route_tv()
+        self.system.mon[1]["dpmsStatus"] = False
+        self.tick(2)
+        self.system.states = ha("HDMI 1")
+        self.tick()
+        self.system.states = ha()
+        self.tick(3)
+        self.system.wake.assert_not_called()
+
+    def test_transient_unsafe_first_tv_poll_discards_wake(self):
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.mon[0]["dpmsStatus"] = False
+        self.system.states = ha()
+        self.system.mon.append({"name": "DP-9", "disabled": True})
+        self.tick()
+        self.system.mon.pop()
+        self.tick(3)
+        self.system.wake.assert_not_called()
+
+    def test_pending_wake_expires_during_blocking_query(self):
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.mon[0]["dpmsStatus"] = False
+        self.system.states = ha()
+        self.tick()
+        original = self.system.monitors
+        def delayed_monitors():
+            self.system.advance(4 * dc.POLL)
+            return original()
+        with mock.patch.object(self.system, "monitors", side_effect=delayed_monitors):
+            self.tick()
+        self.tick(2)
+        self.system.wake.assert_not_called()
+
     def test_stale_wake_intent_is_discarded_after_query_failure(self):
         self.system.states = ha("HDMI 1")
         self.tick(2)

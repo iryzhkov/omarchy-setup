@@ -544,13 +544,14 @@ class Coordinator:
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
             now = self.clock()
-            if desired == "tv-game" and self.last_known_route == "desk":
+            if (desired == "tv-game" and desired != self.candidate
+                    and self.last_known_route == "desk"):
                 self.wake_intent = True
                 self.wake_deadline = now + 3 * POLL
+                # Consume the confirmed desk edge even if a later query fails.
+                self.last_known_route = "tv-game"
             elif desired != "tv-game":
                 self.wake_intent = False
-            if desired is not None:
-                self.last_known_route = desired
             if now > self.wake_deadline:
                 self.wake_intent = False
             self.ha_route = desired
@@ -585,19 +586,26 @@ class Coordinator:
                 # A compositor match is enough to retain the current route;
                 # physical mismatch is handled by bounded recovery below.
                 self.adopt(editor, profiles, monitors, verify_scanout=False)
-                if self.count < 2 or now - self.since < POLL:
-                    self.health = "route debounce"
-                    return
-                # A confirmed sleep/wake cycle starts a new bounded attempt.
-                # Query failures, mode changes and continuous awake polls do not.
                 supported = (desired in profiles
                              and topology(monitors, profiles, profiles[desired], require_awake=False)
                              and (desired != "tv-game" or targets(profiles[desired])[0]["name"] == TV_OUTPUT))
+                if not supported:
+                    self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
+                if self.count < 2 or now - self.since < POLL:
+                    self.health = "route debounce"
+                    return
+                self.last_known_route = desired
+                # A confirmed sleep/wake cycle starts a new bounded attempt.
+                # Query failures, mode changes and continuous awake polls do not.
                 if supported:
                     enabled = next(m for m in monitors if m.get("disabled") is False)
                     if enabled.get("dpmsStatus") is False:
                         self.sleep_count += 1
                         self.sleep_observed = self.sleep_count >= 2
+                        if self.clock() > self.wake_deadline:
+                            self.wake_intent = False
                         if self.wake_intent:
                             # Only a fresh desk -> TV selection may wake displays.
                             # Existing TV intent at startup or intentional idle
