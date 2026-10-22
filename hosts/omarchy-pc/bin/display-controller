@@ -310,6 +310,9 @@ class System:
             raise ValueError("invalid compositor monitor list")
         return result
 
+    def wake(self):
+        run(["hyprctl", "dispatch", 'hl.dsp.dpms({ action = "on" })'])
+
     def workspaces(self):
         return workspace_placement(json.loads(run(["hyprctl", "workspaces", "-j"])))
 
@@ -376,14 +379,14 @@ def require_ipc_only(daemon):
         raise ValueError("hyprmoncfgd is not running")
 
 
-def topology(monitors, profiles, target):
-    """Permit only the known connectors and one awake current output."""
+def topology(monitors, profiles, target, require_awake=True):
+    """Permit only known connectors and one current output; normally awake."""
     names = [m.get("name") for m in monitors]
     known = {o["name"] for p in profiles.values() for o in p["outputs"]}
     enabled = [m for m in monitors if m.get("disabled") is False]
     wanted = targets(target)
     if (not names or len(names) != len(set(names)) or not set(names) <= known
-            or len(enabled) != 1 or enabled[0].get("dpmsStatus") is not True
+            or len(enabled) != 1 or (require_awake and enabled[0].get("dpmsStatus") is not True)
             or len(wanted) != 1 or wanted[0]["name"] not in names):
         return False
     # Connector names alone cannot authorize an unfamiliar replacement display.
@@ -409,6 +412,12 @@ class Coordinator:
         self.key = None
         self.route_attempted = False
         self.recovery_attempted = False
+        self.sleep_observed = False
+        self.sleep_count = 0
+        self.wake_rearmed = False
+        self.wake_intent = False
+        self.wake_deadline = 0
+        self.last_known_route = None
         self.mismatch = None
         self.mismatch_since = 0
         self.mismatch_count = 0
@@ -534,8 +543,18 @@ class Coordinator:
                 desired = choose(self.system.ha() if states is None else states)
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
-            self.ha_route = desired
             now = self.clock()
+            if (desired == "tv-game" and desired != self.candidate
+                    and self.last_known_route == "desk"):
+                self.wake_intent = True
+                self.wake_deadline = now + 3 * POLL
+                # Consume the confirmed desk edge even if a later query fails.
+                self.last_known_route = "tv-game"
+            elif desired != "tv-game":
+                self.wake_intent = False
+            if now > self.wake_deadline:
+                self.wake_intent = False
+            self.ha_route = desired
             if desired is None:
                 self.candidate, self.count = None, 0
                 self.reset_mismatch()
@@ -549,6 +568,9 @@ class Coordinator:
                 require_ipc_only(daemon)
                 self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
+                    self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
                     self.reset_mismatch()
                     self.health = "preview" if daemon.get("preview") else "unmanaged"
                     return
@@ -564,15 +586,51 @@ class Coordinator:
                 # A compositor match is enough to retain the current route;
                 # physical mismatch is handled by bounded recovery below.
                 self.adopt(editor, profiles, monitors, verify_scanout=False)
+                supported = (desired in profiles
+                             and topology(monitors, profiles, profiles[desired], require_awake=False)
+                             and (desired != "tv-game" or targets(profiles[desired])[0]["name"] == TV_OUTPUT))
+                if not supported:
+                    self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
                 if self.count < 2 or now - self.since < POLL:
                     self.health = "route debounce"
                     return
-                # Modes, DPMS and query errors do not rearm high-mode attempts.
+                self.last_known_route = desired
+                # A confirmed sleep/wake cycle starts a new bounded attempt.
+                # Query failures, mode changes and continuous awake polls do not.
+                if supported:
+                    enabled = next(m for m in monitors if m.get("disabled") is False)
+                    if enabled.get("dpmsStatus") is False:
+                        self.sleep_count += 1
+                        self.sleep_observed = self.sleep_count >= 2
+                        if self.clock() > self.wake_deadline:
+                            self.wake_intent = False
+                        if self.wake_intent:
+                            # Only a fresh desk -> TV selection may wake displays.
+                            # Existing TV intent at startup or intentional idle
+                            # sleep never causes a periodic wake.
+                            self.wake_intent = False
+                            self.system.wake()
+                            self.health = "display wake requested"
+                            return
+                    elif enabled.get("dpmsStatus") is True:
+                        if self.sleep_observed and not self.wake_rearmed:
+                            self.route_attempted = self.recovery_attempted = False
+                            self.wake_rearmed = True
+                        self.sleep_count = 0
+                        self.sleep_observed = False
+                        self.wake_intent = False
+                else:
+                    self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
                 key = (desired, json.dumps(profiles, sort_keys=True),
                        tuple(sorted((m["name"], m.get("serial", "")) for m in monitors)))
                 if key != self.key:
                     self.key = key
                     self.route_attempted = self.recovery_attempted = False
+                    self.wake_rearmed = False
                     self.reset_mismatch()
                 if (desired not in profiles or not topology(monitors, profiles, profiles[desired])
                         or (desired == "tv-game" and targets(profiles[desired])[0]["name"] != TV_OUTPUT)):
@@ -619,6 +677,9 @@ class Coordinator:
                 self.health, self.error = "recovered", None
                 self.reset_mismatch()
         except ERRORS as exc:
+            self.wake_intent = False
+            self.sleep_count = 0
+            self.sleep_observed = False
             self.candidate, self.count = None, 0
             self.reset_mismatch()
             self.health, self.error = "unavailable", str(exc)
