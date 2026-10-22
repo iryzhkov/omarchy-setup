@@ -359,7 +359,7 @@ def workspace_placement(workspaces):
         placement[selector] = monitor
         # Hyprland may remove an empty, nonpersistent workspace after its monitor
         # is disabled. Missing metadata is not evidence that a workspace is empty.
-        if workspace.get("windows") != 0 or workspace.get("ispersistent", False) is not False:
+        if workspace.get("windows") != 0 or workspace.get("ispersistent") is not False:
             placement.required.add(selector)
     if not placement:
         raise ValueError("no regular workspaces available")

@@ -327,7 +327,8 @@ class CoordinatorTests(unittest.TestCase):
                 self.assertEqual(self.system.profiles, self.system.saved)
 
     def test_missing_occupied_persistent_or_unknown_workspace_reverts(self):
-        for metadata in ({"windows": 1}, {"windows": 0, "ispersistent": True}, {}):
+        for metadata in ({"windows": 1}, {"windows": 0, "ispersistent": True},
+                         {"windows": 0}, {}):
             with self.subTest(metadata=metadata):
                 self.setUp()
                 self.system.ws[1].update(metadata)
@@ -358,6 +359,26 @@ class CoordinatorTests(unittest.TestCase):
                 mutations = self.system.mutations()
                 self.tick(5)
                 self.assertEqual(self.system.mutations(), mutations)
+
+    def test_rollback_allows_only_missing_empty_nonpersistent_workspace(self):
+        for metadata, error in (
+                ({"windows": 0, "ispersistent": False}, "workspace placement verification"),
+                ({"windows": 1}, "workspace rollback verification"),
+                ({"windows": 0, "ispersistent": True}, "workspace rollback verification"),
+                ({"windows": 0}, "workspace rollback verification")):
+            with self.subTest(metadata=metadata):
+                self.setUp()
+                self.system.ws[1].update(metadata)
+                placement = self.system.workspaces()
+                self.coordinator.candidate = "tv-game"
+                # The target still has a stranded workspace, so revert. Hyprland
+                # may remove the old empty workspace during rollback as well.
+                with mock.patch.object(self.system, "workspaces", side_effect=[
+                        placement, {"1": "DP-1"}, {"1": "DP-1"}]):
+                    with self.system.ipc() as ipc, self.assertRaisesRegex(ValueError, error):
+                        self.coordinator.transaction(ipc, "tv-game", self.system.profiles)
+                self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "revert"])
+                self.assertEqual(self.system.live, "desk")
 
     def test_workspace_query_failure_prevents_preview(self):
         self.system.workspace_error = TimeoutError("workspace query")
