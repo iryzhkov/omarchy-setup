@@ -153,6 +153,7 @@ class FakeSystem:
         self.connections = 0
         self.inflight: Any = None
         self.wait_hook: Any = None
+        self.wake = mock.Mock(side_effect=lambda: next(m for m in self.mon if not m["disabled"]).update(dpmsStatus=True))
 
     def advance(self, seconds):
         self.now += seconds
@@ -365,6 +366,45 @@ class CoordinatorTests(unittest.TestCase):
                     self.system.mon[1]["serial"] = "replacement"
                 self.tick(4)
                 self.assertEqual(self.system.mutations(), [])
+
+    def test_confirmed_sleep_wake_rearms_failed_route_once(self):
+        self.system.fail["preview"] = TimeoutError("transient HDMI switch")
+        self.tick(3)
+        before = len(self.system.mutations())
+        self.tick(3)
+        self.assertEqual(len(self.system.mutations()), before)
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick(2)
+        self.system.mon[0]["dpmsStatus"] = True
+        self.system.fail.clear()
+        self.tick(3)
+        self.assertEqual(self.coordinator.selected, "tv-game")
+        after = len(self.system.mutations())
+        self.tick(4)
+        self.assertEqual(len(self.system.mutations()), after)
+
+    def test_fresh_tv_selection_wakes_once_but_unchanged_intent_does_not(self):
+        self.system.wake = mock.Mock(side_effect=lambda: self.system.mon[0].update(dpmsStatus=True))
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick(2)
+        self.system.wake.assert_not_called()
+        self.system.states = ha()
+        self.tick(3)
+        self.system.wake.assert_called_once_with()
+        self.assertEqual(self.coordinator.selected, "tv-game")
+        for m in self.system.mon:
+            m["dpmsStatus"] = False
+        self.tick(4)
+        self.system.wake.assert_called_once_with()
+
+    def test_startup_sleep_does_not_wake_from_existing_tv_intent(self):
+        self.system.wake = mock.Mock()
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick(4)
+        self.system.wake.assert_not_called()
+        self.assertEqual(self.system.mutations(), [])
 
     def test_mismatch_requires_two_stable_observations(self):
         self.route_tv()
