@@ -413,7 +413,11 @@ class Coordinator:
         self.route_attempted = False
         self.recovery_attempted = False
         self.sleep_observed = False
+        self.sleep_count = 0
+        self.wake_rearmed = False
         self.wake_intent = False
+        self.wake_deadline = 0
+        self.last_known_route = None
         self.mismatch = None
         self.mismatch_since = 0
         self.mismatch_count = 0
@@ -539,12 +543,17 @@ class Coordinator:
                 desired = choose(self.system.ha() if states is None else states)
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
-            if desired == "tv-game" and self.ha_route == "desk":
+            now = self.clock()
+            if desired == "tv-game" and self.last_known_route == "desk":
                 self.wake_intent = True
+                self.wake_deadline = now + 3 * POLL
             elif desired != "tv-game":
                 self.wake_intent = False
+            if desired is not None:
+                self.last_known_route = desired
+            if now > self.wake_deadline:
+                self.wake_intent = False
             self.ha_route = desired
-            now = self.clock()
             if desired is None:
                 self.candidate, self.count = None, 0
                 self.reset_mismatch()
@@ -559,6 +568,8 @@ class Coordinator:
                 self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
                     self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
                     self.reset_mismatch()
                     self.health = "preview" if daemon.get("preview") else "unmanaged"
                     return
@@ -579,12 +590,14 @@ class Coordinator:
                     return
                 # A confirmed sleep/wake cycle starts a new bounded attempt.
                 # Query failures, mode changes and continuous awake polls do not.
-                supported = desired in profiles and topology(
-                    monitors, profiles, profiles[desired], require_awake=False)
+                supported = (desired in profiles
+                             and topology(monitors, profiles, profiles[desired], require_awake=False)
+                             and (desired != "tv-game" or targets(profiles[desired])[0]["name"] == TV_OUTPUT))
                 if supported:
                     enabled = next(m for m in monitors if m.get("disabled") is False)
                     if enabled.get("dpmsStatus") is False:
-                        self.sleep_observed = True
+                        self.sleep_count += 1
+                        self.sleep_observed = self.sleep_count >= 2
                         if self.wake_intent:
                             # Only a fresh desk -> TV selection may wake displays.
                             # Existing TV intent at startup or intentional idle
@@ -594,15 +607,22 @@ class Coordinator:
                             self.health = "display wake requested"
                             return
                     elif enabled.get("dpmsStatus") is True:
-                        if self.sleep_observed:
-                            self.key = None
+                        if self.sleep_observed and not self.wake_rearmed:
+                            self.route_attempted = self.recovery_attempted = False
+                            self.wake_rearmed = True
+                        self.sleep_count = 0
                         self.sleep_observed = False
                         self.wake_intent = False
+                else:
+                    self.wake_intent = False
+                    self.sleep_count = 0
+                    self.sleep_observed = False
                 key = (desired, json.dumps(profiles, sort_keys=True),
                        tuple(sorted((m["name"], m.get("serial", "")) for m in monitors)))
                 if key != self.key:
                     self.key = key
                     self.route_attempted = self.recovery_attempted = False
+                    self.wake_rearmed = False
                     self.reset_mismatch()
                 if (desired not in profiles or not topology(monitors, profiles, profiles[desired])
                         or (desired == "tv-game" and targets(profiles[desired])[0]["name"] != TV_OUTPUT)):
@@ -649,6 +669,9 @@ class Coordinator:
                 self.health, self.error = "recovered", None
                 self.reset_mismatch()
         except ERRORS as exc:
+            self.wake_intent = False
+            self.sleep_count = 0
+            self.sleep_observed = False
             self.candidate, self.count = None, 0
             self.reset_mismatch()
             self.health, self.error = "unavailable", str(exc)

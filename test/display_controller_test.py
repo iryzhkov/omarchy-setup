@@ -399,6 +399,74 @@ class CoordinatorTests(unittest.TestCase):
         self.tick(4)
         self.system.wake.assert_called_once_with()
 
+    def test_stale_wake_intent_is_discarded_after_query_failure(self):
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.states = ha()
+        self.system.connect_error = TimeoutError("IPC unavailable")
+        self.tick(4)
+        self.system.connect_error = None
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick(3)
+        self.system.wake.assert_not_called()
+
+    def test_pending_wake_expires_while_debounce_is_delayed(self):
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.states = ha()
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick()
+        self.system.advance(4 * dc.POLL)
+        self.tick(3)
+        self.system.wake.assert_not_called()
+
+    def test_fresh_tv_selection_tolerates_unknown_ha_between_known_routes(self):
+        self.system.states = ha("HDMI 1")
+        self.tick(2)
+        self.system.states = ha(screen="unknown")
+        self.tick(2)
+        self.system.states = ha()
+        self.system.mon[0]["dpmsStatus"] = False
+        self.tick(3)
+        self.system.wake.assert_called_once_with()
+        self.assertEqual(self.coordinator.selected, "tv-game")
+
+    def test_fresh_selection_does_not_wake_unsafe_layouts(self):
+        for kind in ("preview", "unmanaged", "identity", "two-enabled", "wrong-target", "no-target"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.system.states = ha("HDMI 1")
+                self.tick(2)
+                self.system.mon[0]["dpmsStatus"] = False
+                self.system.states = ha()
+                if kind == "preview":
+                    self.system.preview = {"transaction_id": "human"}
+                elif kind == "unmanaged":
+                    self.system.unmanaged = True
+                elif kind == "identity":
+                    self.system.profiles["tv-game"]["outputs"][1]["serial"] = "expected"
+                    self.system.mon[1]["serial"] = "other"
+                elif kind == "two-enabled":
+                    self.system.mon[1]["disabled"] = False
+                elif kind == "wrong-target":
+                    self.system.profiles["tv-game"] = profile("tv-game", "DP-1", 3840, 2160)
+                else:
+                    for output in self.system.profiles["tv-game"]["outputs"]:
+                        output["enabled"] = False
+                self.tick(3)
+                self.system.wake.assert_not_called()
+                self.assertEqual(self.system.mutations(), [])
+
+    def test_repeated_failed_sleep_wake_cycles_have_one_retry_budget(self):
+        self.system.fail["preview"] = TimeoutError("switch failed")
+        self.tick(3)
+        for _ in range(3):
+            self.system.mon[0]["dpmsStatus"] = False
+            self.tick(2)
+            self.system.mon[0]["dpmsStatus"] = True
+            self.tick(3)
+        self.assertEqual(sum(method == "preview" for method, _ in self.system.mutations()), 2)
+
     def test_startup_sleep_does_not_wake_from_existing_tv_intent(self):
         self.system.wake = mock.Mock()
         self.system.mon[0]["dpmsStatus"] = False
