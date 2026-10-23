@@ -89,6 +89,31 @@ monitor. It does not pin Steam or games to a connector or a numbered workspace.
 The rule applies when the Big Picture window is created; an already-running
 off-screen window needs a one-time focus/fullscreen correction.
 
+## Receiver handshake recovery
+
+The controller can power-cycle the existing STR-AZ5000ES once when the HDMI
+connector reports Sony SONY AVSYSTEM instead of the saved TV, with no DRM
+scanout. Recovery requires two observations at least five seconds apart, the
+known connector topology, an awake HDMI output, the TV on HDMI3, receiver on
+Racing, and a complete checksummed kernel EDID matching the saved TV identity.
+The same evidence and IPC-only ownership are checked again before the action.
+Unknown replacement displays and manual previews still defer all recovery.
+
+After requesting off, the controller waits three seconds and always requests
+on, even if off timed out or cancellation interrupted the pause. It reselects
+Racing only if that is still the current source, TV intent remains, and no
+manual preview owns the display. It never applies a profile under the receiver
+alias. Normal profile transactions resume only after the real TV identity
+returns. A requested reset is not proof that the physical picture recovered.
+
+A reset consumes its attempt before sending the off request. Query errors,
+mode changes and continuous awake polls never rearm it. A confirmed desk
+selection or known-output sleep cycle permits another attempt, subject to a
+five-minute cooldown. Budgets are in memory for the service lifetime; an
+explicit service restart resets them. No additional timer or watchdog is used.
+The status includes receiver_recovery_attempted and reports pending, inhibited
+or requested handshake recovery separately from verified scanout health.
+
 ## Rollback
 
 Stop the display service before restoring the backed-up scripts and its previous
