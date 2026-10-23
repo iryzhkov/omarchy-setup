@@ -402,8 +402,45 @@ class Compositor(Host):
         self.never = set()
         self.on_wait: Any = None
         self.refill_metadata = {"windows": 0, "ispersistent": False}
+        self.active_ws = {"DP-1": 1}
+        self.focused = "DP-1"
+        self.lifecycle = []
         for index, m in enumerate(self.mon):
             m.update(id=index, refreshRate=60.0, scale=1.0, x=0, y=0, transform=0)
+
+    def regulars(self, output):
+        return [w for w in self.ws if w["monitor"] == output
+                and not w["name"].startswith("special:")]
+
+    def default_workspace(self, output):
+        # Monitor::findAvailableDefaultWS and workspace gap filling both choose
+        # the lowest free positive ID, in global workspace creation order.
+        number = 1
+        while any(w["id"] == number for w in self.ws):
+            number += 1
+        self.ws.append({"id": number, "name": str(number), "monitor": output,
+                        **self.refill_metadata})
+        self.active_ws[output] = number
+        self.lifecycle.append(("create", number, output))
+        return number
+
+    def monitor_workspaces(self):
+        if not self.refill:
+            return
+        for m in self.mon:
+            name = m["name"]
+            if m["disabled"]:
+                self.active_ws.pop(name, None)
+                self.ws = [w for w in self.ws if w["monitor"] != name
+                           or w.get("windows") != 0 or w.get("ispersistent") is not False]
+            elif name not in self.active_ws:
+                regulars = self.regulars(name)
+                if regulars:
+                    self.active_ws[name] = regulars[0]["id"]
+                else:
+                    self.default_workspace(name)
+        if self.focused not in self.active_ws:
+            self.focused = next(iter(self.active_ws))
 
     def wait(self, seconds):
         self.now += seconds
@@ -430,6 +467,8 @@ class Compositor(Host):
                                  "disabled": False, "dpmsStatus": True,
                                  "width": 1920, "height": 1080, "refreshRate": 60.0,
                                  "scale": 1.0, "x": 0, "y": 0, "transform": 0})
+                if self.refill:
+                    self.default_workspace(args[3])
             self.schedule("create", create)
         elif args[:2] == ("output", "remove"):
             own = next(m for m in self.mon if m["name"] == args[2])
@@ -438,6 +477,7 @@ class Compositor(Host):
             def remove():
                 self.mon = [m for m in self.mon if m["name"] != args[2]]
                 self.ws = [w for w in self.ws if w["monitor"] != args[2]]
+                self.active_ws.pop(args[2], None)
             self.schedule("remove", remove)
         elif args[0] == "eval":
             match = re.search(r'output=("[^"]+")', args[1])
@@ -456,6 +496,7 @@ class Compositor(Host):
                     # Only explicitly empty nonpersistent workspaces may disappear.
                     self.ws = [w for w in self.ws if w["monitor"] != name
                                or w.get("windows") != 0 or w.get("ispersistent") is not False]
+                self.monitor_workspaces()
             action = "disable" if "disabled=true" in args[1] else "mode"
             self.schedule(action, rule)
         elif args == ("reload",):
@@ -464,24 +505,47 @@ class Compositor(Host):
                     disabled = (m["name"] == vd.dc.TV_OUTPUT
                                 or self.disable_on_reload and m["name"].startswith("HEADLESS-"))
                     m.update(disabled=disabled, dpmsStatus=not disabled)
+                self.monitor_workspaces()
             self.schedule("reload", reload)
         else:
             raise AssertionError(args)
 
     def hypr(self, args):
-        if args[1] != "eval":
+        if args[1] != "eval" or not self.refill:
             return super().hypr(args)
-        before = {w["name"]: w["monitor"] for w in self.ws}
+        match = re.search(r'workspace=("[^"]+"),monitor=("[^"]+")', args[2])
+        assert match is not None
+        selector, target = map(json.loads, match.groups())
+        workspace = next((w for w in self.ws if selector == (
+            w["name"] if w["name"].startswith("special:") else
+            str(w["id"]) if w["id"] > 0 else "name:" + w["name"])), None)
+        if workspace is None or workspace["name"].startswith("special:"):
+            return super().hypr(args)
+        source = workspace["monitor"]
+        if source == target:
+            return "ok"
+        active = self.active_ws.get(source) == workspace["id"]
+        focused = self.focused == source
+        if active:
+            replacements = [w for w in self.regulars(source) if w is not workspace]
+            if replacements:
+                self.active_ws[source] = replacements[0]["id"]
+            else:
+                self.default_workspace(source)
+        old_target = self.active_ws.get(target)
         result = super().hypr(args)
-        if self.refill:
-            for source in set(before.values()):
-                enabled = any(m["name"] == source and m["disabled"] is False for m in self.mon)
-                regulars = [w for w in self.ws if w["monitor"] == source
-                            and not w["name"].startswith("special:")]
-                if enabled and not regulars:
-                    number = max([w["id"] for w in self.ws if w["id"] > 0] + [0]) + 1
-                    self.ws.append({"id": number, "name": str(number), "monitor": source,
-                                    **self.refill_metadata})
+        if active and focused:
+            self.active_ws[target] = workspace["id"]
+            self.focused = target
+            self.lifecycle.append(("focus", workspace["id"], target))
+            # Releasing Monitor's old active workspace weak reference destroys an
+            # empty nonpersistent target workspace after the dispatch completes.
+            replaced = next((w for w in self.ws if w["id"] == old_target), None)
+            if (replaced is not None and replaced.get("windows") == 0
+                    and replaced.get("ispersistent") is False
+                    and old_target not in self.active_ws.values()):
+                self.ws.remove(replaced)
+                self.lifecycle.append(("destroy", old_target, target))
         return result
 
     def run(self, args, timeout=5):
@@ -516,6 +580,87 @@ class AdapterTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         return vd.Session(host, self.path)
+
+    @staticmethod
+    def two_occupied_workspaces(c):
+        c.ws = [{"id": n, "name": str(n), "monitor": "DP-1",
+                 "windows": 1, "ispersistent": False} for n in (1, 2)] + [
+                     w for w in c.ws if w["name"].startswith("special:")]
+        c.active_ws = {"DP-1": 1}
+        c.focused = "DP-1"
+
+    def test_lowest_free_id_reuse_during_start(self):
+        c = Compositor(refill=True)
+        self.two_occupied_workspaces(c)
+        session = self.attach(c)
+        session.start((1920, 1080, 60, False))
+        output = session.load()["output"]
+        self.assertEqual(c.lifecycle[:4], [
+            ("create", 3, output), ("focus", 1, output),
+            ("destroy", 3, output), ("create", 3, "DP-1")])
+        self.assertTrue(all(w["monitor"] == output for w in c.ws))
+        self.assertEqual({w["id"] for w in c.regulars(output)}, {1, 2})
+        session.stop()
+        self.assertFalse(self.path.exists())
+
+    def test_lowest_free_id_reuse_during_stop_without_manual_retry(self):
+        c = Compositor(refill=True)
+        self.two_occupied_workspaces(c)
+        session = self.attach(c)
+        # Seed the successfully streamed state independently of start, so a
+        # start regression cannot prevent exercising the real stop adapter.
+        output = "HEADLESS-SUNSHINE-" + "a" * 32
+        c.command("output", "create", "headless", output)
+        c.ws = [w for w in c.ws if w["id"] != 3]
+        for w in c.ws:
+            w["monitor"] = output
+        c.mon[0].update(disabled=True, dpmsStatus=False)
+        c.active_ws = {output: 1}
+        c.focused = output
+        c.running = False
+        c.lifecycle.clear()
+        session.save({"version": 1, "service_active": True, "output": output,
+                      "profiles": copy.deepcopy(c.profiles),
+                      "mutated": True, "restored": False})
+        session.stop()
+        self.assertEqual(c.lifecycle[:4], [
+            ("create", 3, "DP-1"), ("focus", 1, "DP-1"),
+            ("destroy", 3, "DP-1"), ("create", 3, output)])
+        self.assertEqual({w["id"] for w in c.regulars("DP-1")}, {1, 2})
+        self.assertTrue(all(w["monitor"] == "DP-1" for w in c.ws))
+        self.assertNotIn(output, [m["name"] for m in c.mon])
+        self.assertTrue(c.running)
+        self.assertFalse(self.path.exists())
+
+    def test_interim_refuses_misplaced_occupied_persistent_or_unknown(self):
+        for metadata in ({"windows": 1, "ispersistent": False},
+                         {"windows": 0, "ispersistent": True},
+                         {}, {"windows": 0}, {"ispersistent": False},
+                         {"windows": False, "ispersistent": False},
+                         {"windows": None, "ispersistent": False},
+                         {"windows": "0", "ispersistent": False},
+                         {"windows": 0, "ispersistent": None}):
+            with self.subTest(metadata=metadata):
+                c = Compositor()
+                c.ws.append({"id": 3, "name": "3", "monitor": "DP-1", **metadata})
+                def leave_workspace(args, timeout=5):
+                    if args[1] == "eval" and 'workspace="3"' in args[2]:
+                        return "ok"
+                    return c.run(args, timeout)
+                with mock.patch.object(vd.dc, "run", side_effect=leave_workspace):
+                    with self.assertRaises(ValueError):
+                        vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, lambda: None)
+
+    def test_interim_keeps_preexisting_required_on_target_even_if_now_empty(self):
+        c = Compositor()
+        def leave_workspace(args, timeout=5):
+            if args[1] == "eval" and 'workspace="1"' in args[2]:
+                c.ws[0].update(windows=0, ispersistent=False)
+                return "ok"
+            return c.run(args, timeout)
+        with mock.patch.object(vd.dc, "run", side_effect=leave_workspace):
+            with self.assertRaises(ValueError):
+                vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, lambda: None)
 
     def test_refill_survives_until_disable_then_final_placement_is_verified(self):
         c = Compositor(refill=True)
@@ -579,6 +724,29 @@ class AdapterTests(unittest.TestCase):
             vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, guard, special_only=True)
             self.assertEqual(guard.call_count, 2)
             self.assertEqual(c.shown, {"special:shown"})
+
+    def test_special_noop_does_not_verify_concurrent_user_changes(self):
+        for change in ("toggle", "destroy", "no_regulars"):
+            with self.subTest(change=change):
+                c = Compositor()
+                queries = []
+                def changed(args, timeout=5):
+                    queries.append(args[1:])
+                    self.assertEqual(args[1:], ["workspaces", "-j"])
+                    result = c.run(args, timeout)
+                    if change == "toggle":
+                        c.shown.clear()
+                    elif change == "destroy":
+                        c.ws = [w for w in c.ws if not w["name"].startswith("special:")]
+                    return result
+                if change == "no_regulars":
+                    c.ws = [w for w in c.ws if w["name"].startswith("special:")]
+                with mock.patch.object(vd.dc, "run", side_effect=changed):
+                    guard = mock.Mock()
+                    verify = vd.dc.migrate_workspaces("DP-1", guard, special_only=True)
+                    verify(final=True)
+                    guard.assert_not_called()
+                self.assertEqual(queries, [["workspaces", "-j"]])
 
     def test_each_start_convergence_timeout_compensates(self):
         for stage in ("create", "mode", "disable"):

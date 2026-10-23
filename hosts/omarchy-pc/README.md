@@ -121,9 +121,11 @@ output name before creation. Start stops that service only if it was active,
 waits for output creation and the requested size, refresh rate, scale and position,
 then moves regular workspaces before specials and verifies special visibility.
 Hyprland creates a replacement workspace when the last regular leaves an enabled
-monitor. Only a newly created, explicitly empty nonpersistent replacement may
-remain on the source until disable; all remaining regulars must reach the target
-after disable converges. Each convergence wait has a five-second deadline and
+monitor and may reuse the ID of a destroyed empty target workspace. Only
+explicitly empty nonpersistent workspaces may remain on the source until disable.
+Workspaces that were occupied, persistent or unknown before migration must
+survive and reach the target; all remaining regulars must reach it after disable
+converges. Each convergence wait has a five-second deadline and
 rechecks cancellation, service ownership and monitor identities. Start writes
 no saved profile, TV cooldown, recommended-profile selection or legacy recovery
 state.

@@ -421,7 +421,8 @@ def workspace_placement(workspaces):
         placement[selector] = monitor
         # Hyprland may remove an empty, nonpersistent workspace after its monitor
         # is disabled. Missing metadata is not evidence that a workspace is empty.
-        if workspace.get("windows") != 0 or workspace.get("ispersistent") is not False:
+        if (type(workspace.get("windows")) is not int or workspace["windows"] != 0
+                or workspace.get("ispersistent") is not False):
             placement.required.add(selector)
     if not placement:
         raise ValueError("no regular workspaces available")
@@ -431,9 +432,13 @@ def workspace_placement(workspaces):
 def migrate_workspaces(output, guard, special_only=False):
     """Move regulars then specials; return a verifier for after source teardown."""
     before = json.loads(run(["hyprctl", "workspaces", "-j"]))
-    placement = workspace_placement(before)
     specials = {w["name"]: w["monitor"] for w in before
                 if w["name"].startswith("special:")}
+    if special_only and all(monitor == output for monitor in specials.values()):
+        # No write means no visibility/placement contract to enforce across a
+        # concurrent user toggle or destruction of an already placed special.
+        return lambda final=False: None
+    placement = workspace_placement(before)
     if any(not name[8:] for name in specials):
         raise ValueError("invalid special workspace")
     def visible():
@@ -457,11 +462,12 @@ def migrate_workspaces(output, guard, special_only=False):
         after = json.loads(run(["hyprctl", "workspaces", "-j"]))
         regular = workspace_placement(after)
         remaining = {w["name"]: w["monitor"] for w in after if w["name"].startswith("special:")}
-        # Moving the last active regular workspace creates an empty replacement
-        # on the still-enabled source monitor in v0.56.2. Only a NEW explicitly
-        # empty nonpersistent workspace may remain there until disable/removal.
+        # Moving the last active regular creates an empty source replacement.
+        # v0.56.2 can reuse the ID of a destroyed empty target workspace. Only
+        # explicitly empty nonpersistent workspaces may wait for teardown; those
+        # required before migration must still survive and reach the target.
         misplaced = {s for s, m in regular.items() if m != output}
-        allowed = set() if final else regular.keys() - placement.keys() - regular.required
+        allowed = set() if final else regular.keys() - regular.required - placement.required
         if (not placement.required <= regular.keys()
                 or (not special_only and not misplaced <= allowed)
                 or any(remaining.get(name) != output for name in specials)
