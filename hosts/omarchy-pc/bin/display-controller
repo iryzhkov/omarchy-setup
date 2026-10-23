@@ -487,6 +487,10 @@ class Coordinator:
         self.receiver_last_attempt = float("-inf")
         self.receiver_count = 0
         self.receiver_since = 0
+        self.receiver_away_count = 0
+        self.receiver_away_since = 0
+        self.receiver_restore_pending = False
+        self.receiver_on_count = 0
         self.sleep_observed = False
         self.sleep_count = 0
         self.wake_rearmed = False
@@ -515,10 +519,52 @@ class Coordinator:
                     "receiver handshake pending", "receiver handshake inhibited"),
                 "daemon_pid": pid, "last_action": self.last_action,
                 "error": self.error, "recovery_inhibited": self.recovery_attempted,
-                "receiver_recovery_attempted": self.receiver_attempted}
+                "receiver_recovery_attempted": self.receiver_attempted,
+                "receiver_restore_pending": self.receiver_restore_pending}
 
     def reset_mismatch(self):
         self.mismatch, self.mismatch_count = None, 0
+
+    def receiver_route(self, states):
+        """Receiver power echoes cannot become new input-selection authority."""
+        by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
+        tv, avr = by_id.get(TV, {}), by_id.get(AVR, {})
+        source = tv.get("attributes", {}).get("source")
+        away = (tv.get("state") == "on" and isinstance(source, str)
+                and source.strip().lower() not in (
+                    "", "unknown", "unavailable", "hdmi 3", "hdmi 3 (earc/arc)", "str-az5000es"))
+        if away and choose(states) == "desk":
+            if not self.receiver_away_count:
+                self.receiver_away_since = self.clock()
+            self.receiver_away_count += 1
+            if (self.receiver_away_count >= 2
+                    and self.clock() - self.receiver_away_since >= POLL):
+                self.receiver_attempted = False
+        else:
+            self.receiver_away_count = 0
+        if not self.receiver_restore_pending:
+            return choose(states)
+        if away or by_id.get(SCREEN, {}).get("state") == "off":
+            # Honor TV intent immediately, but only a confirmed independent
+            # input change ends the restore wait. Power echoes cannot do so.
+            if (away and self.receiver_away_count >= 2
+                    and self.clock() - self.receiver_away_since >= POLL):
+                self.receiver_restore_pending = False
+            self.receiver_on_count = 0
+            return choose(states)
+        if avr.get("state") == "on":
+            self.receiver_on_count += 1
+            if self.receiver_on_count >= 2:
+                self.receiver_restore_pending = False
+            return choose(states)
+        self.receiver_on_count = 0
+        # Our own off/on may be reflected late by HA. Keep the live layout until
+        # receiver-on is confirmed or the TV supplies independent desk intent.
+        assuming_on = copy.deepcopy(states)
+        for entity in assuming_on:
+            if entity.get("entity_id") == AVR:
+                entity["state"] = "on"
+        return None if choose(assuming_on) == "tv-game" else choose(states)
 
     def reconnect_receiver(self, ipc, profiles, monitors, states):
         if not any(m.get("name") == TV_OUTPUT and m.get("model") == "SONY AVSYSTEM"
@@ -554,6 +600,7 @@ class Coordinator:
             self.health = "receiver handshake pending"
             return True
         self.receiver_attempted, self.receiver_last_attempt = True, self.clock()
+        self.receiver_restore_pending, self.receiver_on_count = True, 0
         # An off timeout may still have changed the receiver. Always compensate,
         # including cancellation during the brief wait, and consume the budget.
         try:
@@ -673,10 +720,11 @@ class Coordinator:
         try:
             try:
                 observed_states = self.system.ha() if states is None else states
-                desired = choose(observed_states)
+                desired = self.receiver_route(observed_states)
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
                 observed_states = []
+                self.receiver_away_count = self.receiver_on_count = 0
             now = self.clock()
             if (desired == "tv-game" and desired != self.candidate
                     and self.last_known_route == "desk"):
@@ -705,6 +753,7 @@ class Coordinator:
                 self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
                     self.receiver_count = 0
+                    self.receiver_away_count = 0
                     self.wake_intent = False
                     self.sleep_count = 0
                     self.sleep_observed = False
@@ -734,8 +783,6 @@ class Coordinator:
                     self.health = "route debounce"
                     return
                 self.last_known_route = desired
-                if desired == "desk":
-                    self.receiver_attempted = False
                 # A confirmed sleep/wake cycle starts a new bounded attempt.
                 # Query failures, mode changes and continuous awake polls do not.
                 if supported:
@@ -822,6 +869,7 @@ class Coordinator:
                 self.reset_mismatch()
         except ERRORS as exc:
             self.receiver_count = 0
+            self.receiver_away_count = self.receiver_on_count = 0
             self.wake_intent = False
             self.sleep_count = 0
             self.sleep_observed = False

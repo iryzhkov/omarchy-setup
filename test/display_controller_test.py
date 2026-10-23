@@ -1107,6 +1107,69 @@ class ReceiverHandshakeTests(unittest.TestCase):
         self.tick(2)
         self.system.states[2]["state"] = "on"
         self.tick(6)
+        self.system.advance(3 * dc.RECEIVER_RESET_COOLDOWN)
+        self.tick(10)
+        self.assertEqual(self.system.receiver_call.call_count, 3)
+
+
+    def test_delayed_off_after_reset_cannot_switch_recovered_tv_to_desk(self):
+        self.tick(3)
+        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
+        self.system.actual = "follow"
+        self.system.states[2]["state"] = "off"
+        self.tick(8)
+        self.assertEqual(self.system.live, "tv-game")
+        self.assertEqual(self.system.mutations(), [])
+        self.assertTrue(self.coordinator.receiver_restore_pending)
+        self.system.states[2]["state"] = "on"
+        self.tick(2)
+        self.assertFalse(self.coordinator.receiver_restore_pending)
+        self.assertEqual(self.coordinator.selected, "tv-game")
+
+    def test_one_away_poll_followed_by_receiver_off_does_not_rearm(self):
+        self.tick(4)
+        self.system.states[0]["attributes"]["source"] = "HDMI 2"
+        self.tick()
+        self.system.states[0]["attributes"]["source"] = "HDMI 3"
+        self.system.states[2]["state"] = "off"
+        self.tick(2)
+        self.system.states[2]["state"] = "on"
+        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
+        self.tick(5)
+        self.assertEqual(self.system.receiver_call.call_count, 3)
+
+    def test_ha_failure_breaks_independent_input_debounce(self):
+        self.tick(4)
+        self.system.states[0]["attributes"]["source"] = "HDMI 2"
+        self.tick()
+        original = self.system.states
+        self.system.states = TimeoutError("HA unavailable")
+        self.tick()
+        self.system.states = original
+        self.tick()
+        self.system.states[0]["attributes"]["source"] = "HDMI 3"
+        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
+        self.tick(5)
+        self.assertEqual(self.system.receiver_call.call_count, 3)
+
+    def test_confirmed_known_display_sleep_rearms_after_cooldown(self):
+        self.tick(4)
+        self.system.mon[1].update(model="SONY TV  *30", dpmsStatus=False)
+        self.tick(2)
+        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
+        self.system.mon[1].update(model="SONY AVSYSTEM", dpmsStatus=True)
+        self.tick(4)
+        self.assertEqual(self.system.receiver_call.call_count, 6)
+        self.tick(5)
+        self.assertEqual(self.system.receiver_call.call_count, 6)
+
+    def test_tv_power_echo_alone_does_not_rearm(self):
+        self.tick(4)
+        self.system.states[1]["state"] = "off"
+        self.tick(2)
+        self.system.states[1]["state"] = "on"
+        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
+        self.tick(5)
         self.assertEqual(self.system.receiver_call.call_count, 3)
 
 
