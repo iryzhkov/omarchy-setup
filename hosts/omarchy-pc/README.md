@@ -107,15 +107,19 @@ alias. Normal profile transactions resume only after the real TV identity
 returns. A requested reset is not proof that the physical picture recovered.
 
 A reset consumes its attempt before sending the off request. Query errors,
-mode changes and continuous awake polls never rearm it. Two observations of an explicit TV input away from HDMI3, or a known-output
-sleep cycle, permit another attempt, subject to a five-minute cooldown.
-Receiver-off and TV-power reports alone cannot rearm a reset. After our own
-reset, receiver-off echoes also cannot select the desk layout until on is
-confirmed in two polls or independent TV intent changes. Budgets are in memory for the service lifetime; an
-explicit service restart resets them. No additional timer or watchdog is used.
+mode changes and continuous awake polls never rearm it. Two observations of an
+explicit TV input away from HDMI3, or a known-output sleep cycle, permit another
+attempt, subject to a five-minute cooldown. Receiver-off and TV-power reports
+alone cannot rearm a reset. After our own reset, receiver-off echoes cannot
+select the desk layout until on is confirmed in two polls or independent TV
+intent changes. An unknown TV source retains the layout. If the on request
+fails to restore power, this wait remains pending; changing the TV input,
+turning the TV off, or restoring receiver power permits routing again.
+Budgets are in memory for the process lifetime; both automatic and explicit
+service restarts reset them. No additional timer or watchdog is used.
 The status includes receiver_recovery_attempted and receiver_restore_pending,
-and reports pending, inhibited
-or requested handshake recovery separately from verified scanout health.
+and reports pending, inhibited or requested handshake recovery separately from
+verified scanout health.
 
 ## Rollback
 

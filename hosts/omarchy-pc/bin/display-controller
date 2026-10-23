@@ -562,9 +562,9 @@ class Coordinator:
         # receiver-on is confirmed or the TV supplies independent desk intent.
         assuming_on = copy.deepcopy(states)
         for entity in assuming_on:
-            if entity.get("entity_id") == AVR:
+            if isinstance(entity, dict) and entity.get("entity_id") == AVR:
                 entity["state"] = "on"
-        return None if choose(assuming_on) == "tv-game" else choose(states)
+        return "desk" if choose(assuming_on) == "desk" else None
 
     def reconnect_receiver(self, ipc, profiles, monitors, states):
         if not any(m.get("name") == TV_OUTPUT and m.get("model") == "SONY AVSYSTEM"

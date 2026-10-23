@@ -1126,6 +1126,25 @@ class ReceiverHandshakeTests(unittest.TestCase):
         self.assertFalse(self.coordinator.receiver_restore_pending)
         self.assertEqual(self.coordinator.selected, "tv-game")
 
+    def test_unknown_tv_source_and_delayed_off_preserve_recovered_tv(self):
+        self.tick(3)
+        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
+        self.system.actual = "follow"
+        self.system.states[0]["attributes"]["source"] = ""
+        self.system.states[2]["state"] = "off"
+        self.tick(60)
+        self.assertEqual(self.system.live, "tv-game")
+        self.assertEqual(self.system.mutations(), [])
+        self.assertTrue(self.coordinator.receiver_restore_pending)
+        self.assertTrue(self.coordinator.receiver_attempted)
+        self.assertEqual(self.system.receiver_call.call_count, 3)
+
+    def test_pending_restore_ignores_non_entity_ha_entries(self):
+        self.coordinator.receiver_restore_pending = True
+        self.system.states[0]["attributes"]["source"] = ""
+        self.system.states[2]["state"] = "off"
+        self.assertIsNone(self.coordinator.receiver_route(self.system.states + [None]))
+
     def test_one_away_poll_followed_by_receiver_off_does_not_rearm(self):
         self.tick(4)
         self.system.states[0]["attributes"]["source"] = "HDMI 2"
