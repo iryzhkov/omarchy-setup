@@ -375,6 +375,9 @@ class System:
     def workspaces(self):
         return workspace_placement(json.loads(run(["hyprctl", "workspaces", "-j"])))
 
+    def move_special_workspaces(self, output, guard):
+        migrate_workspaces(output, guard, special_only=True)
+
     def drm(self):
         return drm_size(run(["modetest", "-M", "nvidia-drm", "-e", "-c", "-p"]))
 
@@ -407,7 +410,7 @@ def workspace_placement(workspaces):
         monitor = workspace.get("monitor")
         if (not isinstance(name, str) or not name or type(number) is not int
                 or not isinstance(monitor, str) or not monitor
-                or any(c in name for c in ";\r\n\x00")):
+                or any(ord(c) < 32 or c == ";" for c in name)):
             raise ValueError("invalid compositor workspace identity")
         # The daemon also excludes special workspaces from its rollback moves.
         if name.startswith("special:"):
@@ -423,6 +426,41 @@ def workspace_placement(workspaces):
     if not placement:
         raise ValueError("no regular workspaces available")
     return placement
+
+
+def migrate_workspaces(output, guard, special_only=False):
+    """Move regulars first, then specials without changing special visibility."""
+    before = json.loads(run(["hyprctl", "workspaces", "-j"]))
+    placement = workspace_placement(before)
+    specials = {w["name"]: w["monitor"] for w in before
+                if w["name"].startswith("special:")}
+    if any(not name[8:] for name in specials):
+        raise ValueError("invalid special workspace")
+    def visible():
+        return {m.get("specialWorkspace", {}).get("name")
+                for m in json.loads(run(["hyprctl", "monitors", "all", "-j"]))
+                if m.get("specialWorkspace", {}).get("name")}
+    shown = visible()
+    if len(shown) > 1:
+        raise ValueError("multiple visible specials cannot share one output")
+    moves = ([] if special_only else list(placement.items())) + list(specials.items())
+    for selector, monitor in moves:
+        if monitor == output:
+            continue
+        guard()
+        # v0.56.2 WorkspacePlacementController preserves visible/hidden specials.
+        result = run(["hyprctl", "eval", "hl.dispatch(hl.dsp.workspace.move({workspace="
+                      + json.dumps(selector, ensure_ascii=False) + ",monitor=" + json.dumps(output) + "}))"])
+        if result.strip() != "ok":
+            raise ValueError("workspace move rejected")
+    after = json.loads(run(["hyprctl", "workspaces", "-j"]))
+    regular = workspace_placement(after)
+    remaining = {w["name"]: w["monitor"] for w in after if w["name"].startswith("special:")}
+    if (not placement.required <= regular.keys()
+            or (not special_only and any(m != output for m in regular.values()))
+            or any(remaining.get(name) != output for name in specials)
+            or visible() != shown):
+        raise ValueError("workspace migration or special visibility verification failed")
 
 
 def workspace_profile(profile, placement):
@@ -839,6 +877,20 @@ class Coordinator:
                     self.reset_mismatch()
                     self.health = "route applied"
                     return
+                # Reconcile specials only after the final HA route is healthy.
+                # The daemon's transactions move regular workspaces only.
+                if verified_audio_route(self.system, editor, profiles, monitors) == desired:
+                    def guard_specials():
+                        current = ipc.request("status")["daemon"]
+                        require_ipc_only(current)
+                        if (current.get("preview") or current.get("unmanaged")
+                                or choose(self.system.ha()) != desired
+                                or verified_audio_route(self.system, ipc.request("editor_state"),
+                                                        profiles, self.system.monitors()) != desired):
+                            raise ValueError("special workspace route changed")
+                    guard_specials()
+                    self.system.move_special_workspaces(
+                        targets(profiles[self.observed_profile])[0]["name"], guard_specials)
                 if desired != "tv-game":
                     self.health = "desk"
                     self.reset_mismatch()

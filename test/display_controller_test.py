@@ -187,6 +187,12 @@ class FakeSystem:
             raise self.workspace_error
         return dc.workspace_placement(copy.deepcopy(self.ws))
 
+    def move_special_workspaces(self, output, guard):
+        guard()
+        for workspace in self.ws:
+            if workspace["name"].startswith("special:"):
+                workspace["monitor"] = output
+
     def drm(self):
         value = self.faults.get(self.live, self.actual)
         if isinstance(value, Exception):

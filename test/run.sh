@@ -322,6 +322,13 @@ check "display dependency missing refuses overlay" bash -c '! bash "$1" >"$2" 2>
 check "display dependency refusal preserves helper" cmp -s "$HOME/.local/bin/hosttool" "$T/hosttool.before"
 rm "$HF/bin/display-controller"
 cp "$T/hosttool.before" "$HF/bin/hosttool"
+# The Sunshine replacement uses this existing host-bin installer; keep the
+# installed global prep and apps/config files outside the managed overlay.
+cp "$ROOT/hosts/omarchy-pc/bin/sunshine-virtual-display" "$HF/bin/sunshine-virtual-display"
+printf 'legacy helper\n' >"$HOME/.local/bin/sunshine-virtual-display"
+check "Sunshine host helper replaces legacy copy" module common/29-host-files.sh
+check "Sunshine helper installed executable" test -x "$HOME/.local/bin/sunshine-virtual-display"
+check "Sunshine helper bytes match source" cmp -s "$HOME/.local/bin/sunshine-virtual-display" "$ROOT/hosts/omarchy-pc/bin/sunshine-virtual-display"
 # Keep the systemctl stub for uninstall as well.
 
 # -------------------------------------------------- fleet ownership --

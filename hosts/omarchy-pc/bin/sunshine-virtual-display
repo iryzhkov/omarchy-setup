@@ -1,0 +1,258 @@
+#!/usr/bin/python3
+"""Sunshine app prep start/stop for omarchy-pc; these are application lifetime hooks."""
+import argparse
+import contextlib
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import uuid
+
+# Share the existing controller's IPC, topology and qualified Hyprland operations.
+loader = importlib.machinery.SourceFileLoader(
+    "sunshine_display_controller", str(Path(__file__).with_name("display-controller")))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+assert spec is not None
+dc = importlib.util.module_from_spec(spec)
+loader.exec_module(dc)
+SERVICE = "hyprmoncfgd.service"
+
+
+def dimensions(environ):
+    values = []
+    for key, default, low, high in (("WIDTH", "1920", 320, 7680),
+                                    ("HEIGHT", "1080", 200, 4320),
+                                    ("FPS", "60", 1, 240)):
+        value = environ.get("SUNSHINE_CLIENT_" + key, default)
+        if not re.fullmatch(r"[0-9]{1,4}", value) or not low <= int(value) <= high:
+            raise ValueError("invalid Sunshine client " + key.lower())
+        values.append(int(value))
+    hdr = environ.get("SUNSHINE_CLIENT_HDR", "0")
+    if hdr not in ("0", "1", "true", "false"):
+        raise ValueError("invalid Sunshine client HDR")
+    return (*values, hdr in ("1", "true"))
+
+
+@contextlib.contextmanager
+def locked_state(runtime):
+    directory = runtime / "sunshine-virtual-display"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Sunshine state directory must be private and owned")
+    fd = os.open(directory / "lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Sunshine lock must be private and owned")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield directory / "state.json"
+    finally:
+        os.close(fd)
+
+
+class Host:
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def active(self):
+        result = subprocess.run(["systemctl", "--user", "show", SERVICE,
+                                 "--property=ActiveState", "--value"],
+                                capture_output=True, text=True, timeout=10, check=True)
+        state = result.stdout.strip()
+        if state not in ("active", "inactive", "failed"):
+            raise ValueError("display service is transitioning")
+        return state == "active"
+
+    def service(self, action):
+        dc.run(["systemctl", "--user", action, SERVICE], timeout=25)
+
+    def monitors(self):
+        return json.loads(dc.run(["hyprctl", "monitors", "all", "-j"]))
+
+    def editor(self):
+        with dc.IPC(self.runtime / "hyprmoncfgd.sock") as ipc:
+            daemon = ipc.request("status")["daemon"]
+            dc.require_ipc_only(daemon)
+            if daemon.get("preview") or daemon.get("unmanaged"):
+                raise ValueError("display is owned by a preview or unmanaged layout")
+            return ipc.request("editor_state")
+
+    def command(self, *args):
+        result = dc.run(["hyprctl", *args])
+        if result.strip() != "ok":
+            raise ValueError("Hyprland rejected " + args[0])
+
+    def move(self, output, guard):
+        dc.migrate_workspaces(output, guard)
+
+
+class Session:
+    def __init__(self, host, path):
+        self.host, self.path = host, path
+
+    def load(self):
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return None
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise ValueError("Sunshine journal must be private and owned")
+        state = json.loads(self.path.read_text())
+        if (state.get("version") != 1 or type(state.get("service_active")) is not bool
+                or not re.fullmatch(r"HEADLESS-SUNSHINE-[0-9a-f]{32}", state.get("output", ""))
+                or not isinstance(state.get("profiles"), dict)
+                or type(state.get("mutated")) is not bool
+                or type(state.get("restored")) is not bool):
+            raise ValueError("invalid Sunshine journal")
+        return state
+
+    def save(self, state):
+        dc.atomic_write(self.path, json.dumps(state) + "\n")
+
+    def guard(self, state):
+        # A service started independently while the hook owns the display is a
+        # conflicting owner. Leave the journal for an explicit later stop.
+        if self.host.active():
+            raise ValueError("display service resumed independently")
+        monitors = self.host.monitors()
+        physical = [m for m in monitors if m.get("name") != state["output"]]
+        known = {o["name"] for p in state["profiles"].values() for o in p["outputs"]}
+        if not physical or any(m.get("name") not in known for m in physical):
+            raise ValueError("unknown output; retaining Sunshine recovery state")
+        # Validate identities even while physical outputs are disabled.
+        for m in physical:
+            candidates = [o for p in state["profiles"].values() for o in p["outputs"]
+                          if o["name"] == m["name"]]
+            identified = [o for o in candidates if any(o.get(k) for k in ("make", "model", "serial"))]
+            if not any(all(not o.get(k) or o[k] == m.get(k) for k in ("make", "model", "serial"))
+                       for o in (identified or candidates)):
+                raise ValueError("output identity changed")
+        return monitors
+
+    def start(self, size):
+        if self.load() is not None:
+            raise ValueError("Sunshine journal already exists; stop before another start")
+        active = self.host.active()
+        # Require a capability handshake even if the service was deliberately
+        # stopped. An unavailable IPC or human preview fails before mutation.
+        editor = self.host.editor()
+        profiles = {p["name"]: p for p in editor["profiles"]
+                    if p["name"] in ("desk", "tv-game", "tv-recovery")}
+        name = editor.get("source_profile")
+        monitors = self.host.monitors()
+        if name not in profiles or not dc.topology(monitors, profiles, profiles[name]):
+            raise ValueError("start requires an awake known single-output layout")
+        output = "HEADLESS-SUNSHINE-" + uuid.uuid4().hex
+        if any(m.get("name") == output for m in monitors):
+            raise ValueError("headless output name already exists")
+        state = {"version": 1, "service_active": active, "output": output,
+                 "profiles": profiles, "mutated": False, "restored": False}
+        self.save(state)
+        try:
+            if active:
+                # Repeat ownership check immediately before service handoff.
+                self.host.editor()
+                self.host.service("stop")
+            self.guard(state)
+            # Persist the output identity before create, including uncertain timeouts.
+            state["mutated"] = True
+            self.save(state)
+            self.host.command("output", "create", "headless", output)
+            width, height, fps, hdr = size
+            rule = ("hl.monitor({output=" + json.dumps(output)
+                    + ',mode="' + str(width) + "x" + str(height) + "@" + str(fps)
+                    + '",position="0x0",scale=1')
+            self.guard(state)
+            if hdr:
+                try:
+                    self.host.command("eval", rule + ',bitdepth=10,cm="hdr"})')
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    self.guard(state)
+                    self.host.command("eval", rule + "})")
+            else:
+                self.host.command("eval", rule + "})")
+            current = self.guard(state)
+            own = [m for m in current if m.get("name") == output and m.get("disabled") is False]
+            if (len(own) != 1 or (own[0].get("width"), own[0].get("height")) != (width, height)):
+                raise ValueError("headless mode verification failed")
+            self.host.move(output, lambda: self.guard(state))
+            for monitor in current:
+                if monitor["name"] != output and monitor.get("disabled") is False:
+                    self.guard(state)
+                    self.host.command("eval", "hl.monitor({output="
+                                      + json.dumps(monitor["name"]) + ",disabled=true})")
+            enabled = [m["name"] for m in self.guard(state) if m.get("disabled") is False]
+            if enabled != [output]:
+                raise ValueError("headless isolation failed")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # Best effort compensation, keeping the journal whenever incomplete.
+            try:
+                self.stop()
+            except (OSError, ValueError, subprocess.SubprocessError) as cleanup:
+                print("Sunshine cleanup pending: " + str(cleanup), file=sys.stderr)
+            raise
+
+    def stop(self):
+        state = self.load()
+        if state is None:
+            return
+        if not state["restored"] and state["mutated"]:
+            self.guard(state)
+            self.host.command("reload")
+            monitors = self.guard(state)
+            physical = [m for m in monitors if m.get("name") != state["output"]]
+            matches = [p for p in state["profiles"].values()
+                       if dc.topology(physical, state["profiles"], p)
+                       and [m["name"] for m in physical if m.get("disabled") is False]
+                       == [dc.targets(p)[0]["name"]]]
+            if not matches:
+                raise ValueError("restored include has no safe single-output layout")
+            target = dc.targets(matches[0])[0]["name"]
+            self.host.move(target, lambda: self.guard(state))
+            # Only the journal's unique output is ours, including disabled ghosts.
+            if any(m.get("name") == state["output"] and m.get("disabled") is False
+                   for m in self.guard(state)):
+                self.host.command("output", "remove", state["output"])
+            if any(m.get("name") == state["output"] and m.get("disabled") is False
+                   for m in self.guard(state)):
+                raise ValueError("owned headless output is still enabled")
+        if not state["restored"]:
+            state["restored"] = True
+            self.save(state)
+        # Persist restored before start: retry never reloads over a resumed
+        # controller, and never starts a service that was initially inactive.
+        if state["service_active"] and not self.host.active():
+            self.host.service("start")
+        self.path.unlink()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("start", "stop"))
+    args = parser.parse_args(argv)
+    try:
+        size = dimensions(os.environ) if args.action == "start" else None
+        runtime = dc.runtime_dir()
+        with locked_state(runtime) as path:
+            session = Session(Host(runtime), path)
+            if args.action == "start":
+                session.start(size)
+            else:
+                session.stop()
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("sunshine-virtual-display: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

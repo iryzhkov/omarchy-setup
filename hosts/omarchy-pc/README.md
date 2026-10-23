@@ -89,6 +89,64 @@ monitor. It does not pin Steam or games to a connector or a numbered workspace.
 The rule applies when the Big Picture window is created; an already-running
 off-screen window needs a one-time focus/fullscreen correction.
 
+## Sunshine application hooks
+
+The host-bin overlay installs sunshine-virtual-display over the legacy local
+helper through the existing 29-host-files module. It depends on the adjacent
+display-controller source and the reviewed IPC-only daemon. It does not edit
+Sunshine's apps.json, sunshine.conf or service hooks. Keep the installed global
+prep do/undo commands as sunshine-virtual-display start/stop. Any existing
+ExecStopPost safety call uses the same idempotent stop.
+
+These prep commands follow Sunshine's application lifetime. Disconnecting the
+last Moonlight client may leave the application session and virtual output alive.
+Reliable connection start/end events and the decision about when to return to
+the physical display remain pending. This change does not solve disconnect
+routing. There is no log counter, connection waiter, app wrapper, daemon or
+detached cleanup process.
+
+Start validates integer client width 320..7680, height 200..4320 and FPS 1..240
+before touching runtime state or display management. Defaults remain 1920x1080
+at 60 Hz; HDR accepts 0/1/false/true and falls back to SDR if its rule fails.
+It requires the existing IPC-only capability handshake, no human preview or
+unmanaged layout, and an awake known single-output topology. Missing IPC fails
+before mutation, including when the user has stopped display management.
+
+A private 0700 directory under the validated XDG_RUNTIME_DIR holds a 0600 journal
+and flock. Overlapping calls fail without mutation and can be retried. The
+journal records whether hyprmoncfgd.service was active and the unique headless
+output name before creation. Start stops that service only if it was active,
+moves regular workspaces before specials, verifies special visibility, then
+disables the known physical output. It writes no saved profile, TV cooldown,
+recommended-profile selection or legacy recovery state.
+
+Stop reloads the existing generated include, validates the restored physical
+layout, and moves regular and special workspaces to its enabled output before
+removing only this session's headless output. It restores the service only if
+it was previously active; it never enables a unit. The existing controller then
+debounces current HA intent and restores its current route, including receiver
+and audio policy. After the final route is healthy, the controller reconciles
+special workspaces there too. This handles HA intent that differs from the
+initial generated include. The qualified Hyprland v0.56.2 workspace move API
+preserves visible and hidden specials without toggling them.
+
+Failures retain the journal whenever recovery is incomplete. Run stop again
+after resolving the reported conflict. A completed display restoration is
+journaled before service restart, so a retry cannot reload over a resumed
+controller. Unknown outputs, changed identities and an independently resumed
+service inhibit destructive cleanup; resolve ownership before retrying. Never
+delete the journal to force a new start. A missing journal makes stop a no-op.
+The helper does not remove someone else's headless output or infer ownership
+from a generic name prefix. Multiple visible specials cannot all remain visible
+on one output, so that migration is refused.
+
+Only the service state observed at start can be restored. Systemctl actions
+outside this hook do not share its lock; a concurrent operator action requires
+resolving ownership before cleanup. Deterministic tests inject failures and
+check migration, visibility, safety gates and profile hashes. They do not qualify
+live NVIDIA/headless behavior or physical HDMI recovery. Perform that acceptance
+separately, after review, with no active game.
+
 ## Receiver handshake recovery
 
 The controller can power-cycle the existing STR-AZ5000ES once when the HDMI
