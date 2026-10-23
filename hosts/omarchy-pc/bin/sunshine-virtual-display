@@ -93,7 +93,10 @@ class Host:
             dc.require_ipc_only(daemon)
             if daemon.get("preview") or daemon.get("unmanaged"):
                 raise ValueError("display is owned by a preview or unmanaged layout")
-            return ipc.request("editor_state")
+            editor = ipc.request("editor_state")
+            if not editor.get("source_profile"):
+                editor["source_profile"] = daemon.get("profile_override")
+            return editor
 
     def command(self, *args):
         result = dc.run(["hyprctl", *args])

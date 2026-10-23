@@ -148,6 +148,63 @@ class SessionTests(unittest.TestCase):
     def profile_hashes(self):
         return [hashlib.sha256(p.read_bytes()).hexdigest() for p in self.profile_files]
 
+    def ipc_editor(self, source, override, **status):
+        daemon = {"ipc_only": True, "running": True,
+                  "profile_override": override, **status}
+        editor = {"source_profile": source,
+                  "profiles": copy.deepcopy(list(self.host.profiles.values()))}
+        connection = mock.MagicMock()
+        connection.request.side_effect = lambda method: (
+            {"daemon": copy.deepcopy(daemon)} if method == "status"
+            else copy.deepcopy(editor))
+        adapter = vd.Host(Path(self.temp.name))
+        factory = mock.MagicMock()
+        factory.return_value.__enter__.return_value = connection
+        self.host.editor = adapter.editor
+        return factory
+
+    def test_live_ephemeral_override_through_real_editor_adapter(self):
+        # Live IPC reports no saved source for a temporary committed profile.
+        self.host.system.apply("tv-game")
+        self.host.mon = self.host.system.mon
+        for workspace in self.host.ws:
+            workspace["monitor"] = vd.dc.TV_OUTPUT
+        factory = self.ipc_editor(None, "tv-game", preview=False, unmanaged=None)
+        with mock.patch.object(vd.dc, "IPC", factory):
+            self.session.start(self.size)
+        self.assertFalse(self.host.running)
+        self.assertTrue(all(w["monitor"] == self.session.load()["output"]
+                            for w in self.host.ws))
+        self.session.stop()
+        self.assertTrue(self.host.running)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.profile_hashes(), self.hashes)
+
+    def test_editor_source_precedence_and_missing_or_unknown_override(self):
+        factory = self.ipc_editor("desk", "tv-game")
+        with mock.patch.object(vd.dc, "IPC", factory):
+            self.assertEqual(self.host.editor()["source_profile"], "desk")
+        for override in (None, "unknown-profile"):
+            with self.subTest(override=override):
+                factory = self.ipc_editor(None, override)
+                with mock.patch.object(vd.dc, "IPC", factory):
+                    with self.assertRaises(ValueError):
+                        self.session.start(self.size)
+                self.assertEqual(self.host.calls, [])
+                self.assertFalse(self.path.exists())
+
+    def test_override_never_bypasses_daemon_ownership_or_capability(self):
+        for status in ({"preview": {"id": "human"}},
+                       {"unmanaged": True}, {"ipc_only": False},
+                       {"running": False}):
+            with self.subTest(status=status):
+                factory = self.ipc_editor(None, "tv-game", **status)
+                with mock.patch.object(vd.dc, "IPC", factory):
+                    with self.assertRaises(ValueError):
+                        self.session.start(self.size)
+                self.assertEqual(self.host.calls, [])
+                self.assertFalse(self.path.exists())
+
     def test_both_directions_order_visibility_and_profile_hashes(self):
         self.session.start((2560, 1440, 120, False))
         state = self.session.load()
