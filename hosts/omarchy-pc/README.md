@@ -111,8 +111,17 @@ at 60 Hz. HDR accepts 0/1/false/true; a rejected HDR rule retries an explicit
 SDR rule. This is a command-error fallback only. An accepted rule does not prove
 10-bit/HDR application, capture capability or client HDR delivery.
 It requires the existing IPC-only capability handshake, no human preview or
-unmanaged layout, and an awake known single-output topology. Missing IPC fails
-before mutation, including when the user has stopped display management.
+unmanaged layout, and an awake known single-output topology. A narrowly
+qualified TV-off fallback also accepts the Sony SONY AVSYSTEM receiver identity
+on HDMI-A-1, serial 0x01010101, with HDMI enabled and the identified saved DP-1
+display present but disabled. Both must have DPMS on, transform zero and the
+qualified 8-bit SDR color/VRR state. This works when IPC reports both
+source_profile and profile_override as null, or a recognized source profile.
+An unknown source profile still fails. The fallback captures physical identity,
+mode, scale, position, disabled state and color settings in the private journal.
+Missing connectors, all-disabled layouts and DPMS-off outputs are not supported
+by this fallback. Missing IPC fails before mutation, including when the user
+has stopped display management.
 
 A private 0700 directory under the validated XDG_RUNTIME_DIR holds a 0600 journal
 and flock. Overlapping calls fail without mutation and can be retried. The
@@ -132,7 +141,13 @@ state.
 
 Stop reloads the existing generated include, waits for a known awake physical
 layout at its saved size, and moves regular and special workspaces to its
-enabled output. If reload disabled this session's headless output, stop first
+enabled output. For the receiver fallback, reload first re-enables HDMI, then
+the helper replays its captured mode, scale and position with the qualified SDR
+rule. It requires both physical outputs to match the captured state, including
+DP staying disabled, before moving workspaces or removing headless. It does not
+write the include or a saved profile, power the TV, or re-enable DP. Exact
+connector membership and identities must remain unchanged through recovery.
+If reload disabled this session's headless output, stop first
 re-enables it because Hyprland's remove command resolves enabled monitors.
 It removes only the journaled output, waits for its absence from monitors all,
 and verifies final workspace placement. It restores the service only if

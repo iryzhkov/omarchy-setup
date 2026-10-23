@@ -29,6 +29,52 @@ CONVERGENCE_TIMEOUT = 5.0
 CONVERGENCE_POLL = 0.1
 
 
+# This is the receiver fallback qualified with the TV off. It is not a policy
+# for unknown displays, absent connectors, DPMS-off or all-disabled layouts.
+IDENTITY = ("make", "model", "serial")
+SNAPSHOT_FIELDS = ("name", *IDENTITY, "disabled", "dpmsStatus", "width", "height",
+                   "refreshRate", "scale", "x", "y", "transform", "currentFormat",
+                   "colorManagementPreset", "vrr", "sdrBrightness", "sdrSaturation",
+                   "sdrMinLuminance", "sdrMaxLuminance")
+SDR = {"currentFormat": "XRGB8888", "colorManagementPreset": "srgb", "vrr": False,
+       "sdrBrightness": 1, "sdrSaturation": 1,
+       "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80}
+
+
+def receiver_snapshot(monitors, profiles):
+    """Validate and retain the qualified physical state, independently of source."""
+    if not isinstance(monitors, list) or any(not isinstance(m, dict) for m in monitors):
+        raise ValueError("invalid receiver physical snapshot")
+    by_name = {m.get("name"): m for m in monitors}
+    if len(monitors) != 2 or set(by_name) != {"DP-1", dc.TV_OUTPUT}:
+        raise ValueError("receiver restore requires both known physical connectors")
+    hdmi, desk = by_name[dc.TV_OUTPUT], by_name["DP-1"]
+    tv = dc.targets(profiles.get("tv-game", {"outputs": []}))
+    desk_profiles = [o for p in profiles.values() for o in p["outputs"]
+                     if o["name"] == "DP-1" and all(o.get(k) for k in IDENTITY)]
+    if (tuple(hdmi.get(k) for k in IDENTITY) != ("Sony", "SONY AVSYSTEM", "0x01010101")
+            or len(tv) != 1 or tv[0]["name"] != dc.TV_OUTPUT
+            or tv[0].get("make") != "Sony" or not tv[0].get("model")
+            or tv[0].get("serial") != hdmi["serial"]
+            or not any(all(o[k] == desk.get(k) for k in IDENTITY) for o in desk_profiles)
+            or hdmi.get("disabled") is not False or desk.get("disabled") is not True):
+        raise ValueError("unqualified receiver topology or identity")
+    for monitor in monitors:
+        if (monitor.get("dpmsStatus") is not True
+                or type(monitor.get("transform")) is not int or monitor["transform"] != 0
+                or any(monitor.get(k) != v for k, v in SDR.items())
+                or monitor.get("vrr") is not False):
+            raise ValueError("receiver restore requires qualified awake SDR state")
+        for key, low, high in (("width", 320, 7680), ("height", 200, 4320),
+                               ("x", -32768, 32768), ("y", -32768, 32768)):
+            if type(monitor.get(key)) is not int or not low <= monitor[key] <= high:
+                raise ValueError("invalid receiver snapshot geometry")
+        for key, low, high in (("refreshRate", 1, 240), ("scale", 0.5, 4)):
+            if type(monitor.get(key)) not in (int, float) or not low <= monitor[key] <= high:
+                raise ValueError("invalid receiver snapshot mode")
+    return [{k: m[k] for k in SNAPSHOT_FIELDS} for m in monitors]
+
+
 def dimensions(environ):
     values = []
     for key, default, low, high in (("WIDTH", "1920", 320, 7680),
@@ -126,6 +172,8 @@ class Session:
                 or type(state.get("mutated")) is not bool
                 or type(state.get("restored")) is not bool):
             raise ValueError("invalid Sunshine journal")
+        if "physical_snapshot" in state:
+            receiver_snapshot(state["physical_snapshot"], state["profiles"])
         return state
 
     def save(self, state):
@@ -140,6 +188,17 @@ class Session:
             raise ValueError("display service resumed independently")
         monitors = self.host.monitors()
         physical = [m for m in monitors if m.get("name") != state["output"]]
+        snapshot = state.get("physical_snapshot")
+        if snapshot is not None:
+            expected = {m["name"]: m for m in snapshot}
+            if {m["name"] for m in physical} != set(expected):
+                raise ValueError("physical connectors changed; retaining Sunshine recovery state")
+            if any(any(m.get(k) != expected[m["name"]][k] for k in IDENTITY)
+                   for m in physical):
+                raise ValueError("output identity changed")
+            if not state["mutated"] and self.restored_target(state, monitors) is None:
+                raise ValueError("receiver layout changed before handoff")
+            return monitors
         known = {o["name"] for p in state["profiles"].values() for o in p["outputs"]}
         if not physical or any(m.get("name") not in known for m in physical):
             raise ValueError("unknown output; retaining Sunshine recovery state")
@@ -183,6 +242,20 @@ class Session:
 
     def restored_target(self, state, monitors):
         physical = [m for m in monitors if m["name"] != state["output"]]
+        if "physical_snapshot" in state:
+            expected = {m["name"]: m for m in state["physical_snapshot"]}
+            if {m["name"] for m in physical} != set(expected):
+                return None
+            for monitor in physical:
+                wanted = expected[monitor["name"]]
+                for key in SNAPSHOT_FIELDS:
+                    actual = monitor.get(key)
+                    if key == "refreshRate":
+                        if type(actual) not in (int, float) or not abs(actual - wanted[key]) <= 0.1:
+                            return None
+                    elif actual != wanted[key]:
+                        return None
+            return dc.TV_OUTPUT
         for profile in state["profiles"].values():
             wanted = dc.targets(profile)
             if len(wanted) != 1 or not dc.topology(physical, state["profiles"], profile):
@@ -205,13 +278,18 @@ class Session:
                     if p["name"] in ("desk", "tv-game", "tv-recovery")}
         name = editor.get("source_profile")
         monitors = self.host.monitors()
+        snapshot = None
         if name not in profiles or not dc.topology(monitors, profiles, profiles[name]):
-            raise ValueError("start requires an awake known single-output layout")
+            if name is not None and name not in profiles:
+                raise ValueError("unknown source profile")
+            snapshot = receiver_snapshot(monitors, profiles)
         output = "HEADLESS-SUNSHINE-" + uuid.uuid4().hex
         if any(m.get("name") == output for m in monitors):
             raise ValueError("headless output name already exists")
         state = {"version": 1, "service_active": active, "output": output,
                  "profiles": profiles, "mutated": False, "restored": False}
+        if snapshot is not None:
+            state["physical_snapshot"] = snapshot
         self.save(state)
         try:
             if active:
@@ -270,6 +348,21 @@ class Session:
         if not state["restored"] and state["mutated"]:
             self.guard(state)
             self.host.command("reload")
+            if "physical_snapshot" in state:
+                # Physical disabled=false alone cannot re-enable this connector.
+                # Wait for the qualified reload path before replaying its rule.
+                self.converge(state, lambda ms: self.own_enabled(ms, dc.TV_OUTPUT),
+                              "receiver HDMI did not re-enable after reload")
+                hdmi = next(m for m in state["physical_snapshot"] if m["name"] == dc.TV_OUTPUT)
+                self.guard(state)
+                self.host.command(
+                    "eval", "hl.monitor({output=" + json.dumps(dc.TV_OUTPUT)
+                    + ',mode="' + str(hdmi["width"]) + "x" + str(hdmi["height"])
+                    + "@" + str(hdmi["refreshRate"]) + '",position="'
+                    + str(hdmi["x"]) + "x" + str(hdmi["y"]) + '",scale='
+                    + str(hdmi["scale"]) + ",transform=0,disabled=false,bitdepth=8"
+                    + ',cm="srgb",vrr=0,sdrbrightness=1,sdrsaturation=1'
+                    + ",sdr_min_luminance=0.2,sdr_max_luminance=80})")
             monitors = self.converge(
                 state, lambda ms: self.restored_target(state, ms) is not None,
                 "restored include has no safe single-output layout")

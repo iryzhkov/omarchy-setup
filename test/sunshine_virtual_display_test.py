@@ -908,5 +908,265 @@ class AdapterTests(unittest.TestCase):
                         vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, lambda: None)
 
 
+class ReceiverCompositor(Compositor):
+    """Recorded TV-off receiver identity; reload first re-enables physical HDMI."""
+    def __init__(self):
+        super().__init__()
+        identities = {
+            "DP-1": ("Samsung Electric Company", "Odyssey G95SC", "H1AK500000"),
+            vd.dc.TV_OUTPUT: ("Sony", "SONY TV  *30", "0x01010101"),
+        }
+        for profile in self.profiles.values():
+            for output in profile["outputs"]:
+                output.update(zip(("make", "model", "serial"), identities[output["name"]]))
+        self.mon[0].update(make="Samsung Electric Company", model="Odyssey G95SC",
+                           serial="H1AK500000", disabled=True, dpmsStatus=True,
+                           width=5120, height=1440, refreshRate=239.99899, scale=1.25,
+                           x=0, y=-72)
+        self.mon[1].update(make="Sony", model="SONY AVSYSTEM", serial="0x01010101",
+                           disabled=False, dpmsStatus=True, width=1280, height=720,
+                           refreshRate=60.0, scale=1.6, x=0, y=0)
+        for monitor in self.mon:
+            monitor.update({
+                "currentFormat": "XRGB8888", "colorManagementPreset": "srgb", "vrr": False,
+                "sdrBrightness": 1, "sdrSaturation": 1,
+                "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80})
+        self.initial = copy.deepcopy(self.mon)
+        for workspace in self.ws:
+            workspace["monitor"] = vd.dc.TV_OUTPUT
+        self.physical_ready = False
+
+    def command(self, *args):
+        if args == ("reload",):
+            self.calls.append(args)
+            if "reload" not in self.never:
+                self.mon[0]["disabled"] = True
+                self.mon[1].update(disabled=False, dpmsStatus=True,
+                                   width=3840, height=2160, refreshRate=60.0,
+                                   scale=1.0, x=90, colorManagementPreset="hdr",
+                                   currentFormat="XRGB2101010", vrr=True,
+                                   sdrBrightness=0.9, sdrSaturation=0.8,
+                                   sdrMinLuminance=0.1, sdrMaxLuminance=100)
+                self.physical_ready = True
+            return
+        if args[0] == "eval" and 'output="HDMI-A-1"' in args[1] and "disabled=true" not in args[1]:
+            # Lua disabled=false alone does not revive a physical output.
+            self.calls.append(args)
+            if not self.physical_ready or "physical" in self.never:
+                return
+            monitor = self.mon[1]
+            mode = re.search(r'mode="([0-9]+)x([0-9]+)@([0-9.]+)"', args[1])
+            if mode:
+                width, height, fps = mode.groups()
+                monitor.update(width=int(width), height=int(height), refreshRate=float(fps))
+            for key in ("scale", "transform"):
+                value = re.search(key + r"=([0-9.]+)", args[1])
+                if value:
+                    monitor[key] = float(value[1])
+            position = re.search(r'position="(-?[0-9]+)x(-?[0-9]+)"', args[1])
+            if position:
+                monitor.update(x=int(position[1]), y=int(position[2]))
+            for field, lua in (("sdrBrightness", "sdrbrightness"),
+                               ("sdrSaturation", "sdrsaturation"),
+                               ("sdrMinLuminance", "sdr_min_luminance"),
+                               ("sdrMaxLuminance", "sdr_max_luminance")):
+                value = re.search(lua + r"=([0-9.]+)", args[1])
+                if value:
+                    monitor[field] = float(value[1])
+            if "bitdepth=8" in args[1]:
+                monitor["currentFormat"] = "XRGB8888"
+            if 'cm="srgb"' in args[1]:
+                monitor["colorManagementPreset"] = "srgb"
+            if "vrr=0" in args[1]:
+                monitor["vrr"] = False
+            monitor.update(disabled=False, dpmsStatus=True)
+            return
+        super().command(*args)
+
+
+class ReceiverTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "state.json"
+        self.c = ReceiverCompositor()
+        host = vd.Host(Path(self.temp.name))
+        connection = mock.MagicMock()
+        self.daemon = {"ipc_only": True, "running": True, "profile_override": None,
+                       "preview": False, "unmanaged": None}
+        self.editor = {"source_profile": None,
+                       "profiles": copy.deepcopy(list(self.c.profiles.values()))}
+        connection.request.side_effect = lambda method: (
+            {"daemon": copy.deepcopy(self.daemon)} if method == "status"
+            else copy.deepcopy(self.editor))
+        factory = mock.MagicMock()
+        factory.return_value.__enter__.return_value = connection
+        for patch in (
+                mock.patch.object(vd.dc, "IPC", factory),
+                mock.patch.object(host, "active", side_effect=self.c.active),
+                mock.patch.object(vd.dc, "run", side_effect=self.c.run),
+                mock.patch.object(vd, "time", mock.Mock(
+                    monotonic=lambda: self.c.now, sleep=self.c.wait))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.session = vd.Session(host, self.path)
+
+    def test_null_source_receiver_start_stop_exact_restore(self):
+        saved = copy.deepcopy(self.c.profiles)
+        self.session.start((2560, 1440, 120, False))
+        state = self.session.load()
+        self.assertFalse(self.c.running)
+        self.assertTrue(all(w["monitor"] == state["output"] for w in self.c.ws))
+        self.session.stop()
+        self.assertEqual(self.c.mon, self.c.initial)
+        self.assertTrue(all(w["monitor"] == vd.dc.TV_OUTPUT for w in self.c.ws))
+        self.assertEqual(self.c.shown, {"special:shown"})
+        self.assertTrue(self.c.running)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.c.profiles, saved)
+
+
+    def test_receiver_recognized_source_also_uses_snapshot(self):
+        self.editor["source_profile"] = "tv-game"
+        self.session.start((1920, 1080, 60, False))
+        self.assertIn("physical_snapshot", self.session.load())
+        self.session.stop()
+        self.assertEqual(self.c.mon, self.c.initial)
+
+    def test_receiver_initially_stopped_service_remains_stopped(self):
+        self.c.running = False
+        self.session.start((1920, 1080, 60, False))
+        self.session.stop()
+        self.assertFalse(self.c.running)
+        self.assertFalse(any(call[0] == "service" for call in self.c.calls))
+
+    def test_receiver_ownership_identity_and_unqualified_states_refuse_before_writes(self):
+        initial = copy.deepcopy(self.c.mon)
+        for fault in ("preview", "unmanaged", "source", "serial", "model", "desk",
+                      "extra", "absent", "all-disabled", "dpms", "hdr", "vrr"):
+            with self.subTest(fault=fault):
+                self.c.mon = copy.deepcopy(initial)
+                self.daemon.update(preview=False, unmanaged=None)
+                self.editor["source_profile"] = None
+                if fault in ("preview", "unmanaged"):
+                    self.daemon[fault] = True
+                elif fault == "source":
+                    self.editor["source_profile"] = "unknown"
+                elif fault in ("serial", "model"):
+                    self.c.mon[1][fault] = "Replacement"
+                elif fault == "desk":
+                    self.c.mon[0]["serial"] = "Replacement"
+                elif fault == "extra":
+                    self.c.mon.append({"name": "HEADLESS-HUMAN", "disabled": True})
+                elif fault == "absent":
+                    self.c.mon.pop(0)
+                elif fault == "all-disabled":
+                    self.c.mon[1]["disabled"] = True
+                elif fault == "dpms":
+                    self.c.mon[1]["dpmsStatus"] = False
+                elif fault == "hdr":
+                    self.c.mon[1]["colorManagementPreset"] = "hdr"
+                else:
+                    self.c.mon[1]["vrr"] = True
+                with self.assertRaises(ValueError):
+                    self.session.start((1920, 1080, 60, False))
+                self.assertEqual(self.c.calls, [])
+                self.assertFalse(self.path.exists())
+
+    def test_receiver_cleanup_identity_or_connector_change_is_retryable(self):
+        self.session.start((1920, 1080, 60, False))
+        physical = copy.deepcopy(self.c.mon)
+        for fault in ("identity", "missing", "extra", "service"):
+            with self.subTest(fault=fault):
+                self.c.mon = copy.deepcopy(physical)
+                self.c.running = False
+                if fault == "identity":
+                    self.c.mon[1]["model"] = "Replacement"
+                elif fault == "missing":
+                    self.c.mon.pop(0)
+                elif fault == "extra":
+                    self.c.mon.append({"name": "HEADLESS-HUMAN", "disabled": True})
+                else:
+                    self.c.running = True
+                calls = copy.deepcopy(self.c.calls)
+                with self.assertRaises(ValueError):
+                    self.session.stop()
+                self.assertEqual(self.c.calls, calls)
+                self.assertTrue(self.path.exists())
+        self.c.mon = physical
+        self.c.running = False
+        self.session.stop()
+        self.assertEqual(self.c.mon, self.c.initial)
+
+    def test_receiver_restore_failures_keep_service_stopped_and_journal_for_retry(self):
+        for stage in ("reload", "physical", "remove"):
+            with self.subTest(stage=stage):
+                self.session.start((1920, 1080, 60, False))
+                output = self.session.load()["output"]
+                self.c.physical_ready = False
+                self.c.never.add(stage)
+                with self.assertRaises(TimeoutError):
+                    self.session.stop()
+                self.assertFalse(self.c.running)
+                self.assertTrue(self.path.exists())
+                self.assertFalse(self.session.load()["restored"])
+                self.assertIn(output, [m["name"] for m in self.c.mon])
+                self.c.never.clear()
+                self.session.stop()
+                self.assertEqual(self.c.mon, self.c.initial)
+                self.assertFalse(self.path.exists())
+                self.assertTrue(self.c.running)
+
+    def test_receiver_layout_change_during_handoff_does_not_create_headless(self):
+        service = self.c.service
+        def changed(action):
+            service(action)
+            if action == "stop":
+                self.c.mon[1]["scale"] = 2.0
+        self.c.service = changed
+        with self.assertRaisesRegex(ValueError, "layout changed"):
+            self.session.start((1920, 1080, 60, False))
+        self.assertFalse(any(c[0] in ("output", "eval", "reload") for c in self.c.calls))
+        self.assertTrue(self.c.running)
+        self.assertFalse(self.path.exists())
+
+    def test_receiver_restore_wait_does_not_remove_headless_on_identity_change(self):
+        self.session.start((1920, 1080, 60, False))
+        output = self.session.load()["output"]
+        self.c.never.add("physical")
+        def replace():
+            self.c.mon[1]["serial"] = "Replacement"
+            self.c.on_wait = None
+        self.c.on_wait = replace
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            self.session.stop()
+        self.assertIn(output, [m["name"] for m in self.c.mon])
+        self.assertFalse(self.c.running)
+        self.assertFalse(self.session.load()["restored"])
+        self.c.mon[1]["serial"] = "0x01010101"
+        self.c.never.clear()
+        self.session.stop()
+        self.assertEqual(self.c.mon, self.c.initial)
+
+    def test_receiver_snapshot_rejects_malformed_journal_before_mutation(self):
+        self.session.start((1920, 1080, 60, False))
+        state = self.session.load()
+        good = copy.deepcopy(state["physical_snapshot"])
+        for bad in (None, [], [good[0], good[0]],
+                    [{**good[0], "scale": float("nan")}, good[1]],
+                    [good[0], {**good[1], "serial": "Replacement"}]):
+            with self.subTest(snapshot=bad):
+                state["physical_snapshot"] = bad
+                self.session.save(state)
+                calls = copy.deepcopy(self.c.calls)
+                with self.assertRaises(ValueError):
+                    self.session.stop()
+                self.assertEqual(self.c.calls, calls)
+                self.assertFalse(self.c.running)
+                self.assertTrue(self.path.exists())
+        state["physical_snapshot"] = good
+        self.session.save(state)
+        self.session.stop()
+
 if __name__ == "__main__":
     unittest.main()
