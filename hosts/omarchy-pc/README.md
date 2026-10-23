@@ -98,16 +98,18 @@ Sunshine's apps.json, sunshine.conf or service hooks. Keep the installed global
 prep do/undo commands as sunshine-virtual-display start/stop. Any existing
 ExecStopPost safety call uses the same idempotent stop.
 
-These prep commands follow Sunshine's application lifetime. Disconnecting the
-last Moonlight client may leave the application session and virtual output alive.
-Reliable connection start/end events and the decision about when to return to
-the physical display remain pending. This change does not solve disconnect
-routing. There is no log counter, connection waiter, app wrapper, daemon or
-detached cleanup process.
+Keep stock Sunshine and restore the physical display when the user quits the
+Sunshine application session. These prep commands follow that application
+lifetime. Disconnecting the last Moonlight client may leave the application
+session and virtual output alive; use Moonlight's Quit Session action to run
+the stop hook and restore routing. This is the adopted lifecycle. It needs no
+private Sunshine build, log waiter, connection counter or independent service.
 
 Start validates integer client width 320..7680, height 200..4320 and FPS 1..240
 before touching runtime state or display management. Defaults remain 1920x1080
-at 60 Hz; HDR accepts 0/1/false/true and falls back to SDR if its rule fails.
+at 60 Hz. HDR accepts 0/1/false/true; a rejected HDR rule retries an explicit
+SDR rule. This is a command-error fallback only. An accepted rule does not prove
+10-bit/HDR application, capture capability or client HDR delivery.
 It requires the existing IPC-only capability handshake, no human preview or
 unmanaged layout, and an awake known single-output topology. Missing IPC fails
 before mutation, including when the user has stopped display management.
@@ -116,13 +118,22 @@ A private 0700 directory under the validated XDG_RUNTIME_DIR holds a 0600 journa
 and flock. Overlapping calls fail without mutation and can be retried. The
 journal records whether hyprmoncfgd.service was active and the unique headless
 output name before creation. Start stops that service only if it was active,
-moves regular workspaces before specials, verifies special visibility, then
-disables the known physical output. It writes no saved profile, TV cooldown,
-recommended-profile selection or legacy recovery state.
+waits for output creation and the requested size, refresh rate, scale and position,
+then moves regular workspaces before specials and verifies special visibility.
+Hyprland creates a replacement workspace when the last regular leaves an enabled
+monitor. Only a newly created, explicitly empty nonpersistent replacement may
+remain on the source until disable; all remaining regulars must reach the target
+after disable converges. Each convergence wait has a five-second deadline and
+rechecks cancellation, service ownership and monitor identities. Start writes
+no saved profile, TV cooldown, recommended-profile selection or legacy recovery
+state.
 
-Stop reloads the existing generated include, validates the restored physical
-layout, and moves regular and special workspaces to its enabled output before
-removing only this session's headless output. It restores the service only if
+Stop reloads the existing generated include, waits for a known awake physical
+layout at its saved size, and moves regular and special workspaces to its
+enabled output. If reload disabled this session's headless output, stop first
+re-enables it because Hyprland's remove command resolves enabled monitors.
+It removes only the journaled output, waits for its absence from monitors all,
+and verifies final workspace placement. It restores the service only if
 it was previously active; it never enables a unit. The existing controller then
 debounces current HA intent and restores its current route, including receiver
 and audio policy. After the final route is healthy, the controller reconciles
@@ -130,12 +141,16 @@ special workspaces there too. This handles HA intent that differs from the
 initial generated include. The qualified Hyprland v0.56.2 workspace move API
 preserves visible and hidden specials without toggling them.
 
-Failures retain the journal whenever recovery is incomplete. Run stop again
-after resolving the reported conflict. A completed display restoration is
-journaled before service restart, so a retry cannot reload over a resumed
-controller. Unknown outputs, changed identities and an independently resumed
-service inhibit destructive cleanup; resolve ownership before retrying. Never
-delete the journal to force a new start. A missing journal makes stop a no-op.
+Failures retain the journal whenever recovery is incomplete. Failed physical
+restoration deliberately leaves display management stopped so it cannot compete
+with recovery. From a local terminal, resolve the reported output identity,
+ownership or layout conflict, restore a known physical include if needed, then
+run sunshine-virtual-display stop again. Do not start the controller over a
+pending restore or delete the journal to force progress. A completed display
+restoration is journaled before service restart, so a retry cannot reload over a
+resumed controller. Unknown outputs, changed identities and an independently
+resumed service inhibit destructive cleanup; resolve ownership before retrying.
+A missing journal makes stop a no-op.
 The helper does not remove someone else's headless output or infer ownership
 from a generic name prefix. Multiple visible specials cannot all remain visible
 on one output, so that migration is refused.

@@ -69,7 +69,8 @@ class Host:
         self.calls.append(args)
         if args[:2] == ("output", "create"):
             self.mon.append({"name": args[3], "disabled": False, "dpmsStatus": True,
-                             "width": 1920, "height": 1080})
+                             "width": 1920, "height": 1080, "refreshRate": 60.0,
+                             "scale": 1.0, "x": 0, "y": 0, "transform": 0})
         elif args[:2] == ("output", "remove"):
             self.mon = [m for m in self.mon if m["name"] != args[2]]
         elif args[0] == "eval":
@@ -80,10 +81,11 @@ class Host:
             if "disabled=true" in args[1]:
                 monitor["disabled"] = True
             else:
-                match = re.search(r'mode="([0-9]+)x([0-9]+)@', args[1])
-                assert match is not None
-                width, height = match.groups()
-                monitor.update(width=int(width), height=int(height))
+                monitor.update(disabled=False, dpmsStatus=True)
+                match = re.search(r'mode="([0-9]+)x([0-9]+)@([0-9]+)"', args[1])
+                if match is not None:
+                    width, height, fps = map(int, match.groups())
+                    monitor.update(width=width, height=height, refreshRate=float(fps))
         elif args == ("reload",):
             for m in self.mon:
                 m["disabled"] = m["name"] == vd.dc.TV_OUTPUT
@@ -96,7 +98,11 @@ class Host:
         if self.move_hook:
             self.move_hook()
         with mock.patch.object(vd.dc, "run", self.hypr):
-            vd.dc.migrate_workspaces(target, guard)
+            migration = vd.dc.migrate_workspaces(target, guard)
+        def verify(final=False):
+            with mock.patch.object(vd.dc, "run", self.hypr):
+                migration(final=final)
+        return verify
 
     def hypr(self, args):
         if args[1:] == ["workspaces", "-j"]:
@@ -382,6 +388,299 @@ class FinalRouteTests(unittest.TestCase):
                 system.advance(dc.POLL)
                 coordinator.step()
                 move.assert_not_called()
+
+
+
+class Compositor(Host):
+    """IPC adapter fixture: rule acceptance and later render application differ."""
+    def __init__(self, *, delayed=False, refill=False, disable_on_reload=False):
+        super().__init__()
+        self.delayed, self.refill = delayed, refill
+        self.disable_on_reload = disable_on_reload
+        self.now = 0.0
+        self.pending = []
+        self.never = set()
+        self.on_wait: Any = None
+        self.refill_metadata = {"windows": 0, "ispersistent": False}
+        for index, m in enumerate(self.mon):
+            m.update(id=index, refreshRate=60.0, scale=1.0, x=0, y=0, transform=0)
+
+    def wait(self, seconds):
+        self.now += seconds
+        if self.on_wait:
+            self.on_wait()
+        ready = [item for item in self.pending if item[0] <= self.now]
+        self.pending = [item for item in self.pending if item[0] > self.now]
+        for _, apply in ready:
+            apply()
+
+    def schedule(self, action, apply):
+        if action in self.never:
+            return
+        if self.delayed:
+            self.pending.append((self.now + 0.2, apply))
+        else:
+            apply()
+
+    def command(self, *args):
+        self.calls.append(args)
+        if args[:2] == ("output", "create"):
+            def create():
+                self.mon.append({"name": args[3], "id": 10 + len(self.calls),
+                                 "disabled": False, "dpmsStatus": True,
+                                 "width": 1920, "height": 1080, "refreshRate": 60.0,
+                                 "scale": 1.0, "x": 0, "y": 0, "transform": 0})
+            self.schedule("create", create)
+        elif args[:2] == ("output", "remove"):
+            own = next(m for m in self.mon if m["name"] == args[2])
+            if own["disabled"]:
+                raise ValueError("output not found")
+            def remove():
+                self.mon = [m for m in self.mon if m["name"] != args[2]]
+                self.ws = [w for w in self.ws if w["monitor"] != args[2]]
+            self.schedule("remove", remove)
+        elif args[0] == "eval":
+            match = re.search(r'output=("[^"]+")', args[1])
+            assert match is not None
+            name = json.loads(match[1])
+            def rule():
+                monitor = next(m for m in self.mon if m["name"] == name)
+                disabled = "disabled=true" in args[1]
+                monitor.update(disabled=disabled, dpmsStatus=not disabled)
+                mode = re.search(r'mode="([0-9]+)x([0-9]+)@([0-9]+)"', args[1])
+                if mode:
+                    width, height, fps = map(int, mode.groups())
+                    monitor.update(width=width, height=height, refreshRate=float(fps),
+                                   scale=1.0, x=0, y=0)
+                if disabled:
+                    # Only explicitly empty nonpersistent workspaces may disappear.
+                    self.ws = [w for w in self.ws if w["monitor"] != name
+                               or w.get("windows") != 0 or w.get("ispersistent") is not False]
+            action = "disable" if "disabled=true" in args[1] else "mode"
+            self.schedule(action, rule)
+        elif args == ("reload",):
+            def reload():
+                for m in self.mon:
+                    disabled = (m["name"] == vd.dc.TV_OUTPUT
+                                or self.disable_on_reload and m["name"].startswith("HEADLESS-"))
+                    m.update(disabled=disabled, dpmsStatus=not disabled)
+            self.schedule("reload", reload)
+        else:
+            raise AssertionError(args)
+
+    def hypr(self, args):
+        if args[1] != "eval":
+            return super().hypr(args)
+        before = {w["name"]: w["monitor"] for w in self.ws}
+        result = super().hypr(args)
+        if self.refill:
+            for source in set(before.values()):
+                enabled = any(m["name"] == source and m["disabled"] is False for m in self.mon)
+                regulars = [w for w in self.ws if w["monitor"] == source
+                            and not w["name"].startswith("special:")]
+                if enabled and not regulars:
+                    number = max([w["id"] for w in self.ws if w["id"] > 0] + [0]) + 1
+                    self.ws.append({"id": number, "name": str(number), "monitor": source,
+                                    **self.refill_metadata})
+        return result
+
+    def run(self, args, timeout=5):
+        if args[0] == "systemctl":
+            self.service(args[2])
+            return ""
+        if args[1:] == ["monitors", "all", "-j"] or args[1:] == ["workspaces", "-j"]:
+            return self.hypr(args)
+        if args[1] == "eval" and "workspace.move" in args[2]:
+            return self.hypr(args)
+        self.command(*args[1:])
+        return "ok"
+
+
+class AdapterTests(unittest.TestCase):
+    """Exercise Session through the real Host monitors/command/move adapter."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "state.json"
+
+    def attach(self, compositor):
+        host = vd.Host(Path(self.temp.name))
+        patches = [
+            mock.patch.object(host, "active", side_effect=compositor.active),
+            mock.patch.object(host, "editor", side_effect=compositor.editor),
+            mock.patch.object(vd.dc, "run", side_effect=compositor.run),
+            mock.patch.object(vd, "time", mock.Mock(
+                monotonic=lambda: compositor.now, sleep=compositor.wait), create=True),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return vd.Session(host, self.path)
+
+    def test_refill_survives_until_disable_then_final_placement_is_verified(self):
+        c = Compositor(refill=True)
+        session = self.attach(c)
+        session.start((1920, 1080, 60, False))
+        output = session.load()["output"]
+        self.assertTrue(all(w["monitor"] == output for w in c.ws))
+        session.stop()
+        self.assertTrue(all(w["monitor"] == "DP-1" for w in c.ws))
+        self.assertFalse(self.path.exists())
+
+    def test_creation_mode_isolation_and_restore_converge_after_acceptance(self):
+        c = Compositor(delayed=True)
+        session = self.attach(c)
+        session.start((2560, 1440, 120, False))
+        self.assertEqual([m["name"] for m in c.mon if not m["disabled"]],
+                         [session.load()["output"]])
+        session.stop()
+        self.assertGreaterEqual(c.now, 0.8)
+        self.assertTrue(c.running)
+        self.assertFalse(self.path.exists())
+
+    def test_reload_disabled_output_is_reenabled_destroyed_and_absent(self):
+        c = Compositor(disable_on_reload=True)
+        session = self.attach(c)
+        session.start((1920, 1080, 60, False))
+        output = session.load()["output"]
+        session.stop()
+        self.assertNotIn(output, [m["name"] for m in c.mon])
+        # The next helper start and controller topology must both be usable.
+        self.assertTrue(vd.dc.topology(c.mon, c.profiles, c.profiles["desk"]))
+        session.start((1920, 1080, 60, False))
+        session.stop()
+
+    def test_restore_waits_for_new_physical_layout_before_removal(self):
+        c = Compositor()
+        session = self.attach(c)
+        session.start((1920, 1080, 60, False))
+        c.delayed = True
+        session.stop()
+        self.assertTrue(c.running)
+        self.assertFalse(self.path.exists())
+        self.assertEqual([m["name"] for m in c.mon if not m["disabled"]], ["DP-1"])
+
+    def test_delayed_refill_and_disabled_restore_complete_together(self):
+        c = Compositor(delayed=True, refill=True, disable_on_reload=True)
+        session = self.attach(c)
+        session.start((2560, 1440, 120, False))
+        self.assertTrue(all(w["monitor"] == session.load()["output"] for w in c.ws))
+        session.stop()
+        self.assertTrue(all(w["monitor"] == "DP-1" for w in c.ws))
+        self.assertFalse(self.path.exists())
+        self.assertEqual(c.shown, {"special:shown"})
+
+    def test_special_noop_skips_guard_but_actual_moves_are_guarded(self):
+        c = Compositor()
+        with mock.patch.object(vd.dc, "run", side_effect=c.run):
+            guard = mock.Mock()
+            vd.dc.migrate_workspaces("DP-1", guard, special_only=True)
+            guard.assert_not_called()
+            vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, guard, special_only=True)
+            self.assertEqual(guard.call_count, 2)
+            self.assertEqual(c.shown, {"special:shown"})
+
+    def test_each_start_convergence_timeout_compensates(self):
+        for stage in ("create", "mode", "disable"):
+            with self.subTest(stage=stage):
+                c = Compositor(delayed=True)
+                c.never.add(stage)
+                session = self.attach(c)
+                with self.assertRaises(TimeoutError):
+                    session.start((2560, 1440, 120, False))
+                self.assertTrue(c.running)
+                self.assertFalse(self.path.exists())
+                self.assertGreaterEqual(c.now, vd.CONVERGENCE_TIMEOUT)
+                self.assertLess(c.now, 2 * vd.CONVERGENCE_TIMEOUT)
+
+    def test_restore_and_remove_timeouts_retain_journal_and_retry(self):
+        for stage in ("reload", "mode", "remove"):
+            with self.subTest(stage=stage):
+                c = Compositor(disable_on_reload=True)
+                session = self.attach(c)
+                session.start((1920, 1080, 60, False))
+                c.never.add(stage)
+                with self.assertRaises(TimeoutError):
+                    session.stop()
+                state = session.load()
+                self.assertIsNotNone(state)
+                self.assertFalse(state["restored"])
+                self.assertFalse(c.running)
+                self.assertTrue(any(m["name"] == state["output"] for m in c.mon))
+                c.never.clear()
+                session.stop()
+                self.assertTrue(c.running)
+                self.assertFalse(self.path.exists())
+
+    def test_wait_rechecks_unknown_hotplug_and_cancellation_before_writes(self):
+        for fault in ("hotplug", "cancel", "service"):
+            with self.subTest(fault=fault):
+                c = Compositor(delayed=True)
+                session = self.attach(c)
+                cancelled = [False]
+                session.stopped = lambda: cancelled[0]
+                def interrupt():
+                    if fault == "hotplug":
+                        c.mon.append({"name": "HEADLESS-HUMAN", "disabled": True})
+                    elif fault == "cancel":
+                        cancelled[0] = True
+                    else:
+                        c.running = True
+                    c.on_wait = None
+                c.on_wait = interrupt
+                with self.assertRaises((OSError, ValueError)):
+                    session.start((1920, 1080, 60, False))
+                self.assertTrue(self.path.exists())
+                self.assertFalse(any(call[0] in ("eval", "move", "reload")
+                                     for call in c.calls))
+                # Resolve the fixture conflict and exercise the documented retry.
+                c.mon = [m for m in c.mon if m["name"] != "HEADLESS-HUMAN"]
+                cancelled[0] = False
+                c.running = False
+                session.stop()
+                self.assertFalse(self.path.exists())
+
+    def test_final_verification_requires_all_regulars_and_required_survival(self):
+        for fault in ("retained_refill", "lost_required", "misplaced_required"):
+            with self.subTest(fault=fault):
+                c = Compositor(refill=True)
+                with mock.patch.object(vd.dc, "run", side_effect=c.run):
+                    verify = vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, lambda: None)
+                    if fault == "lost_required":
+                        c.ws = [w for w in c.ws if w["id"] != 1]
+                    elif fault == "misplaced_required":
+                        c.ws[0]["monitor"] = "DP-1"
+                    with self.assertRaises(ValueError):
+                        verify(final=True)
+
+    def test_mode_checks_refresh_scale_and_position_before_workspace_moves(self):
+        for key, wrong in (("refreshRate", 60.0), ("scale", 2.0), ("x", 100)):
+            with self.subTest(key=key):
+                c = Compositor()
+                session = self.attach(c)
+                original = c.schedule
+                def wrong_mode(action, apply):
+                    original(action, apply)
+                    if action == "mode":
+                        c.mon[-1][key] = wrong
+                with mock.patch.object(c, "schedule", side_effect=wrong_mode):
+                    with self.assertRaises(TimeoutError):
+                        session.start((2560, 1440, 120, False))
+                # Compensation moves to DP-1, never to the unverified output.
+                self.assertFalse(any(call[0] == "move" and "HEADLESS-SUNSHINE" in call[1]
+                                     for call in c.calls))
+                self.assertTrue(c.running)
+                self.assertFalse(self.path.exists())
+
+    def test_unknown_or_occupied_refill_is_not_tolerated(self):
+        for metadata in ({}, {"windows": 1, "ispersistent": False},
+                         {"windows": 0, "ispersistent": True}):
+            with self.subTest(metadata=metadata):
+                c = Compositor(refill=True)
+                c.refill_metadata = metadata
+                with mock.patch.object(vd.dc, "run", side_effect=c.run):
+                    with self.assertRaises(ValueError):
+                        vd.dc.migrate_workspaces(vd.dc.TV_OUTPUT, lambda: None)
 
 
 if __name__ == "__main__":

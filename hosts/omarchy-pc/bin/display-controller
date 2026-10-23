@@ -429,7 +429,7 @@ def workspace_placement(workspaces):
 
 
 def migrate_workspaces(output, guard, special_only=False):
-    """Move regulars first, then specials without changing special visibility."""
+    """Move regulars then specials; return a verifier for after source teardown."""
     before = json.loads(run(["hyprctl", "workspaces", "-j"]))
     placement = workspace_placement(before)
     specials = {w["name"]: w["monitor"] for w in before
@@ -453,14 +453,22 @@ def migrate_workspaces(output, guard, special_only=False):
                       + json.dumps(selector, ensure_ascii=False) + ",monitor=" + json.dumps(output) + "}))"])
         if result.strip() != "ok":
             raise ValueError("workspace move rejected")
-    after = json.loads(run(["hyprctl", "workspaces", "-j"]))
-    regular = workspace_placement(after)
-    remaining = {w["name"]: w["monitor"] for w in after if w["name"].startswith("special:")}
-    if (not placement.required <= regular.keys()
-            or (not special_only and any(m != output for m in regular.values()))
-            or any(remaining.get(name) != output for name in specials)
-            or visible() != shown):
-        raise ValueError("workspace migration or special visibility verification failed")
+    def verify(final=False):
+        after = json.loads(run(["hyprctl", "workspaces", "-j"]))
+        regular = workspace_placement(after)
+        remaining = {w["name"]: w["monitor"] for w in after if w["name"].startswith("special:")}
+        # Moving the last active regular workspace creates an empty replacement
+        # on the still-enabled source monitor in v0.56.2. Only a NEW explicitly
+        # empty nonpersistent workspace may remain there until disable/removal.
+        misplaced = {s for s, m in regular.items() if m != output}
+        allowed = set() if final else regular.keys() - placement.keys() - regular.required
+        if (not placement.required <= regular.keys()
+                or (not special_only and not misplaced <= allowed)
+                or any(remaining.get(name) != output for name in specials)
+                or visible() != shown):
+            raise ValueError("workspace migration or special visibility verification failed")
+    verify()
+    return verify
 
 
 def workspace_profile(profile, placement):
@@ -888,7 +896,6 @@ class Coordinator:
                                 or verified_audio_route(self.system, ipc.request("editor_state"),
                                                         profiles, self.system.monitors()) != desired):
                             raise ValueError("special workspace route changed")
-                    guard_specials()
                     self.system.move_special_workspaces(
                         targets(profiles[self.observed_profile])[0]["name"], guard_specials)
                 if desired != "tv-game":

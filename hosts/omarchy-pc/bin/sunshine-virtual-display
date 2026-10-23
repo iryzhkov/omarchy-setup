@@ -9,9 +9,12 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
 import uuid
 
 # Share the existing controller's IPC, topology and qualified Hyprland operations.
@@ -22,6 +25,8 @@ assert spec is not None
 dc = importlib.util.module_from_spec(spec)
 loader.exec_module(dc)
 SERVICE = "hyprmoncfgd.service"
+CONVERGENCE_TIMEOUT = 5.0
+CONVERGENCE_POLL = 0.1
 
 
 def dimensions(environ):
@@ -75,7 +80,12 @@ class Host:
         dc.run(["systemctl", "--user", action, SERVICE], timeout=25)
 
     def monitors(self):
-        return json.loads(dc.run(["hyprctl", "monitors", "all", "-j"]))
+        monitors = json.loads(dc.run(["hyprctl", "monitors", "all", "-j"]))
+        if (not isinstance(monitors, list) or any(not isinstance(m, dict) for m in monitors)
+                or any(not isinstance(m.get("name"), str) for m in monitors)
+                or len({m["name"] for m in monitors}) != len(monitors)):
+            raise ValueError("invalid compositor monitor list")
+        return monitors
 
     def editor(self):
         with dc.IPC(self.runtime / "hyprmoncfgd.sock") as ipc:
@@ -91,12 +101,12 @@ class Host:
             raise ValueError("Hyprland rejected " + args[0])
 
     def move(self, output, guard):
-        dc.migrate_workspaces(output, guard)
+        return dc.migrate_workspaces(output, guard)
 
 
 class Session:
-    def __init__(self, host, path):
-        self.host, self.path = host, path
+    def __init__(self, host, path, stopped=lambda: False):
+        self.host, self.path, self.stopped = host, path, stopped
 
     def load(self):
         try:
@@ -119,6 +129,8 @@ class Session:
         dc.atomic_write(self.path, json.dumps(state) + "\n")
 
     def guard(self, state):
+        if self.stopped():
+            raise InterruptedError("Sunshine handoff interrupted; retry stop")
         # A service started independently while the hook owns the display is a
         # conflicting owner. Leave the journal for an explicit later stop.
         if self.host.active():
@@ -137,6 +149,47 @@ class Session:
                        for o in (identified or candidates)):
                 raise ValueError("output identity changed")
         return monitors
+
+    def converge(self, state, desired, message):
+        """Accepted monitor rules apply on render checks, not at the IPC reply."""
+        deadline = time.monotonic() + CONVERGENCE_TIMEOUT
+        while True:
+            monitors = self.guard(state)
+            if desired(monitors):
+                return monitors
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(message + "; retaining Sunshine recovery state")
+            time.sleep(min(CONVERGENCE_POLL, remaining))
+
+    @staticmethod
+    def own_enabled(monitors, output):
+        return any(m["name"] == output and m.get("disabled") is False
+                   and m.get("dpmsStatus") is True for m in monitors)
+
+    @staticmethod
+    def mode_matches(monitors, output, size):
+        width, height, fps, _ = size
+        own = [m for m in monitors if m["name"] == output]
+        return (len(own) == 1 and Session.own_enabled(own, output)
+                and (own[0].get("width"), own[0].get("height")) == (width, height)
+                and type(own[0].get("refreshRate")) in (int, float)
+                and abs(own[0]["refreshRate"] - fps) <= 0.1
+                and own[0].get("scale") == 1
+                and (own[0].get("x"), own[0].get("y")) == (0, 0))
+
+    def restored_target(self, state, monitors):
+        physical = [m for m in monitors if m["name"] != state["output"]]
+        for profile in state["profiles"].values():
+            wanted = dc.targets(profile)
+            if len(wanted) != 1 or not dc.topology(physical, state["profiles"], profile):
+                continue
+            enabled = [m for m in physical if m.get("disabled") is False]
+            if (len(enabled) == 1 and enabled[0]["name"] == wanted[0]["name"]
+                    and (enabled[0].get("width"), enabled[0].get("height"))
+                    == (wanted[0]["width"], wanted[0]["height"])):
+                return wanted[0]["name"]
+        return None
 
     def start(self, size):
         if self.load() is not None:
@@ -167,6 +220,8 @@ class Session:
             state["mutated"] = True
             self.save(state)
             self.host.command("output", "create", "headless", output)
+            self.converge(state, lambda ms: self.own_enabled(ms, output),
+                          "headless creation did not converge")
             width, height, fps, hdr = size
             rule = ("hl.monitor({output=" + json.dumps(output)
                     + ',mode="' + str(width) + "x" + str(height) + "@" + str(fps)
@@ -174,25 +229,29 @@ class Session:
             self.guard(state)
             if hdr:
                 try:
+                    # Acceptance alone does not qualify an HDR capture pipeline.
                     self.host.command("eval", rule + ',bitdepth=10,cm="hdr"})')
                 except (OSError, ValueError, subprocess.SubprocessError):
                     self.guard(state)
-                    self.host.command("eval", rule + "})")
+                    self.host.command("eval", rule + ',bitdepth=8,cm="srgb"})')
             else:
-                self.host.command("eval", rule + "})")
-            current = self.guard(state)
-            own = [m for m in current if m.get("name") == output and m.get("disabled") is False]
-            if (len(own) != 1 or (own[0].get("width"), own[0].get("height")) != (width, height)):
-                raise ValueError("headless mode verification failed")
-            self.host.move(output, lambda: self.guard(state))
+                self.host.command("eval", rule + ',bitdepth=8,cm="srgb"})')
+            current = self.converge(
+                state, lambda ms: self.mode_matches(ms, output, size),
+                "headless mode did not converge")
+            migration = self.host.move(output, lambda: self.guard(state))
             for monitor in current:
                 if monitor["name"] != output and monitor.get("disabled") is False:
                     self.guard(state)
                     self.host.command("eval", "hl.monitor({output="
                                       + json.dumps(monitor["name"]) + ",disabled=true})")
-            enabled = [m["name"] for m in self.guard(state) if m.get("disabled") is False]
-            if enabled != [output]:
-                raise ValueError("headless isolation failed")
+            self.converge(
+                state, lambda ms: self.mode_matches(ms, output, size)
+                and [m["name"] for m in ms if m.get("disabled") is False] == [output],
+                "headless isolation did not converge")
+            # The temporary empty source workspace must now be gone or moved.
+            self.guard(state)
+            migration(final=True)
         except (OSError, ValueError, subprocess.SubprocessError):
             # Best effort compensation, keeping the journal whenever incomplete.
             try:
@@ -208,23 +267,35 @@ class Session:
         if not state["restored"] and state["mutated"]:
             self.guard(state)
             self.host.command("reload")
-            monitors = self.guard(state)
-            physical = [m for m in monitors if m.get("name") != state["output"]]
-            matches = [p for p in state["profiles"].values()
-                       if dc.topology(physical, state["profiles"], p)
-                       and [m["name"] for m in physical if m.get("disabled") is False]
-                       == [dc.targets(p)[0]["name"]]]
-            if not matches:
-                raise ValueError("restored include has no safe single-output layout")
-            target = dc.targets(matches[0])[0]["name"]
-            self.host.move(target, lambda: self.guard(state))
-            # Only the journal's unique output is ours, including disabled ghosts.
-            if any(m.get("name") == state["output"] and m.get("disabled") is False
-                   for m in self.guard(state)):
+            monitors = self.converge(
+                state, lambda ms: self.restored_target(state, ms) is not None,
+                "restored include has no safe single-output layout")
+            target = self.restored_target(state, monitors)
+            # Reload may disable a user-created output. MonitorState queries used
+            # by output.remove find enabled monitors only. Re-enable only our
+            # journaled output, then destroy and require absence from monitors all.
+            own = [m for m in monitors if m["name"] == state["output"]]
+            if own and own[0].get("disabled") is not False:
+                self.guard(state)
+                self.host.command("eval", "hl.monitor({output="
+                                  + json.dumps(state["output"]) + ",disabled=false})")
+                self.converge(state, lambda ms: self.own_enabled(ms, state["output"])
+                              and self.restored_target(state, ms) == target,
+                              "owned headless re-enable did not converge")
+            migration = self.host.move(target, lambda: self.guard(state))
+            current = self.guard(state)
+            if self.restored_target(state, current) != target:
+                raise ValueError("physical restore changed before output removal")
+            if any(m["name"] == state["output"] for m in current):
+                if not self.own_enabled(current, state["output"]):
+                    raise ValueError("owned output disabled before removal; retry stop")
                 self.host.command("output", "remove", state["output"])
-            if any(m.get("name") == state["output"] and m.get("disabled") is False
-                   for m in self.guard(state)):
-                raise ValueError("owned headless output is still enabled")
+            self.converge(
+                state, lambda ms: not any(m["name"] == state["output"] for m in ms)
+                and self.restored_target(state, ms) == target,
+                "owned headless removal or physical restore did not converge")
+            self.guard(state)
+            migration(final=True)
         if not state["restored"]:
             state["restored"] = True
             self.save(state)
@@ -241,9 +312,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         size = dimensions(os.environ) if args.action == "start" else None
+        stopped = threading.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stopped.set())
         runtime = dc.runtime_dir()
         with locked_state(runtime) as path:
-            session = Session(Host(runtime), path)
+            session = Session(Host(runtime), path, stopped.is_set)
             if args.action == "start":
                 session.start(size)
             else:
