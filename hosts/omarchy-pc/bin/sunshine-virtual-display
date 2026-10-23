@@ -358,7 +358,7 @@ class Session:
                 self.host.command(
                     "eval", "hl.monitor({output=" + json.dumps(dc.TV_OUTPUT)
                     + ',mode="' + str(hdmi["width"]) + "x" + str(hdmi["height"])
-                    + "@" + str(hdmi["refreshRate"]) + '",position="'
+                    + "@" + str(hdmi["refreshRate"]).removesuffix(".0") + '",position="'
                     + str(hdmi["x"]) + "x" + str(hdmi["y"]) + '",scale='
                     + str(hdmi["scale"]) + ",transform=0,disabled=false,bitdepth=8"
                     + ',cm="srgb",vrr=0,sdrbrightness=1,sdrsaturation=1'

@@ -1024,7 +1024,11 @@ class ReceiverTests(unittest.TestCase):
         self.assertTrue(self.c.running)
         self.assertFalse(self.path.exists())
         self.assertEqual(self.c.profiles, saved)
-
+        # Exact rule qualified live, including spelling, numeric format and SDR.
+        self.assertIn(("eval", 'hl.monitor({output="HDMI-A-1",mode="1280x720@60",'
+                       'position="0x0",scale=1.6,transform=0,disabled=false,bitdepth=8,'
+                       'cm="srgb",vrr=0,sdrbrightness=1,sdrsaturation=1,'
+                       'sdr_min_luminance=0.2,sdr_max_luminance=80})'), self.c.calls)
 
     def test_receiver_recognized_source_also_uses_snapshot(self):
         self.editor["source_profile"] = "tv-game"
