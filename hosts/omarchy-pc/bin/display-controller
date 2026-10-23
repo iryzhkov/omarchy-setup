@@ -23,6 +23,7 @@ CAST = "media_player.sony_xr_77a80cl"
 ENTITIES = (TV, SCREEN, AVR, BRAVIA, CAST)
 TV_OUTPUT = "HDMI-A-1"
 POLL = 5
+RECEIVER_RESET_COOLDOWN = 300
 ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
 
 
@@ -50,6 +51,50 @@ def choose(states):
     if not source:
         return None
     return "tv-game" if source in ("hdmi 3", "hdmi 3 (earc/arc)", "str-az5000es") else "desk"
+
+
+def sony_edid_identity(data):
+    """Accept only a complete, checksummed Sony EDID with a display name."""
+    if (not isinstance(data, bytes) or len(data) < 128 or len(data) > 4096
+            or data[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00"
+            or data[8:10] != b"\x4d\xd9"
+            or len(data) != 128 * (1 + data[126])
+            or any(sum(data[i:i + 128]) % 256 for i in range(0, len(data), 128))):
+        return None
+    for offset in range(54, 126, 18):
+        descriptor = data[offset:offset + 18]
+        if descriptor[:5] == b"\x00\x00\x00\xfc\x00":
+            try:
+                model = descriptor[5:18].decode("ascii").strip()
+            except UnicodeDecodeError:
+                return None
+            if model:
+                return {"make": "Sony", "model": model,
+                        "serial": "0x" + format(int.from_bytes(data[12:16], "little"), "08X")}
+    return None
+
+
+def receiver_handshake(monitors, profiles, states, identity):
+    """Recognize only our receiver's stale identity backed by the real TV EDID."""
+    by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
+    avr, tv = by_id.get(AVR, {}), by_id.get(TV, {})
+    if (choose(states) != "tv-game" or tv.get("state") != "on"
+            or avr.get("state") != "on"
+            or avr.get("attributes", {}).get("source") != "Racing"
+            or identity is None or "tv-game" not in profiles):
+        return False
+    wanted = targets(profiles["tv-game"])
+    hdmi = [m for m in monitors if m.get("name") == TV_OUTPUT]
+    if (len(wanted) != 1 or wanted[0]["name"] != TV_OUTPUT or len(hdmi) != 1
+            or hdmi[0].get("make") != "Sony" or hdmi[0].get("model") != "SONY AVSYSTEM"
+            or any(not wanted[0].get(k) or identity.get(k) != wanted[0][k]
+                   for k in ("make", "model", "serial"))
+            or hdmi[0].get("serial") != wanted[0]["serial"]
+            or hdmi[0].get("disabled") is not False):
+        return False
+    identified = copy.deepcopy(monitors)
+    next(m for m in identified if m["name"] == TV_OUTPUT).update(identity)
+    return topology(identified, profiles, profiles["tv-game"])
 
 
 def drm_size(report):
@@ -313,6 +358,20 @@ class System:
     def wake(self):
         run(["hyprctl", "dispatch", 'hl.dsp.dpms({ action = "on" })'])
 
+    def tv_edid(self):
+        paths = list(Path("/sys/class/drm").glob("card*-HDMI-A-1/edid"))
+        if len(paths) != 1:
+            return None
+        with paths[0].open("rb") as source:
+            return sony_edid_identity(source.read(4097))
+
+    def receiver_call(self, service, **params):
+        if (service not in ("turn_off", "turn_on", "select_source")
+                or params != ({"source": "Racing"} if service == "select_source" else {})):
+            raise ValueError("unsupported receiver recovery action")
+        run([str(Path.home() / ".local/bin/ha"), "call", "media_player." + service,
+             json.dumps({"entity_id": AVR, **params})], timeout=12)
+
     def workspaces(self):
         return workspace_placement(json.loads(run(["hyprctl", "workspaces", "-j"])))
 
@@ -424,6 +483,14 @@ class Coordinator:
         self.key = None
         self.route_attempted = False
         self.recovery_attempted = False
+        self.receiver_attempted = False
+        self.receiver_last_attempt = float("-inf")
+        self.receiver_count = 0
+        self.receiver_since = 0
+        self.receiver_away_count = 0
+        self.receiver_away_since = 0
+        self.receiver_restore_pending = False
+        self.receiver_on_count = 0
         self.sleep_observed = False
         self.sleep_count = 0
         self.wake_rearmed = False
@@ -448,12 +515,111 @@ class Coordinator:
                     "ready; policy deferred", "preview", "unmanaged", "route debounce",
                     "topology unavailable or asleep", "HA uncertain; live route verified",
                     "HA uncertain; live layout unverified", "unavailable", "mismatch",
-                    "route attempt inhibited", "recovery inhibited"),
+                    "route attempt inhibited", "recovery inhibited",
+                    "receiver handshake pending", "receiver handshake inhibited"),
                 "daemon_pid": pid, "last_action": self.last_action,
-                "error": self.error, "recovery_inhibited": self.recovery_attempted}
+                "error": self.error, "recovery_inhibited": self.recovery_attempted,
+                "receiver_recovery_attempted": self.receiver_attempted,
+                "receiver_restore_pending": self.receiver_restore_pending}
 
     def reset_mismatch(self):
         self.mismatch, self.mismatch_count = None, 0
+
+    def receiver_route(self, states):
+        """Receiver power echoes cannot become new input-selection authority."""
+        by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
+        tv, avr = by_id.get(TV, {}), by_id.get(AVR, {})
+        source = tv.get("attributes", {}).get("source")
+        away = (tv.get("state") == "on" and isinstance(source, str)
+                and source.strip().lower() not in (
+                    "", "unknown", "unavailable", "hdmi 3", "hdmi 3 (earc/arc)", "str-az5000es"))
+        if away and choose(states) == "desk":
+            if not self.receiver_away_count:
+                self.receiver_away_since = self.clock()
+            self.receiver_away_count += 1
+            if (self.receiver_away_count >= 2
+                    and self.clock() - self.receiver_away_since >= POLL):
+                self.receiver_attempted = False
+        else:
+            self.receiver_away_count = 0
+        if not self.receiver_restore_pending:
+            return choose(states)
+        if away or by_id.get(SCREEN, {}).get("state") == "off":
+            # Honor TV intent immediately, but only a confirmed independent
+            # input change ends the restore wait. Power echoes cannot do so.
+            if (away and self.receiver_away_count >= 2
+                    and self.clock() - self.receiver_away_since >= POLL):
+                self.receiver_restore_pending = False
+            self.receiver_on_count = 0
+            return choose(states)
+        if avr.get("state") == "on":
+            self.receiver_on_count += 1
+            if self.receiver_on_count >= 2:
+                self.receiver_restore_pending = False
+            return choose(states)
+        self.receiver_on_count = 0
+        # Our own off/on may be reflected late by HA. Keep the live layout until
+        # receiver-on is confirmed or the TV supplies independent desk intent.
+        assuming_on = copy.deepcopy(states)
+        for entity in assuming_on:
+            if isinstance(entity, dict) and entity.get("entity_id") == AVR:
+                entity["state"] = "on"
+        return "desk" if choose(assuming_on) == "desk" else None
+
+    def reconnect_receiver(self, ipc, profiles, monitors, states):
+        if not any(m.get("name") == TV_OUTPUT and m.get("model") == "SONY AVSYSTEM"
+                   for m in monitors):
+            self.receiver_count = 0
+            return False
+        if (not receiver_handshake(monitors, profiles, states, self.system.tv_edid())
+                or self.system.drm() is not None):
+            self.receiver_count = 0
+            return False
+        now = self.clock()
+        if not self.receiver_count:
+            self.receiver_since = now
+        self.receiver_count += 1
+        if self.receiver_count < 2 or now - self.receiver_since < POLL:
+            self.health = "receiver handshake pending"
+            return True
+        if self.receiver_attempted or now - self.receiver_last_attempt < RECEIVER_RESET_COOLDOWN:
+            self.health = "receiver handshake inhibited"
+            return True
+        # Revalidate after the observation window, immediately before the action.
+        fresh = self.system.ha()
+        if (not receiver_handshake(self.system.monitors(), profiles, fresh, self.system.tv_edid())
+                or self.system.drm() is not None):
+            self.receiver_count = 0
+            self.health = "receiver handshake pending"
+            return True
+        daemon = ipc.request("status")["daemon"]
+        require_ipc_only(daemon)
+        if (daemon.get("preview") or daemon.get("unmanaged")
+                or self.clock() - now > POLL):
+            self.receiver_count = 0
+            self.health = "receiver handshake pending"
+            return True
+        self.receiver_attempted, self.receiver_last_attempt = True, self.clock()
+        self.receiver_restore_pending, self.receiver_on_count = True, 0
+        # An off timeout may still have changed the receiver. Always compensate,
+        # including cancellation during the brief wait, and consume the budget.
+        try:
+            self.system.receiver_call("turn_off")
+            self.system.wait(3)
+        finally:
+            self.system.receiver_call("turn_on")
+        if not self.system.stop.is_set():
+            restored = self.system.ha()
+            by_id = {s["entity_id"]: s for s in restored if isinstance(s, dict) and "entity_id" in s}
+            daemon = ipc.request("status")["daemon"]
+            require_ipc_only(daemon)
+            if (not daemon.get("preview") and not daemon.get("unmanaged")
+                    and choose(restored) == "tv-game"
+                    and by_id.get(AVR, {}).get("attributes", {}).get("source") == "Racing"):
+                self.system.receiver_call("select_source", source="Racing")
+        self.health, self.error = "receiver handshake reset", None
+        self.last_action = "receiver off/on requested"
+        return True
 
     def transaction(self, ipc, name, profiles, verify=False):
         # Race with a human preview is also rejected atomically by the daemon.
@@ -553,9 +719,12 @@ class Coordinator:
         self.daemon_ready = False
         try:
             try:
-                desired = choose(self.system.ha() if states is None else states)
+                observed_states = self.system.ha() if states is None else states
+                desired = self.receiver_route(observed_states)
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
+                observed_states = []
+                self.receiver_away_count = self.receiver_on_count = 0
             now = self.clock()
             if (desired == "tv-game" and desired != self.candidate
                     and self.last_known_route == "desk"):
@@ -568,6 +737,8 @@ class Coordinator:
             if now > self.wake_deadline:
                 self.wake_intent = False
             self.ha_route = desired
+            if desired != "tv-game":
+                self.receiver_count = 0
             if desired is None:
                 self.candidate, self.count = None, 0
                 self.reset_mismatch()
@@ -581,6 +752,8 @@ class Coordinator:
                 require_ipc_only(daemon)
                 self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
+                    self.receiver_count = 0
+                    self.receiver_away_count = 0
                     self.wake_intent = False
                     self.sleep_count = 0
                     self.sleep_observed = False
@@ -617,6 +790,8 @@ class Coordinator:
                     if enabled.get("dpmsStatus") is False:
                         self.sleep_count += 1
                         self.sleep_observed = self.sleep_count >= 2
+                        if self.sleep_count == 2:
+                            self.receiver_attempted = False
                         if self.clock() > self.wake_deadline:
                             self.wake_intent = False
                         if self.wake_intent:
@@ -645,6 +820,9 @@ class Coordinator:
                     self.route_attempted = self.recovery_attempted = False
                     self.wake_rearmed = False
                     self.reset_mismatch()
+                if (desired == "tv-game"
+                        and self.reconnect_receiver(ipc, profiles, monitors, observed_states)):
+                    return
                 if (desired not in profiles or not topology(monitors, profiles, profiles[desired])
                         or (desired == "tv-game" and targets(profiles[desired])[0]["name"] != TV_OUTPUT)):
                     self.reset_mismatch()
@@ -690,6 +868,8 @@ class Coordinator:
                 self.health, self.error = "recovered", None
                 self.reset_mismatch()
         except ERRORS as exc:
+            self.receiver_count = 0
+            self.receiver_away_count = self.receiver_on_count = 0
             self.wake_intent = False
             self.sleep_count = 0
             self.sleep_observed = False
