@@ -962,7 +962,7 @@ class ReceiverCompositor(Compositor):
             for key in ("scale", "transform"):
                 value = re.search(key + r"=([0-9.]+)", args[1])
                 if value:
-                    monitor[key] = float(value[1])
+                    monitor[key] = int(value[1]) if key == "transform" else float(value[1])
             position = re.search(r'position="(-?[0-9]+)x(-?[0-9]+)"', args[1])
             if position:
                 monitor.update(x=int(position[1]), y=int(position[2]))
