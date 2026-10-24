@@ -12,6 +12,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -139,8 +140,8 @@ class FakeSystem:
         self.vanishing_workspace: Any = None
         self.workspace_error: Any = None
         self.apply("desk")
-        self.override = "desk"
-        self.editor_name: Any = None
+        self.override: Any = "desk"
+        self.editor_name: Any = ...
         self.preview: Any = None
         self.unmanaged = False
         self.ipc_only: Any = True
@@ -176,6 +177,9 @@ class FakeSystem:
     def pactl(self, *args):
         return self.audio.pactl(*args)
 
+    def recovery_pending(self):
+        return False
+
     def audio_lock(self):
         return contextlib.nullcontext()
 
@@ -186,6 +190,12 @@ class FakeSystem:
         if self.workspace_error:
             raise self.workspace_error
         return dc.workspace_placement(copy.deepcopy(self.ws))
+
+    def move_special_workspaces(self, output, guard):
+        guard()
+        for workspace in self.ws:
+            if workspace["name"].startswith("special:"):
+                workspace["monitor"] = output
 
     def drm(self):
         value = self.faults.get(self.live, self.actual)
@@ -220,7 +230,7 @@ class FakeSystem:
                                        **({"ipc_only": system.ipc_only} if system.ipc_only is not None else {})}}
                 if method == "editor_state":
                     return {"profiles": copy.deepcopy(list(system.profiles.values())),
-                            "source_profile": system.live if system.editor_name is None else system.editor_name}
+                            "source_profile": system.live if system.editor_name is ... else system.editor_name}
                 if method == "preview":
                     if system.preview:
                         raise ValueError("another preview active")
@@ -941,7 +951,14 @@ class CoordinatorTests(unittest.TestCase):
 
 
 class ReceiverHandshakeTests(unittest.TestCase):
-    tick = CoordinatorTests.tick
+    def tick(self, n=1):
+        for _ in range(n):
+            self.coordinator.step()
+            if self.coordinator.rediscovery_request is not None:
+                self.requests.append(self.coordinator.rediscovery_request)
+                self.coordinator.rediscovery_request = None
+            self.system.advance(dc.POLL)
+
 
     def setUp(self):
         CoordinatorTests.setUp(self)
@@ -960,26 +977,24 @@ class ReceiverHandshakeTests(unittest.TestCase):
         self.system.actual = None
         self.system.states[2]["attributes"] = {"source": "Racing"}
         self.system.tv_edid = mock.Mock(return_value=identity)
-        self.system.receiver_call = mock.Mock()
+        self.requests = []
 
-    def test_known_receiver_identity_without_scanout_gets_one_power_cycle(self):
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_args_list, [
-            mock.call("turn_off"), mock.call("turn_on"),
-            mock.call("select_source", source="Racing")])
-        self.assertEqual(self.system.mutations(), [])
-        self.tick(20)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
 
-    def test_incomplete_or_conflicting_evidence_never_power_cycles(self):
-        for fault in ("edid", "scanout", "source", "asleep", "unknown", "normal", "preview",
-                      "unmanaged", "extra", "duplicate", "desk", "tv-off"):
+    def test_known_receiver_identity_with_or_without_scanout_requests_once(self):
+        for actual in (None, (1280, 720)):
+            self.setUp()
+            self.system.actual = actual
+            self.tick(30)
+            self.assertEqual(len(self.requests), 1)
+            self.assertEqual(self.system.mutations(), [])
+
+    def test_incomplete_or_conflicting_evidence_never_requests_recovery(self):
+        for fault in ("edid", "source", "asleep", "unknown", "normal", "preview",
+                      "unmanaged", "extra", "duplicate", "desk", "tv-off", "journal"):
             with self.subTest(fault=fault):
                 self.setUp()
                 if fault == "edid":
                     self.system.tv_edid.return_value = None
-                elif fault == "scanout":
-                    self.system.actual = (1280, 720)
                 elif fault == "source":
                     self.system.states[2]["attributes"]["source"] = "USB C"
                 elif fault == "asleep":
@@ -987,27 +1002,37 @@ class ReceiverHandshakeTests(unittest.TestCase):
                 elif fault == "unknown":
                     self.system.mon[1]["model"] = "Another Sony"
                 elif fault == "normal":
-                    self.system.mon[1]["model"] = "SONY TV  *30"
+                    self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
+                    self.system.actual = "follow"
                 elif fault == "preview":
                     self.system.preview = {"transaction_id": "human"}
                 elif fault == "unmanaged":
                     self.system.unmanaged = True
                 elif fault == "extra":
-                    self.system.mon.append({"name": "DP-2", "disabled": True})
+                    self.system.mon.append({"name": "HEADLESS-SUNSHINE-other", "disabled": False})
                 elif fault == "duplicate":
                     self.system.mon.append(copy.deepcopy(self.system.mon[0]))
                 elif fault == "desk":
                     self.system.states[0]["attributes"]["source"] = "HDMI 2"
                 elif fault == "tv-off":
                     self.system.states[1]["state"] = "off"
+                else:
+                    self.system.recovery_pending = lambda: True
                 self.tick(6)
-                self.system.receiver_call.assert_not_called()
+                self.assertEqual(self.requests, [])
+
+    def test_stale_primary_tv_off_uses_authoritative_cast_intent(self):
+        self.system.states[0]["state"] = "off"
+        self.system.states[4].update(state="playing", attributes={"app_name": "TV",
+                                                               "media_title": "HDMI 3"})
+        self.tick(5)
+        self.assertEqual(len(self.requests), 1)
 
     def test_sleep_or_manual_preview_before_action_invalidates_evidence(self):
         for fault in ("asleep", "preview", "source"):
             with self.subTest(fault=fault):
                 self.setUp()
-                self.tick(2)  # First stable handshake observation only.
+                self.tick(2)
                 if fault == "asleep":
                     self.system.mon[1]["dpmsStatus"] = False
                 elif fault == "preview":
@@ -1015,182 +1040,51 @@ class ReceiverHandshakeTests(unittest.TestCase):
                 else:
                     self.system.states[2]["attributes"]["source"] = "USB C"
                 self.tick(3)
-                self.system.receiver_call.assert_not_called()
+                self.assertEqual(self.requests, [])
 
-    def test_failed_off_call_is_compensated_and_never_retried(self):
-        def receiver(service, **_):
-            if service == "turn_off":
-                raise TimeoutError("uncertain off result")
-        self.system.receiver_call.side_effect = receiver
-        self.tick(8)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_user_source_change_during_reset_is_preserved(self):
-        self.system.wait_hook = lambda: self.system.states[2]["attributes"].update(source="USB C")
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_revalidation_and_time_budget_reject_stale_evidence(self):
-        for fault in ("edid", "scanout", "source", "slow", "preview"):
-            with self.subTest(fault=fault):
-                self.setUp()
-                original = self.system.ha
-                calls = 0
-                def fresh():
-                    nonlocal calls
-                    calls += 1
-                    if calls == 1:
-                        return original()  # Change only at final pre-action validation.
-                    if fault == "edid":
-                        self.system.tv_edid.return_value = None
-                    elif fault == "scanout":
-                        self.system.actual = (1280, 720)
-                    elif fault == "source":
-                        self.system.states[2]["attributes"]["source"] = "USB C"
-                    elif fault == "slow":
-                        self.system.advance(dc.POLL + 1)
-                    else:
-                        self.system.preview = {"transaction_id": "human"}
-                    return original()
-                self.tick(2)
-                with mock.patch.object(self.system, "ha", side_effect=fresh):
-                    self.tick()
-                self.system.receiver_call.assert_not_called()
-
-    def test_cancellation_during_pause_restores_power_without_reselecting(self):
-        def cancel():
-            self.system.stop.set()
-            raise InterruptedError("stopping")
-        self.system.wait_hook = cancel
-        self.tick(3)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_preview_started_during_reset_does_not_reselect_source(self):
-        self.system.wait_hook = lambda: setattr(self.system, "preview", {"transaction_id": "human"})
-        self.tick(3)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_cooldown_survives_desk_edges_and_then_allows_one_fresh_attempt(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
+    def test_revalidation_rejects_stale_evidence(self):
         self.tick(2)
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
+        original, calls = self.system.ha, 0
+        def fresh():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                self.system.preview = {"transaction_id": "human"}
+            return original()
+        with mock.patch.object(self.system, "ha", side_effect=fresh):
+            self.tick()
+        self.assertEqual(self.requests, [])
+
+    def test_queries_jitter_power_and_cooldown_alone_cannot_rearm(self):
         self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(2)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-
-    def test_recovered_identity_returns_to_normal_verified_profile_without_another_cycle(self):
-        self.tick(4)
-        self.system.mon[1].update(model="SONY TV  *30", width=1280, height=720)
-        self.system.actual = "follow"
-        # The receiver hotplug gives the compositor its TV identity back.
-        self.system.override = ""
-        self.tick(3)
-        self.assertEqual(self.coordinator.selected, "tv-game")
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-        self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "commit"])
-        self.assertIsNone(self.coordinator.error)
-        self.assertEqual(self.system.profiles, self.system.saved)
-
-    def test_no_second_cycle_after_own_off_on_or_topology_jitter(self):
-        self.tick(4)
-        self.system.states[2]["state"] = "off"
-        self.tick(2)
-        self.system.states[2]["state"] = "on"
-        self.tick(6)
-        self.system.advance(3 * dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(10)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-
-    def test_delayed_off_after_reset_cannot_switch_recovered_tv_to_desk(self):
-        self.tick(3)
-        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
-        self.system.actual = "follow"
-        self.system.states[2]["state"] = "off"
-        self.tick(8)
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.mutations(), [])
-        self.assertTrue(self.coordinator.receiver_restore_pending)
-        self.system.states[2]["state"] = "on"
-        self.tick(2)
-        self.assertFalse(self.coordinator.receiver_restore_pending)
-        self.assertEqual(self.coordinator.selected, "tv-game")
-
-    def test_unknown_tv_source_and_delayed_off_preserve_recovered_tv(self):
-        self.tick(3)
-        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
-        self.system.actual = "follow"
-        self.system.states[0]["attributes"]["source"] = ""
-        self.system.states[2]["state"] = "off"
-        self.tick(60)
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.mutations(), [])
-        self.assertTrue(self.coordinator.receiver_restore_pending)
-        self.assertTrue(self.coordinator.receiver_attempted)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_pending_restore_ignores_non_entity_ha_entries(self):
-        self.coordinator.receiver_restore_pending = True
-        self.system.states[0]["attributes"]["source"] = ""
-        self.system.states[2]["state"] = "off"
-        self.assertIsNone(self.coordinator.receiver_route(self.system.states + [None]))
-
-    def test_one_away_poll_followed_by_receiver_off_does_not_rearm(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
-        self.tick()
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
-        self.system.states[2]["state"] = "off"
-        self.tick(2)
-        self.system.states[2]["state"] = "on"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_ha_failure_breaks_independent_input_debounce(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
-        self.tick()
-        original = self.system.states
+        saved = self.system.states
         self.system.states = TimeoutError("HA unavailable")
-        self.tick()
-        self.system.states = original
-        self.tick()
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_confirmed_known_display_sleep_rearms_after_cooldown(self):
-        self.tick(4)
-        self.system.mon[1].update(model="SONY TV  *30", dpmsStatus=False)
+        self.tick(3)
+        self.system.states = saved
+        self.system.mon[1]["disabled"] = True
         self.tick(2)
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.system.mon[1].update(model="SONY AVSYSTEM", dpmsStatus=True)
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-
-    def test_tv_power_echo_alone_does_not_rearm(self):
-        self.tick(4)
+        self.system.mon[1]["disabled"] = False
         self.system.states[1]["state"] = "off"
         self.tick(2)
         self.system.states[1]["state"] = "on"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
+        self.system.advance(dc.REDISCOVER_COOLDOWN * 3)
+        self.tick(10)
+        self.assertEqual(len(self.requests), 1)
 
+    def test_confirmed_healthy_edge_and_cooldown_allow_one_new_fault(self):
+        self.tick(4)
+        self.system.apply("tv-game")
+        self.system.actual = "follow"
+        self.tick(2)
+        self.system.mon[1].update(model="SONY AVSYSTEM", width=1280, height=720)
+        self.system.actual = None
+        self.tick(4)
+        self.assertEqual(len(self.requests), 1)
+        self.system.advance(dc.REDISCOVER_COOLDOWN)
+        self.tick(4)
+        self.assertEqual(len(self.requests), 2)
+        self.tick(20)
+        self.assertEqual(len(self.requests), 2)
 
 class ReceiverEdidTests(unittest.TestCase):
     # Captured from the TV during the 2026-10-22 AVSYSTEM/TV disagreement.
@@ -1215,21 +1109,188 @@ class ReceiverEdidTests(unittest.TestCase):
             with self.subTest(size=len(data)):
                 self.assertIsNone(dc.sony_edid_identity(data))
 
-    def test_service_calls_are_limited_to_existing_receiver_and_racing_source(self):
-        system = dc.System(Path("/unused"), threading.Event())
-        with mock.patch.object(dc, "run", return_value="") as run:
-            system.receiver_call("select_source", source="Racing")
-            args = run.call_args.args[0]
-            self.assertEqual(args[1:3], ["call", "media_player.select_source"])
-            self.assertEqual(json.loads(args[3]), {"entity_id": dc.AVR, "source": "Racing"})
-            for action, params in (("reboot", {}), ("turn_on", {"entity_id": "other"}),
-                                   ("select_source", {"source": "USB C"})):
-                with self.assertRaises(ValueError):
-                    system.receiver_call(action, **params)
-            self.assertEqual(run.call_count, 1)
 
+
+class ConnectorHelperTests(unittest.TestCase):
+    """The privileged entry point is never executed by these tests."""
+    @classmethod
+    def setUpClass(cls):
+        source = SOURCE.parents[1] / "root/usr/local/libexec/display-hdmi-rediscover"
+        loader = importlib.machinery.SourceFileLoader("hdmi_rediscover", str(source))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        assert spec is not None
+        cls.helper = importlib.util.module_from_spec(spec)
+        # The root deployment tree must never acquire generated bytecode.
+        with mock.patch.object(sys, "dont_write_bytecode", True):
+            loader.exec_module(cls.helper)
+
+    def kernel(self, commands=("off\n", "detect\n")):
+        class Fake:
+            writes = []
+            state = "connected"
+            def connector(inner):
+                return "fake-only"
+            def status(inner, connector):
+                self.assertEqual(connector, "fake-only")
+                return inner.state
+            def edid(inner, connector):
+                self.assertEqual(connector, "fake-only")
+                return ReceiverEdidTests.edid
+            def write(inner, connector, value):
+                self.assertEqual(connector, "fake-only")
+                inner.writes.append(value)
+                inner.state = "disconnected" if value == "off" else "connected"
+            def wait(inner, stream, timeout=8):
+                value = next(inner.commands)
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+        fake = Fake()
+        fake.commands = iter(commands)
+        return fake
+
+    def test_ready_timeout_covers_the_controller_operation_deadline(self):
+        kernel = self.kernel()
+        calls = []
+        original = kernel.wait
+        def wait(stream, timeout=8):
+            calls.append(timeout)
+            return original(stream, timeout)
+        kernel.wait = wait
+        self.helper.rediscover(kernel, None, lambda _: None)
+        self.assertEqual(calls, [dc.REDISCOVER_TIMEOUT, 8])
+
+    def test_ready_timeout_refuses_before_any_off_write(self):
+        kernel, messages = self.kernel((TimeoutError("ready deadline"),)), []
+        with self.assertRaises(TimeoutError):
+            self.helper.rediscover(kernel, None, messages.append)
+        self.assertEqual(kernel.writes, [])
+        self.assertEqual(messages, ["ready", "refused-before-off"])
+
+    def test_off_detect_protocol(self):
+        kernel, messages = self.kernel(), []
+        self.helper.rediscover(kernel, None, messages.append)
+        self.assertEqual(kernel.writes, ["off", "detect"])
+        self.assertEqual(messages, ["ready", "disconnected", "detect-restored"])
+
+    def test_timeout_eof_cancel_and_uncertain_off_always_detect(self):
+        for failure in (TimeoutError("timeout"), InterruptedError("SIGTERM"), "",
+                        KeyboardInterrupt()):
+            with self.subTest(failure=failure):
+                kernel = self.kernel(("off\n", failure))
+                with self.assertRaises((OSError, ValueError, KeyboardInterrupt)):
+                    self.helper.rediscover(kernel, None, lambda _: None)
+                self.assertEqual(kernel.writes, ["off", "detect"])
+        kernel = self.kernel()
+        original = kernel.write
+        def fail(connector, value):
+            original(connector, value)
+            if value == "off":
+                raise OSError("uncertain write")
+        kernel.write = fail
+        with self.assertRaises(OSError):
+            self.helper.rediscover(kernel, None, lambda _: None)
+        self.assertEqual(kernel.writes, ["off", "detect"])
+
+    def test_invalid_identity_disconnected_and_unarmed_never_off(self):
+        for fault in ("edid", "disconnected", "unarmed"):
+            kernel = self.kernel(("no\n",))
+            if fault == "edid":
+                kernel.edid = lambda _: b"bad"
+            elif fault == "disconnected":
+                kernel.state = "disconnected"
+            with self.assertRaises(ValueError):
+                self.helper.rediscover(kernel, None, lambda _: None)
+            self.assertEqual(kernel.writes, [])
+
+    def test_reentrant_term_cannot_interrupt_compensating_detect(self):
+        kernel = self.kernel(("off\n", InterruptedError("first cancellation")))
+        original = kernel.write
+        def repeated(connector, value):
+            if value == "detect":
+                os.kill(os.getpid(), signal.SIGTERM)
+            original(connector, value)
+        kernel.write = repeated
+        def cancel(*_):
+            raise InterruptedError("second cancellation")
+        previous = signal.signal(signal.SIGTERM, cancel)
+        try:
+            with self.assertRaises(InterruptedError):
+                self.helper.rediscover(kernel, None, lambda _: None)
+            self.assertEqual(kernel.writes, ["off", "detect"])
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
+    def test_final_edid_recheck_precedes_off(self):
+        kernel = self.kernel()
+        calls = 0
+        def changing(_):
+            nonlocal calls
+            calls += 1
+            return ReceiverEdidTests.edid if calls == 1 else b""
+        kernel.edid = changing
+        messages = []
+        with self.assertRaises(ValueError):
+            self.helper.rediscover(kernel, None, messages.append)
+        self.assertEqual(kernel.writes, [])
+        self.assertEqual(messages, ["ready", "refused-before-off"])
+
+    def test_cancelled_kernel_wait_exits_without_reading_controller_pipe(self):
+        kernel = self.helper.Kernel()
+        kernel.cancelled = True
+        with mock.patch.object(self.helper.select, "select") as select_call:
+            with self.assertRaises(InterruptedError):
+                kernel.wait(mock.Mock())
+            select_call.assert_not_called()
+
+    def test_partial_handshake_is_read_once_without_blocking_readline(self):
+        kernel = self.helper.Kernel()
+        stream = mock.Mock()
+        stream.fileno.return_value = 123
+        with mock.patch.object(self.helper.select, "select", return_value=([stream], [], [])), \
+                mock.patch.object(self.helper.os, "read", return_value=b"of") as read:
+            self.assertEqual(kernel.wait(stream), "of")
+            read.assert_called_once_with(123, 32)
+            stream.readline.assert_not_called()
+
+    def test_detect_failure_is_explicit(self):
+        kernel = self.kernel()
+        original = kernel.write
+        def fail(connector, value):
+            if value == "detect":
+                raise OSError("detect incomplete")
+            original(connector, value)
+        kernel.write = fail
+        with self.assertRaisesRegex(OSError, "detect incomplete"):
+            self.helper.rediscover(kernel, None, lambda _: None)
+
+    def test_kernel_selects_card_vendor_not_connector_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "card1/device").mkdir(parents=True)
+            (root / "card1/device/vendor").write_text("0x10de\n")
+            (root / "card1-HDMI-A-1").mkdir()
+            with mock.patch.object(self.helper, "Path", return_value=root):
+                self.assertEqual(self.helper.Kernel().connector(), root / "card1-HDMI-A-1")
+                (root / "card1-HDMI-A-2").mkdir()
+                with self.assertRaisesRegex(ValueError, "ambiguous"):
+                    self.helper.Kernel().connector()
+            (root / "card1/device/vendor").write_text("0x1002\n")
+            with mock.patch.object(self.helper, "Path", return_value=root):
+                with self.assertRaisesRegex(ValueError, "GPU"):
+                    self.helper.Kernel().connector()
 
 class AudioTests(unittest.TestCase):
+    def test_pending_hdmi_journal_defers_audio_cli_and_profile_commands(self):
+        system = FakeSystem()
+        system.apply("tv-game")
+        system.recovery_pending = lambda: True
+        with mock.patch.object(dc, "runtime_dir", return_value=Path("/fake-private-runtime")), \
+                mock.patch.object(dc, "System", return_value=system), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dc.main(["--audio-tv"]), 2)
+        self.assertEqual(system.audio.calls, [])
+
     def setUp(self):
         self.system = FakeSystem()
         self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)
@@ -1256,6 +1317,134 @@ class AudioTests(unittest.TestCase):
             ("move-sink-input", "808", self.system.audio.tv_name)])
         self.assertEqual(self.system.mutations(), [])
         self.assertEqual(self.coordinator.status()["audio_health"], "healthy")
+
+    def test_null_source_override_routes_audio_and_specials_without_modeset(self):
+        for live in ("desk", "tv-game", "tv-recovery"):
+            with self.subTest(live=live):
+                system = FakeSystem()
+                system.apply(live)
+                system.editor_name = None  # Real daemon metadata after an unsaved transaction.
+                system.override = live
+                system.states = ha(screen="off") if live == "desk" else ha()
+                system.ws.append({"id": -99, "name": "special:game", "monitor": "stranded"})
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                for _ in range(3):
+                    coordinator.step()
+                    system.advance(dc.POLL)
+                route = "desk" if live == "desk" else "tv-game"
+                self.assertEqual(coordinator.selected, route)
+                self.assertEqual(coordinator.observed_profile, live)
+                self.assertEqual(coordinator.audio_health, "healthy")
+                self.assertEqual(system.audio.default, dc.DESK_SINK if route == "desk" else system.audio.tv_name)
+                self.assertEqual(system.ws[-1]["monitor"], dc.targets(system.profiles[live])[0]["name"])
+                self.assertEqual(system.mutations(), [])
+                self.assertEqual(system.profiles, system.saved)
+                writes = list(system.audio.writes())
+                coordinator.step()
+                self.assertEqual(system.audio.writes(), writes)
+
+    def test_null_source_override_does_not_create_ha_intent(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        self.system.states = ha("")
+        self.tick(3)
+        self.assertEqual(self.coordinator.observed_profile, "tv-game")
+        self.assertEqual(self.coordinator.selected, "tv-game")
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertIsNone(self.coordinator.ha_route)
+        self.assertIsNone(self.coordinator.candidate)
+        self.assertFalse(self.coordinator.wake_intent)
+        self.assertFalse(self.coordinator.route_attempted)
+        self.assertFalse(self.coordinator.recovery_attempted)
+        self.system.wake.assert_not_called()
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_source_profile_precedes_override_and_unknown_metadata_defers(self):
+        for source, override, verified in (
+                ("tv-game", "desk", True),
+                ("desk", "tv-game", False),
+                ("unknown", "tv-game", False),
+                ("", "tv-game", False),
+                (None, "unknown", False),
+                (None, None, False)):
+            with self.subTest(source=source, override=override):
+                system = FakeSystem()
+                system.apply("tv-game")
+                system.editor_name, system.override = source, override
+                system.states = ha("")
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                coordinator.step()
+                self.assertEqual(coordinator.observed_profile, "tv-game" if verified else None)
+                self.assertEqual(coordinator.audio_health, "healthy" if verified else "deferred")
+                if not verified:
+                    self.assertEqual(system.audio.calls, [])
+                    self.assertIsNone(coordinator.selected)
+                self.assertEqual(system.mutations(), [])
+
+    def test_null_source_override_requires_saved_profile(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        del self.system.profiles["tv-game"]
+        self.system.states = ha("")
+        self.tick(3)
+        self.assertIsNone(self.coordinator.observed_profile)
+        self.assertEqual(self.coordinator.audio_health, "deferred")
+        self.assertEqual(self.system.audio.calls, [])
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_null_source_audio_guard_rechecks_metadata_and_ownership_before_writes(self):
+        for fault in ("override", "source", "preview", "unmanaged", "capability", "saved"):
+            with self.subTest(fault=fault):
+                system = FakeSystem()
+                system.apply("tv-game")
+                system.editor_name = None
+                system.override = "tv-game"
+                system.states = ha("")
+                original = system.pactl
+
+                def changed(*args):
+                    result = original(*args)
+                    if args[0] == "get-default-sink":
+                        if fault == "override":
+                            system.override = "desk"
+                        elif fault == "source":
+                            system.editor_name = "unknown"
+                        elif fault == "preview":
+                            system.preview = {"transaction_id": "human"}
+                        elif fault == "unmanaged":
+                            system.unmanaged = True
+                        elif fault == "capability":
+                            system.ipc_only = False
+                        else:
+                            del system.profiles["tv-game"]
+                    return result
+
+                system.pactl = changed
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                coordinator.step()
+                self.assertEqual(system.audio.writes(), [])
+                self.assertEqual(coordinator.audio_health, "unavailable")
+                self.assertEqual(system.mutations(), [])
+
+    def test_null_source_special_guard_rechecks_override(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        self.tick()
+        move = self.system.move_special_workspaces
+        self.system.ws.append({"id": -99, "name": "special:game", "monitor": "DP-1"})
+
+        def changed(output, guard):
+            self.system.override = "desk"
+            move(output, guard)
+
+        self.system.move_special_workspaces = changed
+        self.tick()
+        self.assertEqual(self.system.ws[-1]["monitor"], "DP-1")
+        self.assertIn("special workspace route changed", self.coordinator.error)
+        self.assertEqual(self.system.mutations(), [])
 
     def test_tv_audio_idempotence(self):
         self.tv()
@@ -1319,12 +1508,122 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(self.system.audio.default, dc.DESK_SINK)
         self.assertEqual(self.coordinator.audio_health, "unavailable")
 
-    def test_contradictory_sink_product_is_never_selected(self):
+    @staticmethod
+    def live_gpu_audio():
+        # Matching fields from root's audio-live-550b25e.json. The Sony product
+        # is on the card port; the sink describes its NVIDIA audio controller.
+        audio = FakeAudio()
+        audio.cards[0].update(index=61437, properties={
+            "device.product.name": "AD102 High Definition Audio Controller"})
+        audio.sony.update(index=61605, state="RUNNING",
+                          sample_specification="s32le 2ch 48000Hz",
+                          channel_map="front-left,front-right", mute=False,
+                          volume={channel: {"value": 65536, "value_percent": "100%", "db": "0.00 dB"}
+                                  for channel in ("front-left", "front-right")},
+                          properties={"device.name": audio.card,
+                                      "device.product.name": "AD102 High Definition Audio Controller",
+                                      "alsa.name": "HDMI 1"})
+        audio.streams[1]["sink"] = audio.sony["index"]
+        return audio
+
+    def test_live_generic_gpu_sink_routes_with_normalized_metadata_and_preserves_audio(self):
+        for already_default in (False, True):
+            with self.subTest(already_default=already_default):
+                audio = self.system.audio = self.live_gpu_audio()
+                self.tv()
+                self.system.editor_name = None
+                self.system.override = "tv-game"
+                if already_default:
+                    audio.default = audio.tv_name
+                before = copy.deepcopy((audio.cards, audio.sinks))
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                    expected = [] if already_default else [("set-default-sink", audio.tv_name)]
+                    self.assertEqual(audio.writes(), expected + [
+                        ("move-sink-input", "808", audio.tv_name)])
+                    self.assertEqual(self.coordinator.audio_health, "healthy")
+                    self.assertEqual(audio.default, audio.tv_name)
+                    self.assertEqual((audio.cards, audio.sinks), before)
+                    self.assertEqual(self.system.mutations(), [])
+                    self.assertEqual(self.system.profiles, self.system.saved)
+                    audio.calls.clear()
+                    self.tick()
+                    self.assertEqual(audio.writes(), [])
+
+    def test_generic_gpu_sink_requires_exact_card_and_active_port(self):
+        for fault in ("wrong-card", "conflicting-card-index", "wrong-index", "missing-card",
+                      "unknown-card-index", "empty-card-index", "wrong-port", "missing-port"):
+            with self.subTest(fault=fault):
+                audio = self.system.audio = self.live_gpu_audio()
+                sink, card = audio.sony, audio.cards[0]
+                if fault in ("wrong-card", "conflicting-card-index"):
+                    sink["properties"]["device.name"] = "alsa_card.pci-0000_02_00.1"
+                    if fault == "conflicting-card-index":
+                        sink["card"] = card["index"]  # Cannot override a mismatched device.name.
+                elif fault in ("wrong-index", "missing-card", "unknown-card-index", "empty-card-index"):
+                    sink["properties"].pop("device.name")
+                    if fault == "wrong-index":
+                        sink["card"] = card["index"] + 1
+                    elif fault == "unknown-card-index":
+                        card.pop("index")
+                        sink["card"] = None
+                    elif fault == "empty-card-index":
+                        card["index"] = sink["card"] = ""
+                elif fault == "wrong-port":
+                    sink["active_port"] = {"name": "hdmi-output-0"}
+                else:
+                    sink.pop("active_port")
+                self.tv()
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                self.assertEqual(audio.writes(), [])
+                self.assertEqual(audio.default, dc.DESK_SINK)
+                self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_generic_gpu_sink_accepts_only_known_exact_numeric_card_fallback(self):
+        audio = self.system.audio = self.live_gpu_audio()
+        audio.sony["properties"].pop("device.name")
+        audio.sony["card"] = str(audio.cards[0]["index"])
         self.tv()
-        self.system.audio.sony["properties"]["alsa.name"] = "SAMSUNG"
-        self.tick()
-        self.assertEqual(self.system.audio.writes(), [])
-        self.assertEqual(self.coordinator.audio_health, "unavailable")
+        with mock.patch.object(dc, "run", side_effect=audio.run):
+            self.tick()
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertEqual(audio.default, audio.tv_name)
+
+    def test_generic_gpu_sink_cannot_bypass_sony_port_or_sink_ambiguity(self):
+        for fault in ("unknown-product", "unavailable", "duplicate-card", "duplicate-port", "duplicate-sink"):
+            with self.subTest(fault=fault):
+                audio = self.system.audio = self.live_gpu_audio()
+                card = audio.cards[0]
+                port = card["ports"]["hdmi-output-1"]
+                if fault == "unknown-product":
+                    port["properties"] = {"device.product.name": "AD102 High Definition Audio Controller"}
+                elif fault == "unavailable":
+                    port["availability"] = "not available"
+                elif fault == "duplicate-card":
+                    other = copy.deepcopy(card)
+                    other["name"] = "alsa_card.pci-0000_02_00.1"
+                    audio.cards.append(other)
+                elif fault == "duplicate-port":
+                    card["ports"]["hdmi-output-2"] = copy.deepcopy(port)
+                else:
+                    audio.sinks.append(dict(audio.sony, index=61606, name="duplicate"))
+                self.tv()
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                self.assertEqual(audio.writes(), [])
+                self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_generic_gpu_sink_late_publication_preserves_current_profile(self):
+        audio = self.system.audio = self.live_gpu_audio()
+        audio.sinks = [audio.desk]
+        audio.publish_after = 3
+        self.tv()
+        with mock.patch.object(dc, "run", side_effect=audio.run):
+            self.tick()
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertEqual(audio.default, audio.tv_name)
+        self.assertFalse(any(c[0] == "set-card-profile" for c in audio.writes()))
 
     def test_preview_or_sleep_during_publication_wait_prevents_routing(self):
         for fault in ("preview", "sleep", "desk"):
@@ -1448,10 +1747,12 @@ class AudioTests(unittest.TestCase):
         self.assertIn("Focusrite", self.coordinator.audio_error)
 
     def test_sleep_preview_unmanaged_and_unsupported_topology_yield(self):
-        for fault in ("sleep", "preview", "unmanaged", "unknown", "dual", "mismatch"):
+        for fault in ("sleep", "preview", "unmanaged", "unknown", "dual", "mismatch", "identity", "capability"):
             with self.subTest(fault=fault):
                 self.system = FakeSystem()
                 self.tv()
+                self.system.editor_name = None
+                self.system.override = "tv-game"
                 self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)
                 if fault == "sleep":
                     next(m for m in self.system.mon if not m["disabled"])["dpmsStatus"] = False
@@ -1463,6 +1764,11 @@ class AudioTests(unittest.TestCase):
                     self.system.mon.append({"name": "unknown"})
                 elif fault == "dual":
                     self.system.mon[0].update(disabled=False, dpmsStatus=True)
+                elif fault == "identity":
+                    self.system.profiles["tv-game"]["outputs"][1]["model"] = "known TV"
+                    self.system.mon[1]["model"] = "unknown TV"
+                elif fault == "capability":
+                    self.system.ipc_only = False
                 else:
                     self.system.actual = (1280, 720)
                 self.tick()
@@ -1515,15 +1821,23 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(self.coordinator.audio_health, "unavailable")
 
     def test_audio_cli_modes_are_early_and_verify_live_route(self):
-        for mode, live, preview, expected in (
-                ("--audio-tv", "tv-game", None, 0),
-                ("--audio-desk", "desk", None, 0),
-                ("--audio-tv", "desk", None, 2),
-                ("--audio-desk", "tv-game", None, 2),
-                ("--audio-tv", "tv-game", {"transaction_id": "human"}, 2)):
-            with self.subTest(mode=mode, live=live, preview=preview):
+        for mode, live, source, override, preview, expected in (
+                ("--audio-tv", "tv-game", ..., "desk", None, 0),
+                ("--audio-desk", "desk", ..., "tv-game", None, 0),
+                ("--audio-tv", "desk", ..., "desk", None, 2),
+                ("--audio-desk", "tv-game", ..., "tv-game", None, 2),
+                ("--audio-tv", "tv-game", ..., "tv-game", {"transaction_id": "human"}, 2),
+                ("--audio-tv", "tv-game", None, "tv-game", None, 0),
+                ("--audio-tv", "tv-recovery", None, "tv-recovery", None, 0),
+                ("--audio-desk", "desk", None, "desk", None, 0),
+                ("--audio-tv", "tv-game", None, "desk", None, 2),
+                ("--audio-tv", "tv-game", "unknown", "tv-game", None, 2),
+                ("--audio-tv", "tv-game", "desk", "tv-game", None, 2),
+                ("--audio-tv", "tv-game", None, "tv-game", {"transaction_id": "human"}, 2)):
+            with self.subTest(mode=mode, live=live, source=source, override=override, preview=preview):
                 system = FakeSystem()
                 system.apply(live)
+                system.editor_name, system.override = source, override
                 system.preview = preview
                 with mock.patch.object(dc, "runtime_dir", return_value=Path("/unused")), \
                         mock.patch.object(dc, "System", return_value=system), \

@@ -1,0 +1,430 @@
+#!/usr/bin/python3
+"""Sunshine app prep start/stop for omarchy-pc; these are application lifetime hooks."""
+import argparse
+import contextlib
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import stat
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+# Share the existing controller's IPC, topology and qualified Hyprland operations.
+loader = importlib.machinery.SourceFileLoader(
+    "sunshine_display_controller", str(Path(__file__).with_name("display-controller")))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+assert spec is not None
+dc = importlib.util.module_from_spec(spec)
+loader.exec_module(dc)
+SERVICE = "hyprmoncfgd.service"
+CONVERGENCE_TIMEOUT = 5.0
+CONVERGENCE_POLL = 0.1
+
+
+# This is the receiver fallback qualified with the TV off. It is not a policy
+# for unknown displays, absent connectors, DPMS-off or all-disabled layouts.
+IDENTITY = ("make", "model", "serial")
+SNAPSHOT_FIELDS = ("name", *IDENTITY, "disabled", "dpmsStatus", "width", "height",
+                   "refreshRate", "scale", "x", "y", "transform", "currentFormat",
+                   "colorManagementPreset", "vrr", "sdrBrightness", "sdrSaturation",
+                   "sdrMinLuminance", "sdrMaxLuminance")
+SDR = {"currentFormat": "XRGB8888", "colorManagementPreset": "srgb", "vrr": False,
+       "sdrBrightness": 1, "sdrSaturation": 1,
+       "sdrMinLuminance": 0.2, "sdrMaxLuminance": 80}
+
+
+def receiver_snapshot(monitors, profiles):
+    """Validate and retain the qualified physical state, independently of source."""
+    if not isinstance(monitors, list) or any(not isinstance(m, dict) for m in monitors):
+        raise ValueError("invalid receiver physical snapshot")
+    by_name = {m.get("name"): m for m in monitors}
+    if len(monitors) != 2 or set(by_name) != {"DP-1", dc.TV_OUTPUT}:
+        raise ValueError("receiver restore requires both known physical connectors")
+    hdmi, desk = by_name[dc.TV_OUTPUT], by_name["DP-1"]
+    tv = dc.targets(profiles.get("tv-game", {"outputs": []}))
+    desk_profiles = [o for p in profiles.values() for o in p["outputs"]
+                     if o["name"] == "DP-1" and all(o.get(k) for k in IDENTITY)]
+    if (tuple(hdmi.get(k) for k in IDENTITY) != ("Sony", "SONY AVSYSTEM", "0x01010101")
+            or len(tv) != 1 or tv[0]["name"] != dc.TV_OUTPUT
+            or tv[0].get("make") != "Sony" or not tv[0].get("model")
+            or tv[0].get("serial") != hdmi["serial"]
+            or not any(all(o[k] == desk.get(k) for k in IDENTITY) for o in desk_profiles)
+            or hdmi.get("disabled") is not False or desk.get("disabled") is not True):
+        raise ValueError("unqualified receiver topology or identity")
+    for monitor in monitors:
+        if (monitor.get("dpmsStatus") is not True
+                or type(monitor.get("transform")) is not int or monitor["transform"] != 0
+                or any(monitor.get(k) != v for k, v in SDR.items())
+                or monitor.get("vrr") is not False):
+            raise ValueError("receiver restore requires qualified awake SDR state")
+        for key, low, high in (("width", 320, 7680), ("height", 200, 4320),
+                               ("x", -32768, 32768), ("y", -32768, 32768)):
+            if type(monitor.get(key)) is not int or not low <= monitor[key] <= high:
+                raise ValueError("invalid receiver snapshot geometry")
+        for key, low, high in (("refreshRate", 1, 240), ("scale", 0.5, 4)):
+            if type(monitor.get(key)) not in (int, float) or not low <= monitor[key] <= high:
+                raise ValueError("invalid receiver snapshot mode")
+    return [{k: m[k] for k in SNAPSHOT_FIELDS} for m in monitors]
+
+
+def dimensions(environ):
+    values = []
+    for key, default, low, high in (("WIDTH", "1920", 320, 7680),
+                                    ("HEIGHT", "1080", 200, 4320),
+                                    ("FPS", "60", 1, 240)):
+        value = environ.get("SUNSHINE_CLIENT_" + key, default)
+        if not re.fullmatch(r"[0-9]{1,4}", value) or not low <= int(value) <= high:
+            raise ValueError("invalid Sunshine client " + key.lower())
+        values.append(int(value))
+    hdr = environ.get("SUNSHINE_CLIENT_HDR", "0")
+    if hdr not in ("0", "1", "true", "false"):
+        raise ValueError("invalid Sunshine client HDR")
+    return (*values, hdr in ("1", "true"))
+
+
+@contextlib.contextmanager
+def locked_state(runtime):
+    directory = runtime / "sunshine-virtual-display"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Sunshine state directory must be private and owned")
+    fd = os.open(directory / "lock", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Sunshine lock must be private and owned")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield directory / "state.json"
+    finally:
+        os.close(fd)
+
+
+class Host:
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def active(self):
+        result = subprocess.run(["systemctl", "--user", "show", SERVICE,
+                                 "--property=ActiveState", "--value"],
+                                capture_output=True, text=True, timeout=10, check=True)
+        state = result.stdout.strip()
+        if state not in ("active", "inactive", "failed"):
+            raise ValueError("display service is transitioning")
+        return state == "active"
+
+    def service(self, action):
+        dc.run(["systemctl", "--user", action, SERVICE], timeout=25)
+
+    def monitors(self):
+        monitors = json.loads(dc.run(["hyprctl", "monitors", "all", "-j"]))
+        if (not isinstance(monitors, list) or any(not isinstance(m, dict) for m in monitors)
+                or any(not isinstance(m.get("name"), str) for m in monitors)
+                or len({m["name"] for m in monitors}) != len(monitors)):
+            raise ValueError("invalid compositor monitor list")
+        return monitors
+
+    def editor(self):
+        if (self.runtime / "display-hdmi-recovery.json").exists():
+            raise ValueError("HDMI recovery journal owns display; controller cleanup required")
+        with dc.IPC(self.runtime / "hyprmoncfgd.sock") as ipc:
+            daemon = ipc.request("status")["daemon"]
+            dc.require_ipc_only(daemon)
+            if daemon.get("preview") or daemon.get("unmanaged"):
+                raise ValueError("display is owned by a preview or unmanaged layout")
+            editor = ipc.request("editor_state")
+            if not editor.get("source_profile"):
+                editor["source_profile"] = daemon.get("profile_override")
+            return editor
+
+    def command(self, *args):
+        result = dc.run(["hyprctl", *args])
+        if result.strip() != "ok":
+            raise ValueError("Hyprland rejected " + args[0])
+
+    def move(self, output, guard):
+        return dc.migrate_workspaces(output, guard)
+
+
+class Session:
+    def __init__(self, host, path, stopped=lambda: False):
+        self.host, self.path, self.stopped = host, path, stopped
+
+    def load(self):
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return None
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise ValueError("Sunshine journal must be private and owned")
+        state = json.loads(self.path.read_text())
+        if (state.get("version") != 1 or type(state.get("service_active")) is not bool
+                or not re.fullmatch(r"HEADLESS-SUNSHINE-[0-9a-f]{32}", state.get("output", ""))
+                or not isinstance(state.get("profiles"), dict)
+                or type(state.get("mutated")) is not bool
+                or type(state.get("restored")) is not bool):
+            raise ValueError("invalid Sunshine journal")
+        if "physical_snapshot" in state:
+            receiver_snapshot(state["physical_snapshot"], state["profiles"])
+        return state
+
+    def save(self, state):
+        dc.atomic_write(self.path, json.dumps(state) + "\n")
+
+    def guard(self, state):
+        if self.stopped():
+            raise InterruptedError("Sunshine handoff interrupted; retry stop")
+        # A service started independently while the hook owns the display is a
+        # conflicting owner. Leave the journal for an explicit later stop.
+        if self.host.active():
+            raise ValueError("display service resumed independently")
+        monitors = self.host.monitors()
+        physical = [m for m in monitors if m.get("name") != state["output"]]
+        snapshot = state.get("physical_snapshot")
+        if snapshot is not None:
+            expected = {m["name"]: m for m in snapshot}
+            if {m["name"] for m in physical} != set(expected):
+                raise ValueError("physical connectors changed; retaining Sunshine recovery state")
+            if any(any(m.get(k) != expected[m["name"]][k] for k in IDENTITY)
+                   for m in physical):
+                raise ValueError("output identity changed")
+            if not state["mutated"] and self.restored_target(state, monitors) is None:
+                raise ValueError("receiver layout changed before handoff")
+            return monitors
+        known = {o["name"] for p in state["profiles"].values() for o in p["outputs"]}
+        if not physical or any(m.get("name") not in known for m in physical):
+            raise ValueError("unknown output; retaining Sunshine recovery state")
+        # Validate identities even while physical outputs are disabled.
+        for m in physical:
+            candidates = [o for p in state["profiles"].values() for o in p["outputs"]
+                          if o["name"] == m["name"]]
+            identified = [o for o in candidates if any(o.get(k) for k in ("make", "model", "serial"))]
+            if not any(all(not o.get(k) or o[k] == m.get(k) for k in ("make", "model", "serial"))
+                       for o in (identified or candidates)):
+                raise ValueError("output identity changed")
+        return monitors
+
+    def converge(self, state, desired, message):
+        """Accepted monitor rules apply on render checks, not at the IPC reply."""
+        deadline = time.monotonic() + CONVERGENCE_TIMEOUT
+        while True:
+            monitors = self.guard(state)
+            if desired(monitors):
+                return monitors
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(message + "; retaining Sunshine recovery state")
+            time.sleep(min(CONVERGENCE_POLL, remaining))
+
+    @staticmethod
+    def own_enabled(monitors, output):
+        return any(m["name"] == output and m.get("disabled") is False
+                   and m.get("dpmsStatus") is True for m in monitors)
+
+    @staticmethod
+    def mode_matches(monitors, output, size):
+        width, height, fps, _ = size
+        own = [m for m in monitors if m["name"] == output]
+        return (len(own) == 1 and Session.own_enabled(own, output)
+                and (own[0].get("width"), own[0].get("height")) == (width, height)
+                and type(own[0].get("refreshRate")) in (int, float)
+                and abs(own[0]["refreshRate"] - fps) <= 0.1
+                and own[0].get("scale") == 1
+                and (own[0].get("x"), own[0].get("y")) == (0, 0))
+
+    def restored_target(self, state, monitors):
+        physical = [m for m in monitors if m["name"] != state["output"]]
+        if "physical_snapshot" in state:
+            expected = {m["name"]: m for m in state["physical_snapshot"]}
+            if {m["name"] for m in physical} != set(expected):
+                return None
+            for monitor in physical:
+                wanted = expected[monitor["name"]]
+                for key in SNAPSHOT_FIELDS:
+                    actual = monitor.get(key)
+                    if key == "refreshRate":
+                        if type(actual) not in (int, float) or not abs(actual - wanted[key]) <= 0.1:
+                            return None
+                    elif actual != wanted[key]:
+                        return None
+            return dc.TV_OUTPUT
+        for profile in state["profiles"].values():
+            wanted = dc.targets(profile)
+            if len(wanted) != 1 or not dc.topology(physical, state["profiles"], profile):
+                continue
+            enabled = [m for m in physical if m.get("disabled") is False]
+            if (len(enabled) == 1 and enabled[0]["name"] == wanted[0]["name"]
+                    and (enabled[0].get("width"), enabled[0].get("height"))
+                    == (wanted[0]["width"], wanted[0]["height"])):
+                return wanted[0]["name"]
+        return None
+
+    def start(self, size):
+        if self.load() is not None:
+            raise ValueError("Sunshine journal already exists; stop before another start")
+        active = self.host.active()
+        # Require a capability handshake even if the service was deliberately
+        # stopped. An unavailable IPC or human preview fails before mutation.
+        editor = self.host.editor()
+        profiles = {p["name"]: p for p in editor["profiles"]
+                    if p["name"] in ("desk", "tv-game", "tv-recovery")}
+        name = editor.get("source_profile")
+        monitors = self.host.monitors()
+        snapshot = None
+        if name not in profiles or not dc.topology(monitors, profiles, profiles[name]):
+            if name is not None and name not in profiles:
+                raise ValueError("unknown source profile")
+            snapshot = receiver_snapshot(monitors, profiles)
+        output = "HEADLESS-SUNSHINE-" + uuid.uuid4().hex
+        if any(m.get("name") == output for m in monitors):
+            raise ValueError("headless output name already exists")
+        state = {"version": 1, "service_active": active, "output": output,
+                 "profiles": profiles, "mutated": False, "restored": False}
+        if snapshot is not None:
+            state["physical_snapshot"] = snapshot
+        self.save(state)
+        try:
+            if active:
+                # Repeat ownership check immediately before service handoff.
+                self.host.editor()
+                self.host.service("stop")
+            self.guard(state)
+            # Persist the output identity before create, including uncertain timeouts.
+            state["mutated"] = True
+            self.save(state)
+            self.host.command("output", "create", "headless", output)
+            self.converge(state, lambda ms: self.own_enabled(ms, output),
+                          "headless creation did not converge")
+            width, height, fps, hdr = size
+            rule = ("hl.monitor({output=" + json.dumps(output)
+                    + ',mode="' + str(width) + "x" + str(height) + "@" + str(fps)
+                    + '",position="0x0",scale=1')
+            self.guard(state)
+            if hdr:
+                try:
+                    # Acceptance alone does not qualify an HDR capture pipeline.
+                    self.host.command("eval", rule + ',bitdepth=10,cm="hdr"})')
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    self.guard(state)
+                    self.host.command("eval", rule + ',bitdepth=8,cm="srgb"})')
+            else:
+                self.host.command("eval", rule + ',bitdepth=8,cm="srgb"})')
+            current = self.converge(
+                state, lambda ms: self.mode_matches(ms, output, size),
+                "headless mode did not converge")
+            migration = self.host.move(output, lambda: self.guard(state))
+            for monitor in current:
+                if monitor["name"] != output and monitor.get("disabled") is False:
+                    self.guard(state)
+                    self.host.command("eval", "hl.monitor({output="
+                                      + json.dumps(monitor["name"]) + ",disabled=true})")
+            self.converge(
+                state, lambda ms: self.mode_matches(ms, output, size)
+                and [m["name"] for m in ms if m.get("disabled") is False] == [output],
+                "headless isolation did not converge")
+            # The temporary empty source workspace must now be gone or moved.
+            self.guard(state)
+            migration(final=True)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # Best effort compensation, keeping the journal whenever incomplete.
+            try:
+                self.stop()
+            except (OSError, ValueError, subprocess.SubprocessError) as cleanup:
+                print("Sunshine cleanup pending: " + str(cleanup), file=sys.stderr)
+            raise
+
+    def stop(self):
+        state = self.load()
+        if state is None:
+            return
+        if not state["restored"] and state["mutated"]:
+            self.guard(state)
+            self.host.command("reload")
+            if "physical_snapshot" in state:
+                # Physical disabled=false alone cannot re-enable this connector.
+                # Wait for the qualified reload path before replaying its rule.
+                self.converge(state, lambda ms: self.own_enabled(ms, dc.TV_OUTPUT),
+                              "receiver HDMI did not re-enable after reload")
+                hdmi = next(m for m in state["physical_snapshot"] if m["name"] == dc.TV_OUTPUT)
+                self.guard(state)
+                self.host.command(
+                    "eval", "hl.monitor({output=" + json.dumps(dc.TV_OUTPUT)
+                    + ',mode="' + str(hdmi["width"]) + "x" + str(hdmi["height"])
+                    + "@" + str(hdmi["refreshRate"]).removesuffix(".0") + '",position="'
+                    + str(hdmi["x"]) + "x" + str(hdmi["y"]) + '",scale='
+                    + str(hdmi["scale"]) + ",transform=0,disabled=false,bitdepth=8"
+                    + ',cm="srgb",vrr=0,sdrbrightness=1,sdrsaturation=1'
+                    + ",sdr_min_luminance=0.2,sdr_max_luminance=80})")
+            monitors = self.converge(
+                state, lambda ms: self.restored_target(state, ms) is not None,
+                "restored include has no safe single-output layout")
+            target = self.restored_target(state, monitors)
+            # Reload may disable a user-created output. MonitorState queries used
+            # by output.remove find enabled monitors only. Re-enable only our
+            # journaled output, then destroy and require absence from monitors all.
+            own = [m for m in monitors if m["name"] == state["output"]]
+            if own and own[0].get("disabled") is not False:
+                self.guard(state)
+                self.host.command("eval", "hl.monitor({output="
+                                  + json.dumps(state["output"]) + ",disabled=false})")
+                self.converge(state, lambda ms: self.own_enabled(ms, state["output"])
+                              and self.restored_target(state, ms) == target,
+                              "owned headless re-enable did not converge")
+            migration = self.host.move(target, lambda: self.guard(state))
+            current = self.guard(state)
+            if self.restored_target(state, current) != target:
+                raise ValueError("physical restore changed before output removal")
+            if any(m["name"] == state["output"] for m in current):
+                if not self.own_enabled(current, state["output"]):
+                    raise ValueError("owned output disabled before removal; retry stop")
+                self.host.command("output", "remove", state["output"])
+            self.converge(
+                state, lambda ms: not any(m["name"] == state["output"] for m in ms)
+                and self.restored_target(state, ms) == target,
+                "owned headless removal or physical restore did not converge")
+            self.guard(state)
+            migration(final=True)
+        if not state["restored"]:
+            state["restored"] = True
+            self.save(state)
+        # Persist restored before start: retry never reloads over a resumed
+        # controller, and never starts a service that was initially inactive.
+        if state["service_active"] and not self.host.active():
+            self.host.service("start")
+        self.path.unlink()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("start", "stop"))
+    args = parser.parse_args(argv)
+    try:
+        size = dimensions(os.environ) if args.action == "start" else None
+        stopped = threading.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: stopped.set())
+        runtime = dc.runtime_dir()
+        with locked_state(runtime) as path:
+            session = Session(Host(runtime), path, stopped.is_set)
+            if args.action == "start":
+                session.start(size)
+            else:
+                session.stop()
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("sunshine-virtual-display: " + str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

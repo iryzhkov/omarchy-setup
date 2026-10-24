@@ -34,6 +34,8 @@ jobs:
           chmod 700 "$scratch/home"
           HOME="$scratch/home" TMPDIR="$scratch/tmp" \
             DISPLAY_TEST_SCRATCH_HOME="$scratch/home" python3 test/display_controller_test.py
+          HOME="$scratch/home" TMPDIR="$scratch/tmp" \
+            DISPLAY_TEST_SCRATCH_HOME="$scratch/home" python3 test/sunshine_virtual_display_test.py
   display-daemon:
     runs-on: ubuntu-latest
     steps:

@@ -322,6 +322,13 @@ check "display dependency missing refuses overlay" bash -c '! bash "$1" >"$2" 2>
 check "display dependency refusal preserves helper" cmp -s "$HOME/.local/bin/hosttool" "$T/hosttool.before"
 rm "$HF/bin/display-controller"
 cp "$T/hosttool.before" "$HF/bin/hosttool"
+# The Sunshine replacement uses this existing host-bin installer; keep the
+# installed global prep and apps/config files outside the managed overlay.
+cp "$ROOT/hosts/omarchy-pc/bin/sunshine-virtual-display" "$HF/bin/sunshine-virtual-display"
+printf 'legacy helper\n' >"$HOME/.local/bin/sunshine-virtual-display"
+check "Sunshine host helper replaces legacy copy" module common/29-host-files.sh
+check "Sunshine helper installed executable" test -x "$HOME/.local/bin/sunshine-virtual-display"
+check "Sunshine helper bytes match source" cmp -s "$HOME/.local/bin/sunshine-virtual-display" "$ROOT/hosts/omarchy-pc/bin/sunshine-virtual-display"
 # Keep the systemctl stub for uninstall as well.
 
 # -------------------------------------------------- fleet ownership --
@@ -372,8 +379,22 @@ check "script bootstrap preserves fleet tools" module common/28-scripts.sh
 mkdir -p "$HOME/.local/libexec/display-controller"
 printf '%s\n' '#!/bin/sh' 'echo "  --ipc-only"' >"$HOME/.local/libexec/display-controller/hyprmoncfgd"
 chmod +x "$HOME/.local/libexec/display-controller/hyprmoncfgd"
+# Permit only the fixed helper install in this fixture. Record it without
+# executing sudo or writing outside the scratch HOME.
+cat >"$T/bin/sudo" <<'STUB'
+#!/bin/sh
+if [ "$#" = 10 ] && [ "$1 $2 $3 $4 $5 $6 $7 $8" = "install -D -m 0755 -o root -g root" ] &&
+   [ "$9" = "$OMARCHY_SETUP_ROOT/hosts/omarchy-pc/root/usr/local/libexec/display-hdmi-rediscover" ] &&
+   [ "${10}" = /usr/local/libexec/display-hdmi-rediscover ]; then
+  printf 'fixed HDMI helper install\n' >>"$TMPDIR/sudo.log"
+  exit 0
+fi
+printf 'unexpected sudo refused\n' >>"$TMPDIR/sudo.log"
+exit 97
+STUB
+chmod +x "$T/bin/sudo"
 check "omarchy-pc overlay succeeds" env SETUP_HOST=omarchy-pc bash "$ROOT/modules/common/29-host-files.sh"
-check "host overlay invokes no sudo" test ! -e "$T/sudo.log"
+check "overlay requests only fixed root-owned HDMI helper" test "$(cat "$T/sudo.log")" = "fixed HDMI helper install"
 check "scripts and overlay preserve fleet" test "$(fleet_snapshot)" = "$fleet_before"
 
 # ---------------------------------------------------------------- dry run --
