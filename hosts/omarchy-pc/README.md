@@ -211,7 +211,13 @@ A pipe handshake waits for the controller to observe the physical output absent
 before detect. Failure, EOF, timeout and SIGTERM/INT/HUP after an attempted off
 all execute compensated detect. Signal handlers record cancellation without
 raising across the cleanup boundary, and compensation masks repeated signals.
-A detect-only command exists for compensation.
+A detect-only command exists for compensation. The ready handshake waits sixty
+seconds, matching the controller operation bound and starting later. The
+controller checks its deadline again after the last HA query before sending off.
+A buffered refusal is still read if sending or flushing off hits a broken pipe;
+bare EOF remains uncertain. Closing the pipe drains refusal/detect messages and
+reaps the helper even if stdin close fails. Child and watcher restoration runs
+in a separate finally path even when helper cleanup raises.
 SIGKILL, machine loss or an unwritable kernel status file cannot be compensated
 by a process; the private journal retains detect ownership in that case.
 
@@ -267,8 +273,12 @@ journal; after waking or resolving that conflict, a controller start retries
 cleanup without off. An explicit root-helper refusal before any write selects
 this same compensation path. A fresh ten-second cleanup budget is independent
 of the failed operation deadline. The journal records completed compensation
-until owned-child readiness and watcher reclamation also succeed. Incomplete cleanup leaves the journal and any
-remaining backup in place. Ordinary polls defer.
+until owned-child readiness and watcher reclamation also succeed. A prepared
+journal with no display mutation clears during the same run after helper cleanup,
+owned-child readiness, watcher reclamation and backup absence are verified.
+A child still stopping or a helper that cannot be reaped retains that incomplete
+ownership record. Incomplete cleanup leaves the journal and any remaining backup
+in place. Ordinary polls defer.
 On a later controller start, one bounded cleanup attempt can compensate detect
 and finish restoration; it never repeats off. A changed profile, preview,
 identity, sleep state or competing owner leaves recovery pending for the

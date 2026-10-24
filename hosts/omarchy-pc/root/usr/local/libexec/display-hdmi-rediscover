@@ -13,6 +13,7 @@ import sys
 import time
 
 IDENTITY = {"make": "Sony", "model": "SONY TV  *30", "serial": "0x01010101"}
+READY_TIMEOUT = 60  # matches the controller operation bound, starts later
 
 
 class Kernel:
@@ -83,7 +84,7 @@ def rediscover(kernel, stream, emit):
     emit("ready")
     # Refuse explicitly for every failure before the first attempted write.
     try:
-        if kernel.wait(stream, timeout=30) != "off\n":
+        if kernel.wait(stream, timeout=READY_TIMEOUT) != "off\n":
             raise ValueError("missing off handshake")
         if getattr(kernel, "cancelled", False):
             raise InterruptedError("connector recovery cancelled")

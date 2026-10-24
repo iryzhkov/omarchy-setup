@@ -27,6 +27,7 @@ ENTITIES = (TV, SCREEN, AVR, BRAVIA, CAST)
 TV_OUTPUT = "HDMI-A-1"
 POLL = 5
 REDISCOVER_COOLDOWN = 300
+REDISCOVER_TIMEOUT = 60
 REDISCOVER_HELPER = Path("/usr/local/libexec/display-hdmi-rediscover")
 WATCHER_SHA256S = {
     "5b7415c8b25dcccc695c808163b9ff4602cdbacecabf23398a166bfe85623b48",
@@ -998,6 +999,7 @@ class ConnectorProcess:
         self.proc = None
         self.buffer = b""
         self.detected = False
+        self.refused = False
         self.closed = False
 
     def __enter__(self):
@@ -1011,7 +1013,7 @@ class ConnectorProcess:
             raise
         return self
 
-    def expect(self, wanted):
+    def receive(self):
         deadline = time.monotonic() + 10
         while b"\n" not in self.buffer:
             remaining = deadline - time.monotonic()
@@ -1023,18 +1025,28 @@ class ConnectorProcess:
             self.buffer += chunk
         line, self.buffer = self.buffer.split(b"\n", 1)
         if line == b"refused-before-off":
+            self.refused = True
             raise ConnectorRefused("root helper refused before connector off")
-        if line.decode("ascii") != wanted:
-            raise ValueError("unexpected root HDMI helper response")
-        if wanted == "detect-restored":
+        if line == b"detect-restored":
             self.detected = True
+        return line.decode("ascii")
+
+    def expect(self, wanted):
+        if self.receive() != wanted:
+            raise ValueError("unexpected root HDMI helper response")
 
     def send(self, value):
         self.proc.stdin.write(value.encode("ascii") + b"\n")
         self.proc.stdin.flush()
 
     def off(self):
-        self.send("off")
+        try:
+            self.send("off")
+        except OSError:
+            # A buffered refusal can precede a failed write/flush. Only that
+            # explicit message proves no off; EOF alone remains uncertain.
+            self.expect("disconnected")
+            return
         self.expect("disconnected")
 
     def detect(self):
@@ -1046,18 +1058,25 @@ class ConnectorProcess:
     def __exit__(self, *_):
         if self.proc and not self.closed:
             self.closed = True
-            self.proc.stdin.close()
             try:
-                if not self.detected:
-                    # EOF after off guarantees the helper reaches finally.
-                    # Before off it simply exits without changing the connector.
-                    self.expect("detect-restored")
-            except ERRORS:
-                pass
-            try:
+                # BufferedWriter.close can flush again after a broken pipe.
+                # Still drain compensation/refusal and reap the exact helper.
+                with contextlib.suppress(*ERRORS):
+                    self.proc.stdin.close()
+                try:
+                    if not self.detected and not self.refused:
+                        for _ in range(2):  # at most disconnected, then detect
+                            message = self.receive()
+                            if message == "detect-restored":
+                                break
+                            if message != "disconnected":
+                                raise ValueError("unexpected HDMI cleanup response")
+                except ERRORS:
+                    pass
                 self.proc.wait(timeout=10)
             finally:
-                self.proc.stdout.close()
+                with contextlib.suppress(*ERRORS):
+                    self.proc.stdout.close()
 
 
 class Rediscovery:
@@ -1066,7 +1085,8 @@ class Rediscovery:
         self.system, self.child, self.coordinator = system, child, coordinator
         self.path = system.runtime / "display-hdmi-recovery.json"
         self.transaction_id = None
-        self.deadline = coordinator.clock() + 60
+        self.deadline = coordinator.clock() + REDISCOVER_TIMEOUT
+        self.stopping_child = None
         self.handoff_incomplete = getattr(system, "watcher_holds", None) is not None
 
     @contextlib.contextmanager
@@ -1092,6 +1112,9 @@ class Rediscovery:
                 self.system.watcher_holds = None
 
     def restart_owned(self):
+        if (self.stopping_child is not None and self.child.proc is self.stopping_child
+                and self.stopping_child.poll() is None):
+            raise ValueError("owned child stop remains incomplete")
         if self.child.proc is not None and self.child.proc.poll() is not None:
             self.child.proc = None  # A reaped handle owned by this Child only.
         self.child.start()
@@ -1305,7 +1328,12 @@ class Rediscovery:
         directory = self.system.runtime / "sunshine-virtual-display"
         with coordinator_lock(directory, "lock"), self.watcher_exclusion():
             with self.system.ipc() as ipc:
-                if state["stage"] in ("backup", "compensated"):
+                if state["stage"] == "prepared":
+                    # No display mutation to undo. Clearing ownership metadata
+                    # must not gate on new HA intent or overwrite a human preview.
+                    self.peer(ipc)
+                    require_ipc_only(ipc.request("status")["daemon"])
+                elif state["stage"] in ("backup", "compensated"):
                     self.owner(ipc)  # Compensation is independent of new HA route intent.
                 else:
                     self.guard(state, ipc)
@@ -1356,15 +1384,18 @@ class Rediscovery:
                          "shown": sorted(m.get("specialWorkspace", {}).get("name")
                              for m in self.system.monitors() if m.get("specialWorkspace", {}).get("name")),
                          "stage": "prepared"}
-                with self.system.ipc() as ipc:
-                    self.owner(ipc)
-                    self.guard(state, ipc, fault=True)
-                    expected = self.child.proc
-                    self.save(state)
-                    self.owner(ipc)  # Final preview/ownership check after journaling.
-                    # No further requests use this old connection.
-                self.handoff_incomplete = True
+                journaled = False
                 try:
+                    with self.system.ipc() as ipc:
+                        self.owner(ipc)
+                        self.guard(state, ipc, fault=True)
+                        expected = self.child.proc
+                        self.save(state)
+                        journaled = True
+                        self.owner(ipc)  # Final preview/ownership check after journaling.
+                        # No further requests use this old connection.
+                    self.handoff_incomplete = True
+                    self.stopping_child = expected
                     self.child.handoff_stop(expected)
                     if (self.system.runtime / "hyprmoncfgd.sock").exists():
                         raise ValueError("old daemon socket persists; no recovery mutation")
@@ -1380,6 +1411,8 @@ class Rediscovery:
                                                if m["name"] != state["output"]],
                                               profiles, self.system.ha(), self.system.tv_edid()):
                         raise ValueError("fault evidence changed before connector off")
+                    if self.coordinator.clock() > self.deadline:
+                        raise TimeoutError("bounded HDMI deadline exceeded before off")
                     state["stage"] = "detect-pending"
                     self.save(state)
                     try:
@@ -1393,19 +1426,29 @@ class Rediscovery:
                     state["stage"] = "restore"
                     self.save(state)
                 finally:
-                    # EOF compensates off even when cancellation or removal
-                    # observation fails. A missing acknowledgement stays journaled.
-                    helper.__exit__(None, None, None)
-                    if helper.detected:
-                        state["stage"] = "restore"
-                        self.save(state)
+                    helper_cleanup_complete = False
                     try:
-                        if state["stage"] == "backup":
-                            self.restore_before_off(state)
+                        # Even a cleanup exception must reach compensation and
+                        # the owned-child/watcher restoration below.
+                        helper.__exit__(None, None, None)
+                        helper_cleanup_complete = True
                     finally:
-                        self.restart_owned()
-                        if state["stage"] == "compensated":
-                            self.path.unlink()
+                        if journaled:
+                            try:
+                                if helper.refused and state["stage"] == "detect-pending":
+                                    state["stage"] = "backup"
+                                    self.save(state)
+                                elif helper.detected:
+                                    state["stage"] = "restore"
+                                    self.save(state)
+                                if state["stage"] == "backup":
+                                    self.restore_before_off(state)
+                            finally:
+                                self.restart_owned()
+                                if helper_cleanup_complete and state["stage"] in ("prepared", "compensated"):
+                                    if any(m["name"] == state["output"] for m in self.system.monitors()):
+                                        raise ValueError("backup still present after ownership restoration")
+                                    self.path.unlink()
                 self.restore(state)
         self.coordinator.health, self.coordinator.error = "HDMI identity recovered", None
         self.coordinator.last_action = "connector off/detect; verified tv-game"

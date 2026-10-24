@@ -1175,6 +1175,7 @@ class ReceiverTests(unittest.TestCase):
 
 class RediscoveryTests(unittest.TestCase):
     """Production recovery with a compositor simulation and fake child/root I/O."""
+    connector_process_type = fixtures.dc.ConnectorProcess
     def setUp(self):
         import contextlib
         import struct
@@ -1300,6 +1301,7 @@ class RediscoveryTests(unittest.TestCase):
         self.recovery = self.dc.Rediscovery(self.system, self.child, self.coordinator)
         self.helper = mock.Mock()
         self.helper.detected = False
+        self.helper.refused = False
         self.helper.__enter__ = mock.Mock(return_value=self.helper)
         self.off = False
         def detect():
@@ -1326,10 +1328,162 @@ class RediscoveryTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(self.dc, "run", self.c.hypr))
         self.preflight = self.stack.enter_context(mock.patch.object(
             self.dc, "helper_preflight", return_value=self.identity))
-        self.stack.enter_context(mock.patch.object(self.dc, "ConnectorProcess", return_value=self.helper))
+        self.connector_factory = self.stack.enter_context(
+            mock.patch.object(self.dc, "ConnectorProcess", return_value=self.helper))
         self.stack.enter_context(mock.patch.object(self.dc.Path, "read_bytes", return_value=b"qualified"))
         self.stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256S",
                                                   {hashlib.sha256(b"qualified").hexdigest()}))
+
+
+    def pipe_helper(self, responses, *, write_error=False, flush_error=False,
+                    close_error=False, wait_error=None):
+        """Use the real ConnectorProcess with fake Popen, select and pipe reads."""
+        helper = self.connector_process_type()
+        self.connector_factory.return_value = helper
+        proc = mock.Mock()
+        proc.stdout.fileno.return_value = 987
+        proc.wait.return_value = 2  # A refused helper exits nonzero, but is reaped.
+        if wait_error:
+            proc.wait.side_effect = wait_error
+        def write(value):
+            if value == b"off\n" and write_error:
+                raise BrokenPipeError("off write refused")
+            return len(value)
+        proc.stdin.write.side_effect = write
+        if flush_error:
+            proc.stdin.flush.side_effect = BrokenPipeError("off flush refused")
+        if close_error:
+            proc.stdin.close.side_effect = BrokenPipeError("close flush refused")
+        chunks = [b"ready\n", *responses]
+        def read(fd, count):
+            self.assertEqual((fd, count), (987, 256))
+            return chunks.pop(0) if chunks else b""
+        self.stack.enter_context(mock.patch.object(self.dc.subprocess, "Popen", return_value=proc))
+        self.stack.enter_context(mock.patch.object(self.dc.select, "select",
+                                                   side_effect=lambda readers, *_: (readers, [], [])))
+        self.stack.enter_context(mock.patch.object(self.dc.os, "read", side_effect=read))
+        return helper, proc
+
+    def test_pipe_refusal_on_off_write_or_flush_compensates_and_reaps(self):
+        for seam in ("write", "flush"):
+            with self.subTest(seam=seam):
+                self.setUp()
+                helper, proc = self.pipe_helper(
+                    [b"refused-before-off\n"], write_error=seam == "write",
+                    flush_error=seam == "flush", close_error=True)
+                with self.assertRaises(self.dc.ConnectorRefused):
+                    self.recovery.run(self.profiles)
+                self.assertTrue(helper.refused)
+                self.assertFalse(helper.detected)
+                self.assertFalse(self.recovery.path.exists())
+                self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+                self.assertEqual(self.log.count("child-start"), 2)
+                proc.stdin.close.assert_called_once()
+                proc.wait.assert_called_once_with(timeout=10)
+                proc.stdout.close.assert_called_once()
+
+    def test_pipe_eof_after_send_is_uncertain_and_preserves_recovery_ownership(self):
+        for seam in ("write", "flush", "eof"):
+            with self.subTest(seam=seam):
+                self.setUp()
+                helper, proc = self.pipe_helper(
+                    [], write_error=seam == "write", flush_error=seam == "flush",
+                    close_error=True)
+                with self.assertRaisesRegex(ValueError, "helper disconnected"):
+                    self.recovery.run(self.profiles)
+                self.assertFalse(helper.refused)
+                self.assertFalse(helper.detected)
+                self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "detect-pending")
+                self.assertTrue(any(m["name"].startswith("HEADLESS-REDISCOVER-") for m in self.c.mon))
+                self.assertEqual(self.log.count("child-start"), 2)
+                proc.wait.assert_called_once_with(timeout=10)
+                proc.stdout.close.assert_called_once()
+
+    def test_pipe_close_failure_still_reads_refusal_and_completes_prepared_abort(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"], close_error=True)
+        def phase(value):
+            if value == "child-stop":
+                self.states[0]["attributes"]["source"] = "HDMI 2"
+        self.on_phase = phase
+        with self.assertRaisesRegex(ValueError, "intent changed"):
+            self.recovery.run(self.profiles)
+        self.assertTrue(helper.refused)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertFalse(any(v.startswith("output-") for v in self.log))
+        self.assertEqual(self.log.count("child-start"), 2)
+        self.assertIsNone(self.system.watcher_holds)
+        proc.wait.assert_called_once_with(timeout=10)
+        proc.stdout.close.assert_called_once()
+
+    def test_helper_wait_failure_cannot_skip_child_restoration(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"], write_error=True,
+                                       close_error=True,
+                                       wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        self.assertTrue(helper.refused)
+        self.assertEqual(self.log.count("child-start"), 2)
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "compensated")
+        self.assertIsNone(self.system.watcher_holds)
+        proc.stdout.close.assert_called_once()
+
+    def test_prepared_preview_after_journaling_clears_without_stopping_child(self):
+        save = self.recovery.save
+        def preview(state):
+            save(state)
+            self.preview = {"transaction_id": "human"}
+        self.recovery.save = preview
+        with self.assertRaisesRegex(ValueError, "human preview"):
+            self.recovery.run(self.profiles)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertEqual(self.log, ["child-start"])
+        self.assertEqual(self.preview, {"transaction_id": "human"})
+
+    def test_prepared_startup_cleanup_ignores_new_intent_without_touching_display(self):
+        # Production creates the private Sunshine lock directory before journaling.
+        (self.runtime / "sunshine-virtual-display").mkdir(mode=0o700)
+        output = "HEADLESS-REDISCOVER-" + "a" * 32
+        self.recovery.save({"version": 1, "stage": "prepared", "output": output,
+                            "profiles": self.profiles, "workspaces": copy.deepcopy(self.c.ws),
+                            "shown": sorted(self.c.shown)})
+        self.system.ha = mock.Mock(side_effect=TimeoutError("HA unavailable"))
+        self.c.mon[1]["dpmsStatus"] = False
+        self.preview = {"transaction_id": "human"}
+        before = copy.deepcopy((self.c.mon, self.c.ws))
+        self.recovery.resume()
+        self.assertFalse(self.recovery.path.exists())
+        self.assertEqual((self.c.mon, self.c.ws), before)
+        self.assertEqual(self.preview, {"transaction_id": "human"})
+        self.assertEqual(self.log, ["child-start"])
+        self.system.ha.assert_not_called()
+
+    def test_prepared_abort_with_still_stopping_child_retains_ownership(self):
+        self.child.proc.terminate = mock.Mock()  # Requested TERM did not finish.
+        self.child.proc.wait = mock.Mock(side_effect=TimeoutError("still stopping"))
+        with self.assertRaisesRegex(ValueError, "stop remains incomplete"):
+            self.recovery.run(self.profiles)
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "prepared")
+        self.assertIsNotNone(self.system.watcher_holds)
+        self.assertFalse(any(v.startswith("output-") for v in self.log))
+
+    def test_slow_ha_cannot_send_off_after_the_operation_deadline(self):
+        original = self.system.ha
+        original_names = {w["name"] for w in self.c.ws}
+        delayed = False
+        def slow():
+            nonlocal delayed
+            if not delayed and all(w["monitor"].startswith("HEADLESS-REDISCOVER-")
+                                   for w in self.c.ws if w["name"] in original_names):
+                self.c.now += self.dc.REDISCOVER_TIMEOUT + 1
+                delayed = True
+            return original()
+        self.system.ha = slow
+        with self.assertRaises(TimeoutError):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("off", self.log)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
 
     def test_complete_handoff_restores_all_workspaces_and_preserves_disabled_dp(self):
         self.recovery.run(self.profiles)
@@ -1413,7 +1567,7 @@ class RediscoveryTests(unittest.TestCase):
         self.child.proc.wait = mock.Mock(side_effect=TimeoutError("stop failed"))
         with self.assertRaisesRegex(TimeoutError, "stop failed"):
             self.recovery.run(self.profiles)
-        self.assertTrue(self.recovery.path.exists())
+        self.assertFalse(self.recovery.path.exists())
         self.assertNotIn("off", self.log)
         self.assertFalse(any(v.startswith("output-") for v in self.log))
 

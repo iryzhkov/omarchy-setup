@@ -1149,6 +1149,24 @@ class ConnectorHelperTests(unittest.TestCase):
         fake.commands = iter(commands)
         return fake
 
+    def test_ready_timeout_covers_the_controller_operation_deadline(self):
+        kernel = self.kernel()
+        calls = []
+        original = kernel.wait
+        def wait(stream, timeout=8):
+            calls.append(timeout)
+            return original(stream, timeout)
+        kernel.wait = wait
+        self.helper.rediscover(kernel, None, lambda _: None)
+        self.assertEqual(calls, [dc.REDISCOVER_TIMEOUT, 8])
+
+    def test_ready_timeout_refuses_before_any_off_write(self):
+        kernel, messages = self.kernel((TimeoutError("ready deadline"),)), []
+        with self.assertRaises(TimeoutError):
+            self.helper.rediscover(kernel, None, messages.append)
+        self.assertEqual(kernel.writes, [])
+        self.assertEqual(messages, ["ready", "refused-before-off"])
+
     def test_off_detect_protocol(self):
         kernel, messages = self.kernel(), []
         self.helper.rediscover(kernel, None, messages.append)
