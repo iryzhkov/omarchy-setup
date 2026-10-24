@@ -340,6 +340,8 @@ class System:
     def __init__(self, runtime, stop):
         self.runtime, self.stop = runtime, stop
         self.watcher_holds = None
+        self.recovery_helper = None  # Exact unreaped helper handle; never a PID lookup.
+        self.helper_exit_pending = False
 
     def ha(self):
         states = []
@@ -1001,11 +1003,13 @@ class ConnectorProcess:
         self.detected = False
         self.refused = False
         self.closed = False
+        self.exit_confirmed = True  # No process exists until Popen succeeds.
 
     def __enter__(self):
         self.proc = subprocess.Popen(
             ["sudo", "-n", str(REDISCOVER_HELPER), "--rediscover"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.exit_confirmed = False
         try:
             self.expect("ready")
         except BaseException:
@@ -1074,6 +1078,7 @@ class ConnectorProcess:
                 except ERRORS:
                     pass
                 self.proc.wait(timeout=10)
+                self.exit_confirmed = True
             finally:
                 with contextlib.suppress(*ERRORS):
                     self.proc.stdout.close()
@@ -1088,6 +1093,7 @@ class Rediscovery:
         self.deadline = coordinator.clock() + REDISCOVER_TIMEOUT
         self.stopping_child = None
         self.handoff_incomplete = getattr(system, "watcher_holds", None) is not None
+        self.helper_incomplete = getattr(system, "helper_exit_pending", False)
 
     @contextlib.contextmanager
     def watcher_exclusion(self):
@@ -1103,9 +1109,9 @@ class Rediscovery:
         try:
             yield
         finally:
-            if self.handoff_incomplete:
-                # The living supervisor retains exclusion until its exact child
-                # is recreated and watcher reclamation is confirmed.
+            if self.handoff_incomplete or self.helper_incomplete:
+                # Child readiness cannot discharge an unverified privileged helper.
+                # Keep both writer locks while either ownership remains incomplete.
                 self.system.watcher_holds = holds
             else:
                 holds.close()
@@ -1322,11 +1328,24 @@ class Rediscovery:
                                                         state.get("output", ""))
                 or state.get("stage") not in ("prepared", "backup", "detect-pending", "restore", "compensated")
                 or not isinstance(state.get("profiles"), dict)
-                or not isinstance(state.get("shown"), list)):
+                or not isinstance(state.get("shown"), list)
+                or not isinstance(state.get("helper_exit_pending", False), bool)):
             raise ValueError("invalid HDMI recovery journal")
         workspace_placement(state["workspaces"])
         directory = self.system.runtime / "sunshine-virtual-display"
         with coordinator_lock(directory, "lock"), self.watcher_exclusion():
+            if state.get("helper_exit_pending", False) or self.helper_incomplete:
+                self.helper_incomplete = self.system.helper_exit_pending = True
+                helper = getattr(self.system, "recovery_helper", None)
+                # Only the retained Popen handle can confirm this exact child exited.
+                # After controller death, keep the journal for operator resolution.
+                if helper is None or helper.proc is None or helper.proc.poll() is None:
+                    raise ValueError("privileged helper exit remains unverified")
+                helper.exit_confirmed = True
+                state["helper_exit_pending"] = False
+                self.save(state)
+                self.system.recovery_helper = None
+                self.helper_incomplete = self.system.helper_exit_pending = False
             with self.system.ipc() as ipc:
                 if state["stage"] == "prepared":
                     # No display mutation to undo. Clearing ownership metadata
@@ -1375,7 +1394,8 @@ class Rediscovery:
             watcher = Path("/usr/share/omarchy/bin/omarchy-hyprland-monitor-watch")
             if hashlib.sha256(watcher.read_bytes()).hexdigest() not in WATCHER_SHA256S:
                 raise ValueError("Omarchy watcher lock contract unqualified")
-            with self.watcher_exclusion(), ConnectorProcess() as helper:
+            with self.watcher_exclusion():
+                helper = ConnectorProcess()
                 state = {"version": 1, "owner": "display-controller",
                          "child_pid": self.child.proc.pid,
                          "output": "HEADLESS-REDISCOVER-" + uuid.uuid4().hex,
@@ -1383,7 +1403,7 @@ class Rediscovery:
                          "workspaces": self.system.workspace_snapshot(),
                          "shown": sorted(m.get("specialWorkspace", {}).get("name")
                              for m in self.system.monitors() if m.get("specialWorkspace", {}).get("name")),
-                         "stage": "prepared"}
+                         "stage": "prepared", "helper_exit_pending": True}
                 journaled = False
                 try:
                     with self.system.ipc() as ipc:
@@ -1393,6 +1413,14 @@ class Rediscovery:
                         self.save(state)
                         journaled = True
                         self.owner(ipc)  # Final preview/ownership check after journaling.
+                    # Persist ownership before even the ready handshake: its cleanup
+                    # can fail before off or any display takeover.
+                    self.helper_incomplete = self.system.helper_exit_pending = True
+                    self.system.recovery_helper = helper
+                    helper.__enter__()
+                    with self.system.ipc() as ipc:
+                        self.owner(ipc)  # Recheck human ownership after helper readiness.
+                        expected = self.child.proc
                         # No further requests use this old connection.
                     self.handoff_incomplete = True
                     self.stopping_child = expected
@@ -1431,10 +1459,15 @@ class Rediscovery:
                         # Even a cleanup exception must reach compensation and
                         # the owned-child/watcher restoration below.
                         helper.__exit__(None, None, None)
-                        helper_cleanup_complete = True
+                        helper_cleanup_complete = helper.exit_confirmed
                     finally:
                         if journaled:
                             try:
+                                if helper_cleanup_complete:
+                                    state["helper_exit_pending"] = False
+                                    self.save(state)
+                                    self.system.recovery_helper = None
+                                    self.helper_incomplete = self.system.helper_exit_pending = False
                                 if helper.refused and state["stage"] == "detect-pending":
                                     state["stage"] = "backup"
                                     self.save(state)
@@ -1514,7 +1547,8 @@ def supervise(system, coordinator, child, publish):
                 if child.proc is not None and child.proc.poll() is None:
                     try:
                         startup(system, coordinator)
-                        if getattr(system, "watcher_holds", None) is not None:
+                        if (getattr(system, "watcher_holds", None) is not None
+                                and not getattr(system, "helper_exit_pending", False)):
                             with system.ipc() as ipc:
                                 Rediscovery(system, child, coordinator).peer(ipc)
                                 require_ipc_only(ipc.request("status")["daemon"])
@@ -1551,9 +1585,12 @@ def supervise(system, coordinator, child, publish):
         try:
             child.stop()
         finally:
-            if getattr(system, "watcher_holds", None) is not None:
+            if (getattr(system, "watcher_holds", None) is not None
+                    and not getattr(system, "helper_exit_pending", False)):
                 system.watcher_holds.close()
                 system.watcher_holds = None
+            # An unresolved helper retains exclusion until this process exits.
+            # The journal survives; flock ownership cannot survive process death.
         coordinator.health = "stopped"
         coordinator.daemon_ready = False
         publish(coordinator.status())

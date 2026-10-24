@@ -248,8 +248,13 @@ bytes fail closed before takeover and need explicit contract qualification.
 The new child reclaims the watcher through the daemon's existing ownership
 lifecycle. The controller confirms no active watcher scope before releasing
 exclusion. A failed child restart retains both locks in the living supervisor
-until a later owned-child startup confirms reclamation. Process death necessarily
-releases locks and leaves the recovery journal for the next startup or operator.
+until a later owned-child startup confirms reclamation. An unverified helper exit
+independently retains both locks and its exact process handle, even after the child
+is ready. A later cleanup can release them only after that handle confirms exit
+and child/watcher reclamation succeeds. Shutdown also retains unresolved exclusion
+while the controller process lives. Process death necessarily releases locks.
+A journal recording an unverified helper exit then requires operator resolution:
+the next controller cannot prove exit using a lost process handle.
 No watcher service is disabled or independently restarted here.
 A direct user hyprctl write, or a preview arriving in the narrow interval between
 the final query and child termination, has no atomic reservation API. Fresh
@@ -276,8 +281,9 @@ of the failed operation deadline. The journal records completed compensation
 until owned-child readiness and watcher reclamation also succeed. A prepared
 journal with no display mutation clears during the same run after helper cleanup,
 owned-child readiness, watcher reclamation and backup absence are verified.
-A child still stopping or a helper that cannot be reaped retains that incomplete
-ownership record. Incomplete cleanup leaves the journal and any remaining backup
+Helper ownership is journaled before its ready handshake. A child still stopping
+or a helper that cannot be reaped retains the journal and both watcher locks in
+the living controller, even when no off was sent. Incomplete cleanup leaves the journal and any remaining backup
 in place. Ordinary polls defer.
 On a later controller start, one bounded cleanup attempt can compensate detect
 and finish restoration; it never repeats off. A changed profile, preview,

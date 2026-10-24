@@ -1302,6 +1302,7 @@ class RediscoveryTests(unittest.TestCase):
         self.helper = mock.Mock()
         self.helper.detected = False
         self.helper.refused = False
+        self.helper.exit_confirmed = True
         self.helper.__enter__ = mock.Mock(return_value=self.helper)
         self.off = False
         def detect():
@@ -1342,6 +1343,7 @@ class RediscoveryTests(unittest.TestCase):
         self.connector_factory.return_value = helper
         proc = mock.Mock()
         proc.stdout.fileno.return_value = 987
+        proc.poll.return_value = None
         proc.wait.return_value = 2  # A refused helper exits nonzero, but is reaped.
         if wait_error:
             proc.wait.side_effect = wait_error
@@ -1381,6 +1383,11 @@ class RediscoveryTests(unittest.TestCase):
                 proc.stdin.close.assert_called_once()
                 proc.wait.assert_called_once_with(timeout=10)
                 proc.stdout.close.assert_called_once()
+                self.assertIsNone(self.system.watcher_holds)
+                self.assertIsNone(self.system.recovery_helper)
+                self.assertFalse(self.system.helper_exit_pending)
+                self.assertTrue(helper.exit_confirmed)
+                self.assert_watcher_available()
 
     def test_pipe_eof_after_send_is_uncertain_and_preserves_recovery_ownership(self):
         for seam in ("write", "flush", "eof"):
@@ -1415,6 +1422,142 @@ class RediscoveryTests(unittest.TestCase):
         proc.wait.assert_called_once_with(timeout=10)
         proc.stdout.close.assert_called_once()
 
+    def assert_watcher_available(self):
+        for name in ("omarchy-monitor-clamshell.lock", "omarchy-monitor-modeless.lock"):
+            with self.dc.coordinator_lock(self.runtime, name):
+                pass
+
+    def assert_helper_pending(self, helper):
+        self.assertIs(self.system.recovery_helper, helper)
+        self.assertTrue(self.system.helper_exit_pending)
+        self.assertFalse(helper.exit_confirmed)
+        self.assertTrue(json.loads(self.recovery.path.read_text())["helper_exit_pending"])
+        self.assertIsNotNone(self.system.watcher_holds)
+        for name in ("omarchy-monitor-clamshell.lock", "omarchy-monitor-modeless.lock"):
+            with self.assertRaises(BlockingIOError):
+                with self.dc.coordinator_lock(self.runtime, name):
+                    self.fail("unverified helper lost watcher exclusion")
+
+    def test_unreaped_helper_before_off_retains_prepared_journal_and_locks(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"],
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        def phase(value):
+            if value == "child-stop":
+                self.states[0]["attributes"]["source"] = "HDMI 2"
+        self.on_phase = phase
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "prepared")
+        self.assertEqual(self.log.count("child-start"), 2)
+        self.assertFalse(any(v.startswith("output-") for v in self.log))
+        proc.stdin.write.assert_not_called()
+        self.assert_helper_pending(helper)
+
+    def test_unreaped_helper_ready_timeout_retains_ownership_before_handoff(self):
+        helper, proc = self.pipe_helper([],
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with mock.patch.object(self.dc.select, "select", return_value=([], [], [])):
+            with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+                self.recovery.run(self.profiles)
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "prepared")
+        self.assertEqual(self.log, ["child-start"])
+        proc.stdin.write.assert_not_called()
+        proc.wait.assert_called_once_with(timeout=10)
+        self.assert_helper_pending(helper)
+
+    def test_unreaped_helper_after_possible_off_retains_backup_and_locks(self):
+        helper, proc = self.pipe_helper([], write_error=True, close_error=True,
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "detect-pending")
+        self.assertEqual(self.log.count("child-start"), 2)
+        self.assertTrue(any(m["name"].startswith("HEADLESS-REDISCOVER-") for m in self.c.mon))
+        proc.stdin.write.assert_called_once_with(b"off\n")
+        self.assert_helper_pending(helper)
+
+    def test_resume_retains_helper_exclusion_until_exact_process_exit(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"], write_error=True,
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        resumed = self.dc.Rediscovery(self.system, self.child, self.coordinator)
+        with self.assertRaisesRegex(ValueError, "helper exit remains unverified"):
+            resumed.resume()
+        self.assert_helper_pending(helper)
+        proc.poll.return_value = 2  # Confirmed exit, including a nonzero refusal.
+        self.dc.Rediscovery(self.system, self.child, self.coordinator).resume()
+        self.assertTrue(helper.exit_confirmed)
+        self.assertFalse(self.system.helper_exit_pending)
+        self.assertIsNone(self.system.recovery_helper)
+        self.assertIsNone(self.system.watcher_holds)
+        self.assertFalse(self.recovery.path.exists())
+        self.assert_watcher_available()
+        proc.wait.assert_called_once_with(timeout=10)
+        proc.terminate.assert_not_called()
+        proc.kill.assert_not_called()
+
+    def test_restart_without_exact_helper_handle_retains_journal_and_reacquires_locks(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"], write_error=True,
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        # Model controller death: flock ownership and the Popen handle are lost.
+        self.system.watcher_holds.close()
+        self.system.watcher_holds = None
+        self.system.recovery_helper = None
+        self.system.helper_exit_pending = False
+        self.assert_watcher_available()
+        before = list(self.log)
+        with self.assertRaisesRegex(ValueError, "helper exit remains unverified"):
+            self.dc.Rediscovery(self.system, self.child, self.coordinator).resume()
+        self.assertEqual(self.log, before)
+        self.assertTrue(self.recovery.path.exists())
+        self.assertTrue(self.system.helper_exit_pending)
+        self.assertIsNotNone(self.system.watcher_holds)
+        for name in ("omarchy-monitor-clamshell.lock", "omarchy-monitor-modeless.lock"):
+            with self.assertRaises(BlockingIOError):
+                with self.dc.coordinator_lock(self.runtime, name):
+                    self.fail("lost-handle journal did not reacquire exclusion")
+        proc.poll.assert_not_called()  # Never recover an external process by PID.
+        self.child.handoff_stop(self.child.proc)
+        holds = self.system.watcher_holds
+        assert holds is not None
+        with mock.patch.object(holds, "close", wraps=holds.close) as close:
+            def step():
+                close.assert_not_called()
+                self.assertTrue(self.system.helper_exit_pending)
+                self.assertIsNone(self.system.recovery_helper)
+                self.assertIs(self.system.watcher_holds, holds)
+                self.system.stop.set()
+            self.coordinator.step = step
+            self.dc.supervise(self.system, self.coordinator, self.child, mock.Mock())
+            close.assert_not_called()
+        self.assertTrue(self.recovery.path.exists())
+
+    def test_supervisor_child_start_cannot_release_unverified_helper_locks(self):
+        helper, proc = self.pipe_helper([b"refused-before-off\n"], write_error=True,
+            wait_error=fixtures.subprocess.TimeoutExpired("fake helper", 10))
+        with self.assertRaises(fixtures.subprocess.TimeoutExpired):
+            self.recovery.run(self.profiles)
+        self.child.handoff_stop(self.child.proc)
+        holds = self.system.watcher_holds
+        assert holds is not None
+        with mock.patch.object(holds, "close", wraps=holds.close) as close:
+            def step():
+                close.assert_not_called()
+                self.assertIs(self.system.watcher_holds, holds)
+                self.assert_helper_pending(helper)
+                self.system.stop.set()
+            self.coordinator.step = step
+            self.dc.supervise(self.system, self.coordinator, self.child, mock.Mock())
+            close.assert_not_called()  # Even a stop must retain exclusion while alive.
+        self.assert_helper_pending(helper)
+        self.assertTrue(self.recovery.path.exists())
+        self.system.watcher_holds.close()  # Process death inevitably releases flock.
+        self.system.watcher_holds = None
+        self.assert_watcher_available()
+
     def test_helper_wait_failure_cannot_skip_child_restoration(self):
         helper, proc = self.pipe_helper([b"refused-before-off\n"], write_error=True,
                                        close_error=True,
@@ -1425,7 +1568,7 @@ class RediscoveryTests(unittest.TestCase):
         self.assertEqual(self.log.count("child-start"), 2)
         self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
         self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "compensated")
-        self.assertIsNone(self.system.watcher_holds)
+        self.assert_helper_pending(helper)
         proc.stdout.close.assert_called_once()
 
     def test_prepared_preview_after_journaling_clears_without_stopping_child(self):
