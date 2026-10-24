@@ -139,8 +139,8 @@ class FakeSystem:
         self.vanishing_workspace: Any = None
         self.workspace_error: Any = None
         self.apply("desk")
-        self.override = "desk"
-        self.editor_name: Any = None
+        self.override: Any = "desk"
+        self.editor_name: Any = ...
         self.preview: Any = None
         self.unmanaged = False
         self.ipc_only: Any = True
@@ -226,7 +226,7 @@ class FakeSystem:
                                        **({"ipc_only": system.ipc_only} if system.ipc_only is not None else {})}}
                 if method == "editor_state":
                     return {"profiles": copy.deepcopy(list(system.profiles.values())),
-                            "source_profile": system.live if system.editor_name is None else system.editor_name}
+                            "source_profile": system.live if system.editor_name is ... else system.editor_name}
                 if method == "preview":
                     if system.preview:
                         raise ValueError("another preview active")
@@ -1263,6 +1263,134 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(self.system.mutations(), [])
         self.assertEqual(self.coordinator.status()["audio_health"], "healthy")
 
+    def test_null_source_override_routes_audio_and_specials_without_modeset(self):
+        for live in ("desk", "tv-game", "tv-recovery"):
+            with self.subTest(live=live):
+                system = FakeSystem()
+                system.apply(live)
+                system.editor_name = None  # Real daemon metadata after an unsaved transaction.
+                system.override = live
+                system.states = ha(screen="off") if live == "desk" else ha()
+                system.ws.append({"id": -99, "name": "special:game", "monitor": "stranded"})
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                for _ in range(3):
+                    coordinator.step()
+                    system.advance(dc.POLL)
+                route = "desk" if live == "desk" else "tv-game"
+                self.assertEqual(coordinator.selected, route)
+                self.assertEqual(coordinator.observed_profile, live)
+                self.assertEqual(coordinator.audio_health, "healthy")
+                self.assertEqual(system.audio.default, dc.DESK_SINK if route == "desk" else system.audio.tv_name)
+                self.assertEqual(system.ws[-1]["monitor"], dc.targets(system.profiles[live])[0]["name"])
+                self.assertEqual(system.mutations(), [])
+                self.assertEqual(system.profiles, system.saved)
+                writes = list(system.audio.writes())
+                coordinator.step()
+                self.assertEqual(system.audio.writes(), writes)
+
+    def test_null_source_override_does_not_create_ha_intent(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        self.system.states = ha("")
+        self.tick(3)
+        self.assertEqual(self.coordinator.observed_profile, "tv-game")
+        self.assertEqual(self.coordinator.selected, "tv-game")
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertIsNone(self.coordinator.ha_route)
+        self.assertIsNone(self.coordinator.candidate)
+        self.assertFalse(self.coordinator.wake_intent)
+        self.assertFalse(self.coordinator.route_attempted)
+        self.assertFalse(self.coordinator.recovery_attempted)
+        self.system.wake.assert_not_called()
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_source_profile_precedes_override_and_unknown_metadata_defers(self):
+        for source, override, verified in (
+                ("tv-game", "desk", True),
+                ("desk", "tv-game", False),
+                ("unknown", "tv-game", False),
+                ("", "tv-game", False),
+                (None, "unknown", False),
+                (None, None, False)):
+            with self.subTest(source=source, override=override):
+                system = FakeSystem()
+                system.apply("tv-game")
+                system.editor_name, system.override = source, override
+                system.states = ha("")
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                coordinator.step()
+                self.assertEqual(coordinator.observed_profile, "tv-game" if verified else None)
+                self.assertEqual(coordinator.audio_health, "healthy" if verified else "deferred")
+                if not verified:
+                    self.assertEqual(system.audio.calls, [])
+                    self.assertIsNone(coordinator.selected)
+                self.assertEqual(system.mutations(), [])
+
+    def test_null_source_override_requires_saved_profile(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        del self.system.profiles["tv-game"]
+        self.system.states = ha("")
+        self.tick(3)
+        self.assertIsNone(self.coordinator.observed_profile)
+        self.assertEqual(self.coordinator.audio_health, "deferred")
+        self.assertEqual(self.system.audio.calls, [])
+        self.assertEqual(self.system.mutations(), [])
+
+    def test_null_source_audio_guard_rechecks_metadata_and_ownership_before_writes(self):
+        for fault in ("override", "source", "preview", "unmanaged", "capability", "saved"):
+            with self.subTest(fault=fault):
+                system = FakeSystem()
+                system.apply("tv-game")
+                system.editor_name = None
+                system.override = "tv-game"
+                system.states = ha("")
+                original = system.pactl
+
+                def changed(*args):
+                    result = original(*args)
+                    if args[0] == "get-default-sink":
+                        if fault == "override":
+                            system.override = "desk"
+                        elif fault == "source":
+                            system.editor_name = "unknown"
+                        elif fault == "preview":
+                            system.preview = {"transaction_id": "human"}
+                        elif fault == "unmanaged":
+                            system.unmanaged = True
+                        elif fault == "capability":
+                            system.ipc_only = False
+                        else:
+                            del system.profiles["tv-game"]
+                    return result
+
+                system.pactl = changed
+                coordinator = dc.Coordinator(system, clock=lambda: system.now)
+                coordinator.step()
+                self.assertEqual(system.audio.writes(), [])
+                self.assertEqual(coordinator.audio_health, "unavailable")
+                self.assertEqual(system.mutations(), [])
+
+    def test_null_source_special_guard_rechecks_override(self):
+        self.tv()
+        self.system.editor_name = None
+        self.system.override = "tv-game"
+        self.tick()
+        move = self.system.move_special_workspaces
+        self.system.ws.append({"id": -99, "name": "special:game", "monitor": "DP-1"})
+
+        def changed(output, guard):
+            self.system.override = "desk"
+            move(output, guard)
+
+        self.system.move_special_workspaces = changed
+        self.tick()
+        self.assertEqual(self.system.ws[-1]["monitor"], "DP-1")
+        self.assertIn("special workspace route changed", self.coordinator.error)
+        self.assertEqual(self.system.mutations(), [])
+
     def test_tv_audio_idempotence(self):
         self.tv()
         self.tick()
@@ -1454,10 +1582,12 @@ class AudioTests(unittest.TestCase):
         self.assertIn("Focusrite", self.coordinator.audio_error)
 
     def test_sleep_preview_unmanaged_and_unsupported_topology_yield(self):
-        for fault in ("sleep", "preview", "unmanaged", "unknown", "dual", "mismatch"):
+        for fault in ("sleep", "preview", "unmanaged", "unknown", "dual", "mismatch", "identity", "capability"):
             with self.subTest(fault=fault):
                 self.system = FakeSystem()
                 self.tv()
+                self.system.editor_name = None
+                self.system.override = "tv-game"
                 self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)
                 if fault == "sleep":
                     next(m for m in self.system.mon if not m["disabled"])["dpmsStatus"] = False
@@ -1469,6 +1599,11 @@ class AudioTests(unittest.TestCase):
                     self.system.mon.append({"name": "unknown"})
                 elif fault == "dual":
                     self.system.mon[0].update(disabled=False, dpmsStatus=True)
+                elif fault == "identity":
+                    self.system.profiles["tv-game"]["outputs"][1]["model"] = "known TV"
+                    self.system.mon[1]["model"] = "unknown TV"
+                elif fault == "capability":
+                    self.system.ipc_only = False
                 else:
                     self.system.actual = (1280, 720)
                 self.tick()
@@ -1521,15 +1656,23 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(self.coordinator.audio_health, "unavailable")
 
     def test_audio_cli_modes_are_early_and_verify_live_route(self):
-        for mode, live, preview, expected in (
-                ("--audio-tv", "tv-game", None, 0),
-                ("--audio-desk", "desk", None, 0),
-                ("--audio-tv", "desk", None, 2),
-                ("--audio-desk", "tv-game", None, 2),
-                ("--audio-tv", "tv-game", {"transaction_id": "human"}, 2)):
-            with self.subTest(mode=mode, live=live, preview=preview):
+        for mode, live, source, override, preview, expected in (
+                ("--audio-tv", "tv-game", ..., "desk", None, 0),
+                ("--audio-desk", "desk", ..., "tv-game", None, 0),
+                ("--audio-tv", "desk", ..., "desk", None, 2),
+                ("--audio-desk", "tv-game", ..., "tv-game", None, 2),
+                ("--audio-tv", "tv-game", ..., "tv-game", {"transaction_id": "human"}, 2),
+                ("--audio-tv", "tv-game", None, "tv-game", None, 0),
+                ("--audio-tv", "tv-recovery", None, "tv-recovery", None, 0),
+                ("--audio-desk", "desk", None, "desk", None, 0),
+                ("--audio-tv", "tv-game", None, "desk", None, 2),
+                ("--audio-tv", "tv-game", "unknown", "tv-game", None, 2),
+                ("--audio-tv", "tv-game", "desk", "tv-game", None, 2),
+                ("--audio-tv", "tv-game", None, "tv-game", {"transaction_id": "human"}, 2)):
+            with self.subTest(mode=mode, live=live, source=source, override=override, preview=preview):
                 system = FakeSystem()
                 system.apply(live)
+                system.editor_name, system.override = source, override
                 system.preview = preview
                 with mock.patch.object(dc, "runtime_dir", return_value=Path("/unused")), \
                         mock.patch.object(dc, "System", return_value=system), \

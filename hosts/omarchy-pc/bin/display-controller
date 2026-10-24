@@ -502,6 +502,20 @@ def require_ipc_only(daemon):
         raise ValueError("hyprmoncfgd is not running")
 
 
+def normalize_editor(editor, daemon):
+    """Resolve null source metadata only under a running, managed IPC-only daemon."""
+    require_ipc_only(daemon)
+    if daemon.get("preview") or daemon.get("unmanaged"):
+        raise ValueError("display is owned by a preview or unmanaged layout")
+    # An explicit source, including an unknown name, always takes precedence.
+    # The override identifies a possible live profile, never HA intent or authority.
+    if editor.get("source_profile") is None:
+        name = daemon.get("profile_override")
+        if name in ("desk", "tv-game", "tv-recovery"):
+            return {**editor, "source_profile": name}
+    return editor
+
+
 def topology(monitors, profiles, target, require_awake=True):
     """Permit only known connectors and one current output; normally awake."""
     names = [m.get("name") for m in monitors]
@@ -752,7 +766,7 @@ class Coordinator:
                         require_ipc_only(daemon)
                         if daemon.get("preview") or daemon.get("unmanaged"):
                             raise ValueError("audio deferred during preview or unmanaged layout")
-                        current = ipc.request("editor_state")
+                        current = normalize_editor(ipc.request("editor_state"), daemon)
                         current_profiles = {p["name"]: p for p in current["profiles"]
                                             if p["name"] in ("desk", "tv-game", "tv-recovery")}
                         if verified_audio_route(self.system, current, current_profiles,
@@ -812,7 +826,7 @@ class Coordinator:
                     self.reset_mismatch()
                     self.health = "preview" if daemon.get("preview") else "unmanaged"
                     return
-                editor = ipc.request("editor_state")
+                editor = normalize_editor(ipc.request("editor_state"), daemon)
                 profiles = {p["name"]: p for p in editor["profiles"]
                             if p["name"] in ("desk", "tv-game", "tv-recovery")}
                 monitors = self.system.monitors()
@@ -880,7 +894,7 @@ class Coordinator:
                     self.reset_mismatch()
                     self.health = "topology unavailable or asleep"
                     return
-                if self.selected != desired or (self.observed_profile or daemon.get("profile_override")) not in (
+                if self.selected != desired or self.observed_profile not in (
                         ("tv-game", "tv-recovery") if desired == "tv-game" else ("desk",)):
                     if self.route_attempted:
                         self.health = "route attempt inhibited"
@@ -898,9 +912,13 @@ class Coordinator:
                         current = ipc.request("status")["daemon"]
                         require_ipc_only(current)
                         if (current.get("preview") or current.get("unmanaged")
-                                or choose(self.system.ha()) != desired
-                                or verified_audio_route(self.system, ipc.request("editor_state"),
-                                                        profiles, self.system.monitors()) != desired):
+                                or choose(self.system.ha()) != desired):
+                            raise ValueError("special workspace route changed")
+                        current_editor = normalize_editor(ipc.request("editor_state"), current)
+                        current_profiles = {p["name"]: p for p in current_editor["profiles"]
+                                            if p["name"] in ("desk", "tv-game", "tv-recovery")}
+                        if verified_audio_route(self.system, current_editor, current_profiles,
+                                                self.system.monitors()) != desired:
                             raise ValueError("special workspace route changed")
                     self.system.move_special_workspaces(
                         targets(profiles[self.observed_profile])[0]["name"], guard_specials)
@@ -1071,7 +1089,7 @@ def main(argv=None):
                 daemon = ipc.request("status")["daemon"]
                 require_ipc_only(daemon)
                 if not daemon.get("preview") and not daemon.get("unmanaged"):
-                    editor = ipc.request("editor_state")
+                    editor = normalize_editor(ipc.request("editor_state"), daemon)
                     profiles = {p["name"]: p for p in editor["profiles"]
                                 if p["name"] in ("desk", "tv-game", "tv-recovery")}
                     coordinator.reconcile_audio(editor, profiles, system.monitors(),
