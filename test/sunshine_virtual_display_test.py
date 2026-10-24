@@ -1518,6 +1518,65 @@ class RediscoveryTests(unittest.TestCase):
         self.assertIsNotNone(self.system.watcher_holds)
         self.assertTrue(self.recovery.path.exists())
 
+    def test_natural_real_tv_identity_before_off_compensates_without_modeset(self):
+        def phase(value):
+            if value == "output-create":
+                self.c.mon[1].update(self.identity, width=3840, height=2160, refreshRate=119.88)
+        self.on_phase = phase
+        with self.assertRaises(ValueError):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("off", self.log)
+        self.assertNotIn("preview", self.log)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_explicit_helper_refusal_compensates_without_an_off(self):
+        self.helper.off.side_effect = self.dc.ConnectorRefused("refused before write")
+        with self.assertRaises(self.dc.ConnectorRefused):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("off", self.log)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_sleep_abort_defers_until_awake_then_backup_resume_compensates(self):
+        def phase(value):
+            if value == "output-create":
+                self.c.mon[1]["dpmsStatus"] = False
+        self.on_phase = phase
+        with self.assertRaises(ValueError):
+            self.recovery.run(self.profiles)
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "backup")
+        self.c.mon[1]["dpmsStatus"] = True
+        self.dc.Rediscovery(self.system, self.child, self.coordinator).resume()
+        self.assertFalse(self.recovery.path.exists())
+        self.assertNotIn("off", self.log)
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_preoff_compensation_and_failed_child_restart_keep_journal(self):
+        def phase(value):
+            if value == "output-create":
+                self.c.fail = "move"
+            elif value == "child-start":
+                raise OSError("child recreation refused")
+        self.on_phase = phase
+        with self.assertRaisesRegex(OSError, "recreation refused"):
+            self.recovery.run(self.profiles)
+        self.assertTrue(self.system.recovery_pending())
+        self.assertEqual(json.loads(self.recovery.path.read_text())["stage"], "compensated")
+        self.assertIsNotNone(self.system.watcher_holds)
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_watcher_claim_parser_matches_daemon_scope_contract(self):
+        for active in ("active", "activating", "inactive"):
+            with mock.patch.object(self.dc, "run", return_value=json.dumps([{
+                "description": "omarchy-hyprland-monitor-watch", "active": active,
+                "unit": "app-omarchy-watcher.scope"}])):
+                if active in ("active", "activating"):
+                    with self.assertRaises(ValueError):
+                        self.dc.System.verify_watcher_claim(self.system)
+                else:
+                    self.dc.System.verify_watcher_claim(self.system)
+
     def test_changed_child_object_is_not_terminated(self):
         expected = self.child.proc
         self.child.proc = mock.Mock()

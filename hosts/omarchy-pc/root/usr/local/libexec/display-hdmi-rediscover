@@ -10,11 +10,15 @@ import select
 import signal
 import stat
 import sys
+import time
 
 IDENTITY = {"make": "Sony", "model": "SONY TV  *30", "serial": "0x01010101"}
 
 
 class Kernel:
+    def __init__(self):
+        self.cancelled = False
+
     def connector(self):
         cards = [p for p in Path("/sys/class/drm").glob("card*")
                  if re.fullmatch(r"card[0-9]+", p.name)
@@ -38,9 +42,15 @@ class Kernel:
             stream.write(value + "\n")
 
     def wait(self, stream, timeout=8):
-        if not select.select([stream], [], [], timeout)[0]:
-            raise TimeoutError("controller handshake timeout")
-        return stream.readline(32)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.cancelled:
+                raise InterruptedError("connector recovery cancelled")
+            if select.select([stream], [], [], min(0.1, deadline - time.monotonic()))[0]:
+                # A partial line must not turn the bounded wait into an
+                # unbounded readline on a caller-controlled pipe.
+                return os.read(stream.fileno(), 32).decode("ascii")
+        raise TimeoutError("controller handshake timeout")
 
 
 def identity(data):
@@ -71,10 +81,16 @@ def rediscover(kernel, stream, emit):
     connector = kernel.connector()
     qualified(kernel, connector)
     emit("ready")
-    if kernel.wait(stream, timeout=30) != "off\n":
-        raise ValueError("missing off handshake")
-    # Recheck immediately before off. An uncertain write still requires detect.
-    qualified(kernel, connector)
+    # Refuse explicitly for every failure before the first attempted write.
+    try:
+        if kernel.wait(stream, timeout=30) != "off\n":
+            raise ValueError("missing off handshake")
+        if getattr(kernel, "cancelled", False):
+            raise InterruptedError("connector recovery cancelled")
+        qualified(kernel, connector)
+    except (OSError, ValueError):
+        emit("refused-before-off")
+        raise
     try:
         kernel.write(connector, "off")
         if kernel.status(connector) != "disconnected":
@@ -119,7 +135,9 @@ def main(argv=None):
             print("detect-restored", flush=True)
         else:
             def interrupted(*_):
-                raise InterruptedError("connector recovery cancelled")
+                # Do not raise asynchronously across the finally boundary.
+                # The bounded pipe wait observes cancellation within 0.1 s.
+                kernel.cancelled = True
             for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                 signal.signal(sig, interrupted)
             rediscover(kernel, sys.stdin, lambda value: print(value, flush=True))

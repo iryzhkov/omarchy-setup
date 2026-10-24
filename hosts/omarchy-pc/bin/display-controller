@@ -724,6 +724,9 @@ class Coordinator:
         return True
 
     def reconcile_audio(self, editor, profiles, monitors, requested=None):
+        if self.system.recovery_pending():
+            self.audio_health, self.audio_error = "deferred", None
+            return
         try:
             with self.system.audio_lock():
                 route = verified_audio_route(self.system, editor, profiles, monitors)
@@ -985,6 +988,10 @@ def helper_preflight():
     return identity
 
 
+class ConnectorRefused(ValueError):
+    """The root helper proved it refused before attempting off."""
+
+
 class ConnectorProcess:
     """A bounded pipe handshake; EOF asks the privileged helper to compensate."""
     def __init__(self):
@@ -1015,6 +1022,8 @@ class ConnectorProcess:
                 raise ValueError("root HDMI helper disconnected")
             self.buffer += chunk
         line, self.buffer = self.buffer.split(b"\n", 1)
+        if line == b"refused-before-off":
+            raise ConnectorRefused("root helper refused before connector off")
         if line.decode("ascii") != wanted:
             raise ValueError("unexpected root HDMI helper response")
         if wanted == "detect-restored":
@@ -1240,18 +1249,29 @@ class Rediscovery:
 
     def restore_before_off(self, state):
         """Undo only our workspace/backup changes, without applying a TV mode."""
+        cleanup_deadline = self.coordinator.clock() + 10
         def guard():
-            if self.coordinator.clock() > self.deadline:
+            if self.coordinator.clock() > cleanup_deadline:
                 raise TimeoutError("backup compensation deadline exceeded")
             if (self.system.runtime / "sunshine-virtual-display/state.json").exists():
                 raise ValueError("Sunshine owns display during compensation")
             monitors = self.system.monitors()
             physical = [m for m in monitors if m["name"] != state["output"]]
-            keys = ("name", "make", "model", "serial", "disabled", "dpmsStatus",
-                    "width", "height", "scale", "transform", "x", "y", "refreshRate")
-            snapshot = lambda ms: sorted([tuple(m.get(k) for k in keys) for m in ms])
-            if snapshot(physical) != snapshot(state["physical"]):
-                raise ValueError("physical layout changed before backup compensation")
+            identified = copy.deepcopy(physical)
+            # Either known Sony identity can now be present. Cleanup moves
+            # workspaces only; it neither changes a mode nor wakes the output.
+            for monitor in identified:
+                if (monitor.get("name") == TV_OUTPUT
+                        and (monitor.get("make"), monitor.get("model"), monitor.get("serial"))
+                        == ("Sony", "SONY AVSYSTEM", "0x01010101")):
+                    monitor.update(make="Sony", model="SONY TV  *30", serial="0x01010101")
+            if (len(monitors) != len({m.get("name") for m in monitors})
+                    or any(m.get("name") not in ("DP-1", TV_OUTPUT, state["output"]) for m in monitors)
+                    or any(m.get("name") == "DP-1" and m.get("disabled") is not True for m in physical)
+                    or not topology(identified, state["profiles"], state["profiles"]["tv-game"])
+                    or not any(m.get("name") == TV_OUTPUT and m.get("disabled") is False
+                               and m.get("dpmsStatus") is True for m in physical)):
+                raise ValueError("known awake HDMI required for backup compensation")
             if self.child.proc is not None and self.child.proc.poll() is None:
                 with self.system.ipc() as ipc:
                     self.owner(ipc)
@@ -1266,7 +1286,8 @@ class Rediscovery:
             raise ValueError("backup removal incomplete before off")
         migration(final=True)
         self.verify_workspaces(state)
-        self.path.unlink()
+        state["stage"] = "compensated"
+        self.save(state)  # Ownership includes child/watcher restoration, not only backup removal.
 
     def resume(self):
         """One cleanup on process startup. Never issue another off."""
@@ -1276,7 +1297,7 @@ class Rediscovery:
         state = json.loads(self.path.read_text())
         if (state.get("version") != 1 or not re.fullmatch(r"HEADLESS-REDISCOVER-[0-9a-f]{32}",
                                                         state.get("output", ""))
-                or state.get("stage") not in ("prepared", "backup", "detect-pending", "restore")
+                or state.get("stage") not in ("prepared", "backup", "detect-pending", "restore", "compensated")
                 or not isinstance(state.get("profiles"), dict)
                 or not isinstance(state.get("shown"), list)):
             raise ValueError("invalid HDMI recovery journal")
@@ -1284,7 +1305,10 @@ class Rediscovery:
         directory = self.system.runtime / "sunshine-virtual-display"
         with coordinator_lock(directory, "lock"), self.watcher_exclusion():
             with self.system.ipc() as ipc:
-                self.guard(state, ipc)
+                if state["stage"] in ("backup", "compensated"):
+                    self.owner(ipc)  # Compensation is independent of new HA route intent.
+                else:
+                    self.guard(state, ipc)
             self.system.verify_watcher_claim()
             self.handoff_incomplete = False
             if state["stage"] == "prepared":
@@ -1292,8 +1316,11 @@ class Rediscovery:
                     raise ValueError("unexpected backup before prepared handoff")
                 self.path.unlink()
                 return
-            if state["stage"] == "backup":
-                self.restore_before_off(state)
+            if state["stage"] in ("backup", "compensated"):
+                if state["stage"] == "backup":
+                    self.restore_before_off(state)
+                self.verify_workspaces(state)
+                self.path.unlink()  # Owned child and watcher are already verified above.
                 return
             if state["stage"] == "detect-pending":
                 # Fixed helper detects only; no EDID required for compensation.
@@ -1355,7 +1382,12 @@ class Rediscovery:
                         raise ValueError("fault evidence changed before connector off")
                     state["stage"] = "detect-pending"
                     self.save(state)
-                    helper.off()
+                    try:
+                        helper.off()
+                    except ConnectorRefused:
+                        state["stage"] = "backup"
+                        self.save(state)
+                        raise
                     self.converge(state, lambda ms: all(m["name"] != TV_OUTPUT for m in ms))
                     helper.detect()
                     state["stage"] = "restore"
@@ -1372,6 +1404,8 @@ class Rediscovery:
                             self.restore_before_off(state)
                     finally:
                         self.restart_owned()
+                        if state["stage"] == "compensated":
+                            self.path.unlink()
                 self.restore(state)
         self.coordinator.health, self.coordinator.error = "HDMI identity recovered", None
         self.coordinator.last_action = "connector off/detect; verified tv-game"

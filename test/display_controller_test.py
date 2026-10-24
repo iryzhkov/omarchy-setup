@@ -1211,9 +1211,29 @@ class ConnectorHelperTests(unittest.TestCase):
             calls += 1
             return ReceiverEdidTests.edid if calls == 1 else b""
         kernel.edid = changing
+        messages = []
         with self.assertRaises(ValueError):
-            self.helper.rediscover(kernel, None, lambda _: None)
+            self.helper.rediscover(kernel, None, messages.append)
         self.assertEqual(kernel.writes, [])
+        self.assertEqual(messages, ["ready", "refused-before-off"])
+
+    def test_cancelled_kernel_wait_exits_without_reading_controller_pipe(self):
+        kernel = self.helper.Kernel()
+        kernel.cancelled = True
+        with mock.patch.object(self.helper.select, "select") as select_call:
+            with self.assertRaises(InterruptedError):
+                kernel.wait(mock.Mock())
+            select_call.assert_not_called()
+
+    def test_partial_handshake_is_read_once_without_blocking_readline(self):
+        kernel = self.helper.Kernel()
+        stream = mock.Mock()
+        stream.fileno.return_value = 123
+        with mock.patch.object(self.helper.select, "select", return_value=([stream], [], [])), \
+                mock.patch.object(self.helper.os, "read", return_value=b"of") as read:
+            self.assertEqual(kernel.wait(stream), "of")
+            read.assert_called_once_with(123, 32)
+            stream.readline.assert_not_called()
 
     def test_detect_failure_is_explicit(self):
         kernel = self.kernel()
@@ -1243,6 +1263,16 @@ class ConnectorHelperTests(unittest.TestCase):
                     self.helper.Kernel().connector()
 
 class AudioTests(unittest.TestCase):
+    def test_pending_hdmi_journal_defers_audio_cli_and_profile_commands(self):
+        system = FakeSystem()
+        system.apply("tv-game")
+        system.recovery_pending = lambda: True
+        with mock.patch.object(dc, "runtime_dir", return_value=Path("/fake-private-runtime")), \
+                mock.patch.object(dc, "System", return_value=system), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dc.main(["--audio-tv"]), 2)
+        self.assertEqual(system.audio.calls, [])
+
     def setUp(self):
         self.system = FakeSystem()
         self.coordinator = dc.Coordinator(self.system, clock=lambda: self.system.now)

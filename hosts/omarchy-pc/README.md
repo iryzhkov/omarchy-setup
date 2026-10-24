@@ -209,7 +209,9 @@ environment settings or external commands in its privileged operation.
 
 A pipe handshake waits for the controller to observe the physical output absent
 before detect. Failure, EOF, timeout and SIGTERM/INT/HUP after an attempted off
-all execute compensated detect. A detect-only command exists for compensation.
+all execute compensated detect. Signal handlers record cancellation without
+raising across the cleanup boundary, and compensation masks repeated signals.
+A detect-only command exists for compensation.
 SIGKILL, machine loss or an unwritable kernel status file cannot be compensated
 by a process; the private journal retains detect ownership in that case.
 
@@ -257,9 +259,15 @@ route on the next normal poll.
 
 The private runtime file display-hdmi-recovery.json owns the backup name,
 original workspace snapshot, saved-profile snapshot and recovery stage.
-A failure before off compensates only the workspace moves and backup creation,
-requiring the captured physical layout unchanged; it does not wait for a new TV
-identity or apply a display mode. Incomplete cleanup leaves the journal and any
+A failure before off compensates only the workspace moves and backup creation.
+Either known Sony identity is accepted on the enabled, awake HDMI output, with
+DP disabled and no unknown outputs. Cleanup does not apply a display mode or
+wake a sleeping display. A sleeping or unknown display retains the backup
+journal; after waking or resolving that conflict, a controller start retries
+cleanup without off. An explicit root-helper refusal before any write selects
+this same compensation path. A fresh ten-second cleanup budget is independent
+of the failed operation deadline. The journal records completed compensation
+until owned-child readiness and watcher reclamation also succeed. Incomplete cleanup leaves the journal and any
 remaining backup in place. Ordinary polls defer.
 On a later controller start, one bounded cleanup attempt can compensate detect
 and finish restoration; it never repeats off. A changed profile, preview,
