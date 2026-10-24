@@ -1253,6 +1253,11 @@ class RediscoveryTests(unittest.TestCase):
                     test.preview = {"transaction_id": "owned"}
                     test.log.append("preview")
                     profile = params["profile"]
+                    if getattr(test, "disable_backup", False):
+                        for monitor in test.c.mon:
+                            if monitor["name"].startswith("HEADLESS-REDISCOVER-"):
+                                monitor["disabled"] = True
+                        test.c.monitor_workspaces()
                     for monitor in test.c.mon:
                         if monitor["name"] == test.dc.TV_OUTPUT:
                             monitor.update(copy.deepcopy(self_tv(profile)),
@@ -1277,6 +1282,8 @@ class RediscoveryTests(unittest.TestCase):
             return json.loads(self.c.hypr(["hyprctl", "monitors", "all", "-j"]))
         self.system = self.dc.System(self.runtime, threading.Event())
         self.system.ipc = ipc
+        self.system.verify_watcher_claim = lambda: None
+        self.addCleanup(lambda: self.system.watcher_holds.close() if self.system.watcher_holds else None)
         self.system.ha = lambda: copy.deepcopy(self.states)
         self.system.tv_edid = lambda: copy.deepcopy(self.identity)
         self.system.monitors = monitors
@@ -1321,8 +1328,8 @@ class RediscoveryTests(unittest.TestCase):
             self.dc, "helper_preflight", return_value=self.identity))
         self.stack.enter_context(mock.patch.object(self.dc, "ConnectorProcess", return_value=self.helper))
         self.stack.enter_context(mock.patch.object(self.dc.Path, "read_bytes", return_value=b"qualified"))
-        self.stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256",
-                                                  hashlib.sha256(b"qualified").hexdigest()))
+        self.stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256S",
+                                                  {hashlib.sha256(b"qualified").hexdigest()}))
 
     def test_complete_handoff_restores_all_workspaces_and_preserves_disabled_dp(self):
         self.recovery.run(self.profiles)
@@ -1348,7 +1355,7 @@ class RediscoveryTests(unittest.TestCase):
                     elif fault == "preview":
                         self.preview = {"transaction_id": "human"}
                     elif fault == "watcher":
-                        stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256", "unqualified"))
+                        stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256S", {"unqualified"}))
                     else:
                         directory = self.runtime / "sunshine-virtual-display"
                         directory.mkdir(mode=0o700)
@@ -1471,6 +1478,45 @@ class RediscoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.recovery.resume()
         self.assertEqual(self.log, ["child-start"])
+
+    def test_disabled_backup_reenable_allows_empty_replacement_until_removal(self):
+        self.disable_backup = True
+        self.recovery.run(self.profiles)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_preoff_failure_restores_workspace_snapshot_without_tv_modeset(self):
+        def phase(value):
+            if value == "output-create":
+                self.c.fail = "move"
+        self.on_phase = phase
+        with self.assertRaises(OSError):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("off", self.log)
+        self.assertNotIn("preview", self.log)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+        self.assertFalse(any(m["name"].startswith("HEADLESS-REDISCOVER-") for m in self.c.mon))
+
+    def test_restart_failure_keeps_watcher_locks_until_reclaim(self):
+        def phase(value):
+            if value == "child-start":
+                raise OSError("restart failed")
+        self.on_phase = phase
+        with self.assertRaises(OSError):
+            self.recovery.run(self.profiles)
+        self.assertIsNotNone(self.system.watcher_holds)
+        for name in ("omarchy-monitor-clamshell.lock", "omarchy-monitor-modeless.lock"):
+            with self.assertRaises(BlockingIOError):
+                with self.dc.coordinator_lock(self.runtime, name):
+                    self.fail("watcher exclusion lost")
+
+    def test_watcher_reclaim_failure_retains_exclusion_and_journal(self):
+        self.system.verify_watcher_claim = mock.Mock(side_effect=ValueError("watcher still active"))
+        with self.assertRaisesRegex(ValueError, "still active"):
+            self.recovery.run(self.profiles)
+        self.assertIsNotNone(self.system.watcher_holds)
+        self.assertTrue(self.recovery.path.exists())
 
     def test_changed_child_object_is_not_terminated(self):
         expected = self.child.proc

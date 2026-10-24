@@ -194,6 +194,9 @@ consumes the fault budget before takeover. Continuous polls, failed queries,
 receiver power reports, input changes and mode jitter cannot rearm it. Two
 verified healthy TV observations end the fault; a subsequent fault can attempt
 again after the five-minute cooldown. Budgets last for the controller process.
+A refused helper, sudo, watcher or stream-lock preflight also consumes that edge;
+this conservative inhibition needs a verified healthy edge or an explicit service
+restart after the prerequisite is repaired. It does not retry a persistent fault.
 A pending recovery journal inhibits ordinary routing, audio and another off.
 
 The root overlay installs /usr/local/libexec/display-hdmi-rediscover, mode 0755,
@@ -225,12 +228,21 @@ backup. DP-1 stays disabled, including an uninitialized 0x0/Invalid DP state.
 Daemon shutdown can restart Omarchy's monitor watcher. Recovery holds both
 omarchy-monitor-clamshell.lock and omarchy-monitor-modeless.lock from before
 child shutdown through child startup and cleanup. It accepts only watcher
-script SHA-256
-5b7415c8b25dcccc695c808163b9ff4602cdbacecabf23398a166bfe85623b48,
-whose clamshell and modeless writers honor those locks. Different installed
+script SHA-256 values
+5b7415c8b25dcccc695c808163b9ff4602cdbacecabf23398a166bfe85623b48 and
+124c14fbc0285cf195e529d7cdee6f90baeec2c9a1421f9b9a3cec933024eced.
+The latter was qualified from the root read-only installed-monitor-watcher
+receipt on 2026-10-23, including both installed paths, complete source, uid 0
+and mode 0755. In both versions, clamshell dispatch runs after flock -n and
+modeless probes/reloads run after flock -w 1, on the two held lock files.
+Different installed
 bytes fail closed before takeover and need explicit contract qualification.
 The new child reclaims the watcher through the daemon's existing ownership
-lifecycle. No watcher service is disabled or independently restarted here.
+lifecycle. The controller confirms no active watcher scope before releasing
+exclusion. A failed child restart retains both locks in the living supervisor
+until a later owned-child startup confirms reclamation. Process death necessarily
+releases locks and leaves the recovery journal for the next startup or operator.
+No watcher service is disabled or independently restarted here.
 A direct user hyprctl write, or a preview arriving in the narrow interval between
 the final query and child termination, has no atomic reservation API. Fresh
 IPC peer/preview checks and topology checks defer restoration on an observed
@@ -245,7 +257,10 @@ route on the next normal poll.
 
 The private runtime file display-hdmi-recovery.json owns the backup name,
 original workspace snapshot, saved-profile snapshot and recovery stage.
-Incomplete cleanup leaves that file and backup in place. Ordinary polls defer.
+A failure before off compensates only the workspace moves and backup creation,
+requiring the captured physical layout unchanged; it does not wait for a new TV
+identity or apply a display mode. Incomplete cleanup leaves the journal and any
+remaining backup in place. Ordinary polls defer.
 On a later controller start, one bounded cleanup attempt can compensate detect
 and finish restoration; it never repeats off. A changed profile, preview,
 identity, sleep state or competing owner leaves recovery pending for the

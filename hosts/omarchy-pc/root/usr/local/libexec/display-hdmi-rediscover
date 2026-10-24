@@ -84,8 +84,16 @@ def rediscover(kernel, stream, emit):
             raise ValueError("missing detect handshake")
     finally:
         # SIGTERM/INT, EOF, timeout and failed off all pass through here.
-        kernel.write(connector, "detect")
-        emit("detect-restored")
+        # systemd and sudo can both deliver TERM. A second cancellation must
+        # not interrupt the compensating write or its acknowledgement.
+        previous = {sig: signal.signal(sig, signal.SIG_IGN)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        try:
+            kernel.write(connector, "detect")
+            emit("detect-restored")
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
 
 
 def main(argv=None):
