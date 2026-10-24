@@ -1508,12 +1508,122 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(self.system.audio.default, dc.DESK_SINK)
         self.assertEqual(self.coordinator.audio_health, "unavailable")
 
-    def test_contradictory_sink_product_is_never_selected(self):
+    @staticmethod
+    def live_gpu_audio():
+        # Matching fields from root's audio-live-550b25e.json. The Sony product
+        # is on the card port; the sink describes its NVIDIA audio controller.
+        audio = FakeAudio()
+        audio.cards[0].update(index=61437, properties={
+            "device.product.name": "AD102 High Definition Audio Controller"})
+        audio.sony.update(index=61605, state="RUNNING",
+                          sample_specification="s32le 2ch 48000Hz",
+                          channel_map="front-left,front-right", mute=False,
+                          volume={channel: {"value": 65536, "value_percent": "100%", "db": "0.00 dB"}
+                                  for channel in ("front-left", "front-right")},
+                          properties={"device.name": audio.card,
+                                      "device.product.name": "AD102 High Definition Audio Controller",
+                                      "alsa.name": "HDMI 1"})
+        audio.streams[1]["sink"] = audio.sony["index"]
+        return audio
+
+    def test_live_generic_gpu_sink_routes_with_normalized_metadata_and_preserves_audio(self):
+        for already_default in (False, True):
+            with self.subTest(already_default=already_default):
+                audio = self.system.audio = self.live_gpu_audio()
+                self.tv()
+                self.system.editor_name = None
+                self.system.override = "tv-game"
+                if already_default:
+                    audio.default = audio.tv_name
+                before = copy.deepcopy((audio.cards, audio.sinks))
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                    expected = [] if already_default else [("set-default-sink", audio.tv_name)]
+                    self.assertEqual(audio.writes(), expected + [
+                        ("move-sink-input", "808", audio.tv_name)])
+                    self.assertEqual(self.coordinator.audio_health, "healthy")
+                    self.assertEqual(audio.default, audio.tv_name)
+                    self.assertEqual((audio.cards, audio.sinks), before)
+                    self.assertEqual(self.system.mutations(), [])
+                    self.assertEqual(self.system.profiles, self.system.saved)
+                    audio.calls.clear()
+                    self.tick()
+                    self.assertEqual(audio.writes(), [])
+
+    def test_generic_gpu_sink_requires_exact_card_and_active_port(self):
+        for fault in ("wrong-card", "conflicting-card-index", "wrong-index", "missing-card",
+                      "unknown-card-index", "empty-card-index", "wrong-port", "missing-port"):
+            with self.subTest(fault=fault):
+                audio = self.system.audio = self.live_gpu_audio()
+                sink, card = audio.sony, audio.cards[0]
+                if fault in ("wrong-card", "conflicting-card-index"):
+                    sink["properties"]["device.name"] = "alsa_card.pci-0000_02_00.1"
+                    if fault == "conflicting-card-index":
+                        sink["card"] = card["index"]  # Cannot override a mismatched device.name.
+                elif fault in ("wrong-index", "missing-card", "unknown-card-index", "empty-card-index"):
+                    sink["properties"].pop("device.name")
+                    if fault == "wrong-index":
+                        sink["card"] = card["index"] + 1
+                    elif fault == "unknown-card-index":
+                        card.pop("index")
+                        sink["card"] = None
+                    elif fault == "empty-card-index":
+                        card["index"] = sink["card"] = ""
+                elif fault == "wrong-port":
+                    sink["active_port"] = {"name": "hdmi-output-0"}
+                else:
+                    sink.pop("active_port")
+                self.tv()
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                self.assertEqual(audio.writes(), [])
+                self.assertEqual(audio.default, dc.DESK_SINK)
+                self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_generic_gpu_sink_accepts_only_known_exact_numeric_card_fallback(self):
+        audio = self.system.audio = self.live_gpu_audio()
+        audio.sony["properties"].pop("device.name")
+        audio.sony["card"] = str(audio.cards[0]["index"])
         self.tv()
-        self.system.audio.sony["properties"]["alsa.name"] = "SAMSUNG"
-        self.tick()
-        self.assertEqual(self.system.audio.writes(), [])
-        self.assertEqual(self.coordinator.audio_health, "unavailable")
+        with mock.patch.object(dc, "run", side_effect=audio.run):
+            self.tick()
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertEqual(audio.default, audio.tv_name)
+
+    def test_generic_gpu_sink_cannot_bypass_sony_port_or_sink_ambiguity(self):
+        for fault in ("unknown-product", "unavailable", "duplicate-card", "duplicate-port", "duplicate-sink"):
+            with self.subTest(fault=fault):
+                audio = self.system.audio = self.live_gpu_audio()
+                card = audio.cards[0]
+                port = card["ports"]["hdmi-output-1"]
+                if fault == "unknown-product":
+                    port["properties"] = {"device.product.name": "AD102 High Definition Audio Controller"}
+                elif fault == "unavailable":
+                    port["availability"] = "not available"
+                elif fault == "duplicate-card":
+                    other = copy.deepcopy(card)
+                    other["name"] = "alsa_card.pci-0000_02_00.1"
+                    audio.cards.append(other)
+                elif fault == "duplicate-port":
+                    card["ports"]["hdmi-output-2"] = copy.deepcopy(port)
+                else:
+                    audio.sinks.append(dict(audio.sony, index=61606, name="duplicate"))
+                self.tv()
+                with mock.patch.object(dc, "run", side_effect=audio.run):
+                    self.tick()
+                self.assertEqual(audio.writes(), [])
+                self.assertEqual(self.coordinator.audio_health, "unavailable")
+
+    def test_generic_gpu_sink_late_publication_preserves_current_profile(self):
+        audio = self.system.audio = self.live_gpu_audio()
+        audio.sinks = [audio.desk]
+        audio.publish_after = 3
+        self.tv()
+        with mock.patch.object(dc, "run", side_effect=audio.run):
+            self.tick()
+        self.assertEqual(self.coordinator.audio_health, "healthy")
+        self.assertEqual(audio.default, audio.tv_name)
+        self.assertFalse(any(c[0] == "set-card-profile" for c in audio.writes()))
 
     def test_preview_or_sleep_during_publication_wait_prevents_routing(self):
         for fault in ("preview", "sleep", "desk"):

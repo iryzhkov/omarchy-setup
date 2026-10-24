@@ -206,8 +206,11 @@ class Audio:
                 if not isinstance(props, dict):
                     raise ValueError("invalid sink properties")
                 same_card = (props["device.name"] == card["name"] if "device.name" in props else
-                             "card" in sink and str(sink["card"]) == str(card.get("index")))
-                if same_card and active == name and sony_product(props):
+                             str(card.get("index", "")).isdecimal()
+                             and str(sink.get("card")) == str(card["index"]))
+                # The unique available card port owns Sony identity. PipeWire
+                # sinks can instead describe the generic GPU audio controller.
+                if same_card and active == name:
                     matches.append(sink)
             if len(matches) > 1:
                 raise ValueError("Sony sink ambiguous")

@@ -16,9 +16,13 @@ Audio follows the verified current display route in the same controller. TV mode
 selects the available Sony HDMI device; desk mode selects the Focusrite output.
 The controller updates the default and moves existing application streams,
 including a running game. Existing hyprmoncfg-audio-tv and -desk profile commands
-delegate to that same policy. An existing HDMI channel profile, mute and volume
-are preserved. Missing or ambiguous audio is reported separately and does not
-block display recovery. Sleep and human previews defer automatic audio changes.
+delegate to that same policy. Sony identity comes from the unique available HDMI
+card port. Its playback sink must match that exact card and active port; the
+sink's product label can name the GPU audio controller. Missing or conflicting
+bindings and multiple matches defer audio routing. An existing HDMI channel
+profile, mute and volume are preserved. Missing or ambiguous audio is reported
+separately and does not block display recovery. Sleep and human previews defer
+automatic audio changes.
 
 ## Installation and retirement
 
