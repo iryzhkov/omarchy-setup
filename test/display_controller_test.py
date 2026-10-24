@@ -176,6 +176,9 @@ class FakeSystem:
     def pactl(self, *args):
         return self.audio.pactl(*args)
 
+    def recovery_pending(self):
+        return False
+
     def audio_lock(self):
         return contextlib.nullcontext()
 
@@ -947,7 +950,14 @@ class CoordinatorTests(unittest.TestCase):
 
 
 class ReceiverHandshakeTests(unittest.TestCase):
-    tick = CoordinatorTests.tick
+    def tick(self, n=1):
+        for _ in range(n):
+            self.coordinator.step()
+            if self.coordinator.rediscovery_request is not None:
+                self.requests.append(self.coordinator.rediscovery_request)
+                self.coordinator.rediscovery_request = None
+            self.system.advance(dc.POLL)
+
 
     def setUp(self):
         CoordinatorTests.setUp(self)
@@ -966,26 +976,24 @@ class ReceiverHandshakeTests(unittest.TestCase):
         self.system.actual = None
         self.system.states[2]["attributes"] = {"source": "Racing"}
         self.system.tv_edid = mock.Mock(return_value=identity)
-        self.system.receiver_call = mock.Mock()
+        self.requests = []
 
-    def test_known_receiver_identity_without_scanout_gets_one_power_cycle(self):
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_args_list, [
-            mock.call("turn_off"), mock.call("turn_on"),
-            mock.call("select_source", source="Racing")])
-        self.assertEqual(self.system.mutations(), [])
-        self.tick(20)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
 
-    def test_incomplete_or_conflicting_evidence_never_power_cycles(self):
-        for fault in ("edid", "scanout", "source", "asleep", "unknown", "normal", "preview",
-                      "unmanaged", "extra", "duplicate", "desk", "tv-off"):
+    def test_known_receiver_identity_with_or_without_scanout_requests_once(self):
+        for actual in (None, (1280, 720)):
+            self.setUp()
+            self.system.actual = actual
+            self.tick(30)
+            self.assertEqual(len(self.requests), 1)
+            self.assertEqual(self.system.mutations(), [])
+
+    def test_incomplete_or_conflicting_evidence_never_requests_recovery(self):
+        for fault in ("edid", "source", "asleep", "unknown", "normal", "preview",
+                      "unmanaged", "extra", "duplicate", "desk", "tv-off", "journal"):
             with self.subTest(fault=fault):
                 self.setUp()
                 if fault == "edid":
                     self.system.tv_edid.return_value = None
-                elif fault == "scanout":
-                    self.system.actual = (1280, 720)
                 elif fault == "source":
                     self.system.states[2]["attributes"]["source"] = "USB C"
                 elif fault == "asleep":
@@ -993,27 +1001,37 @@ class ReceiverHandshakeTests(unittest.TestCase):
                 elif fault == "unknown":
                     self.system.mon[1]["model"] = "Another Sony"
                 elif fault == "normal":
-                    self.system.mon[1]["model"] = "SONY TV  *30"
+                    self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
+                    self.system.actual = "follow"
                 elif fault == "preview":
                     self.system.preview = {"transaction_id": "human"}
                 elif fault == "unmanaged":
                     self.system.unmanaged = True
                 elif fault == "extra":
-                    self.system.mon.append({"name": "DP-2", "disabled": True})
+                    self.system.mon.append({"name": "HEADLESS-SUNSHINE-other", "disabled": False})
                 elif fault == "duplicate":
                     self.system.mon.append(copy.deepcopy(self.system.mon[0]))
                 elif fault == "desk":
                     self.system.states[0]["attributes"]["source"] = "HDMI 2"
                 elif fault == "tv-off":
                     self.system.states[1]["state"] = "off"
+                else:
+                    self.system.recovery_pending = lambda: True
                 self.tick(6)
-                self.system.receiver_call.assert_not_called()
+                self.assertEqual(self.requests, [])
+
+    def test_stale_primary_tv_off_uses_authoritative_cast_intent(self):
+        self.system.states[0]["state"] = "off"
+        self.system.states[4].update(state="playing", attributes={"app_name": "TV",
+                                                               "media_title": "HDMI 3"})
+        self.tick(5)
+        self.assertEqual(len(self.requests), 1)
 
     def test_sleep_or_manual_preview_before_action_invalidates_evidence(self):
         for fault in ("asleep", "preview", "source"):
             with self.subTest(fault=fault):
                 self.setUp()
-                self.tick(2)  # First stable handshake observation only.
+                self.tick(2)
                 if fault == "asleep":
                     self.system.mon[1]["dpmsStatus"] = False
                 elif fault == "preview":
@@ -1021,182 +1039,51 @@ class ReceiverHandshakeTests(unittest.TestCase):
                 else:
                     self.system.states[2]["attributes"]["source"] = "USB C"
                 self.tick(3)
-                self.system.receiver_call.assert_not_called()
+                self.assertEqual(self.requests, [])
 
-    def test_failed_off_call_is_compensated_and_never_retried(self):
-        def receiver(service, **_):
-            if service == "turn_off":
-                raise TimeoutError("uncertain off result")
-        self.system.receiver_call.side_effect = receiver
-        self.tick(8)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_user_source_change_during_reset_is_preserved(self):
-        self.system.wait_hook = lambda: self.system.states[2]["attributes"].update(source="USB C")
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_revalidation_and_time_budget_reject_stale_evidence(self):
-        for fault in ("edid", "scanout", "source", "slow", "preview"):
-            with self.subTest(fault=fault):
-                self.setUp()
-                original = self.system.ha
-                calls = 0
-                def fresh():
-                    nonlocal calls
-                    calls += 1
-                    if calls == 1:
-                        return original()  # Change only at final pre-action validation.
-                    if fault == "edid":
-                        self.system.tv_edid.return_value = None
-                    elif fault == "scanout":
-                        self.system.actual = (1280, 720)
-                    elif fault == "source":
-                        self.system.states[2]["attributes"]["source"] = "USB C"
-                    elif fault == "slow":
-                        self.system.advance(dc.POLL + 1)
-                    else:
-                        self.system.preview = {"transaction_id": "human"}
-                    return original()
-                self.tick(2)
-                with mock.patch.object(self.system, "ha", side_effect=fresh):
-                    self.tick()
-                self.system.receiver_call.assert_not_called()
-
-    def test_cancellation_during_pause_restores_power_without_reselecting(self):
-        def cancel():
-            self.system.stop.set()
-            raise InterruptedError("stopping")
-        self.system.wait_hook = cancel
-        self.tick(3)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_preview_started_during_reset_does_not_reselect_source(self):
-        self.system.wait_hook = lambda: setattr(self.system, "preview", {"transaction_id": "human"})
-        self.tick(3)
-        self.assertEqual(self.system.receiver_call.call_args_list,
-                         [mock.call("turn_off"), mock.call("turn_on")])
-
-    def test_cooldown_survives_desk_edges_and_then_allows_one_fresh_attempt(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
+    def test_revalidation_rejects_stale_evidence(self):
         self.tick(2)
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
+        original, calls = self.system.ha, 0
+        def fresh():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                self.system.preview = {"transaction_id": "human"}
+            return original()
+        with mock.patch.object(self.system, "ha", side_effect=fresh):
+            self.tick()
+        self.assertEqual(self.requests, [])
+
+    def test_queries_jitter_power_and_cooldown_alone_cannot_rearm(self):
         self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(2)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-
-    def test_recovered_identity_returns_to_normal_verified_profile_without_another_cycle(self):
-        self.tick(4)
-        self.system.mon[1].update(model="SONY TV  *30", width=1280, height=720)
-        self.system.actual = "follow"
-        # The receiver hotplug gives the compositor its TV identity back.
-        self.system.override = ""
-        self.tick(3)
-        self.assertEqual(self.coordinator.selected, "tv-game")
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-        self.assertEqual([m for m, _ in self.system.mutations()], ["preview", "commit"])
-        self.assertIsNone(self.coordinator.error)
-        self.assertEqual(self.system.profiles, self.system.saved)
-
-    def test_no_second_cycle_after_own_off_on_or_topology_jitter(self):
-        self.tick(4)
-        self.system.states[2]["state"] = "off"
-        self.tick(2)
-        self.system.states[2]["state"] = "on"
-        self.tick(6)
-        self.system.advance(3 * dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(10)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-
-    def test_delayed_off_after_reset_cannot_switch_recovered_tv_to_desk(self):
-        self.tick(3)
-        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
-        self.system.actual = "follow"
-        self.system.states[2]["state"] = "off"
-        self.tick(8)
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.mutations(), [])
-        self.assertTrue(self.coordinator.receiver_restore_pending)
-        self.system.states[2]["state"] = "on"
-        self.tick(2)
-        self.assertFalse(self.coordinator.receiver_restore_pending)
-        self.assertEqual(self.coordinator.selected, "tv-game")
-
-    def test_unknown_tv_source_and_delayed_off_preserve_recovered_tv(self):
-        self.tick(3)
-        self.system.mon[1].update(model="SONY TV  *30", width=3840, height=2160)
-        self.system.actual = "follow"
-        self.system.states[0]["attributes"]["source"] = ""
-        self.system.states[2]["state"] = "off"
-        self.tick(60)
-        self.assertEqual(self.system.live, "tv-game")
-        self.assertEqual(self.system.mutations(), [])
-        self.assertTrue(self.coordinator.receiver_restore_pending)
-        self.assertTrue(self.coordinator.receiver_attempted)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_pending_restore_ignores_non_entity_ha_entries(self):
-        self.coordinator.receiver_restore_pending = True
-        self.system.states[0]["attributes"]["source"] = ""
-        self.system.states[2]["state"] = "off"
-        self.assertIsNone(self.coordinator.receiver_route(self.system.states + [None]))
-
-    def test_one_away_poll_followed_by_receiver_off_does_not_rearm(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
-        self.tick()
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
-        self.system.states[2]["state"] = "off"
-        self.tick(2)
-        self.system.states[2]["state"] = "on"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_ha_failure_breaks_independent_input_debounce(self):
-        self.tick(4)
-        self.system.states[0]["attributes"]["source"] = "HDMI 2"
-        self.tick()
-        original = self.system.states
+        saved = self.system.states
         self.system.states = TimeoutError("HA unavailable")
-        self.tick()
-        self.system.states = original
-        self.tick()
-        self.system.states[0]["attributes"]["source"] = "HDMI 3"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
-
-    def test_confirmed_known_display_sleep_rearms_after_cooldown(self):
-        self.tick(4)
-        self.system.mon[1].update(model="SONY TV  *30", dpmsStatus=False)
+        self.tick(3)
+        self.system.states = saved
+        self.system.mon[1]["disabled"] = True
         self.tick(2)
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.system.mon[1].update(model="SONY AVSYSTEM", dpmsStatus=True)
-        self.tick(4)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 6)
-
-    def test_tv_power_echo_alone_does_not_rearm(self):
-        self.tick(4)
+        self.system.mon[1]["disabled"] = False
         self.system.states[1]["state"] = "off"
         self.tick(2)
         self.system.states[1]["state"] = "on"
-        self.system.advance(dc.RECEIVER_RESET_COOLDOWN)
-        self.tick(5)
-        self.assertEqual(self.system.receiver_call.call_count, 3)
+        self.system.advance(dc.REDISCOVER_COOLDOWN * 3)
+        self.tick(10)
+        self.assertEqual(len(self.requests), 1)
 
+    def test_confirmed_healthy_edge_and_cooldown_allow_one_new_fault(self):
+        self.tick(4)
+        self.system.apply("tv-game")
+        self.system.actual = "follow"
+        self.tick(2)
+        self.system.mon[1].update(model="SONY AVSYSTEM", width=1280, height=720)
+        self.system.actual = None
+        self.tick(4)
+        self.assertEqual(len(self.requests), 1)
+        self.system.advance(dc.REDISCOVER_COOLDOWN)
+        self.tick(4)
+        self.assertEqual(len(self.requests), 2)
+        self.tick(20)
+        self.assertEqual(len(self.requests), 2)
 
 class ReceiverEdidTests(unittest.TestCase):
     # Captured from the TV during the 2026-10-22 AVSYSTEM/TV disagreement.
@@ -1221,19 +1108,118 @@ class ReceiverEdidTests(unittest.TestCase):
             with self.subTest(size=len(data)):
                 self.assertIsNone(dc.sony_edid_identity(data))
 
-    def test_service_calls_are_limited_to_existing_receiver_and_racing_source(self):
-        system = dc.System(Path("/unused"), threading.Event())
-        with mock.patch.object(dc, "run", return_value="") as run:
-            system.receiver_call("select_source", source="Racing")
-            args = run.call_args.args[0]
-            self.assertEqual(args[1:3], ["call", "media_player.select_source"])
-            self.assertEqual(json.loads(args[3]), {"entity_id": dc.AVR, "source": "Racing"})
-            for action, params in (("reboot", {}), ("turn_on", {"entity_id": "other"}),
-                                   ("select_source", {"source": "USB C"})):
-                with self.assertRaises(ValueError):
-                    system.receiver_call(action, **params)
-            self.assertEqual(run.call_count, 1)
 
+
+class ConnectorHelperTests(unittest.TestCase):
+    """The privileged entry point is never executed by these tests."""
+    @classmethod
+    def setUpClass(cls):
+        source = SOURCE.parents[1] / "root/usr/local/libexec/display-hdmi-rediscover"
+        loader = importlib.machinery.SourceFileLoader("hdmi_rediscover", str(source))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        assert spec is not None
+        cls.helper = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.helper)
+
+    def kernel(self, commands=("off\n", "detect\n")):
+        class Fake:
+            writes = []
+            state = "connected"
+            def connector(inner):
+                return "fake-only"
+            def status(inner, connector):
+                self.assertEqual(connector, "fake-only")
+                return inner.state
+            def edid(inner, connector):
+                self.assertEqual(connector, "fake-only")
+                return ReceiverEdidTests.edid
+            def write(inner, connector, value):
+                self.assertEqual(connector, "fake-only")
+                inner.writes.append(value)
+                inner.state = "disconnected" if value == "off" else "connected"
+            def wait(inner, stream, timeout=8):
+                value = next(inner.commands)
+                if isinstance(value, BaseException):
+                    raise value
+                return value
+        fake = Fake()
+        fake.commands = iter(commands)
+        return fake
+
+    def test_off_detect_protocol(self):
+        kernel, messages = self.kernel(), []
+        self.helper.rediscover(kernel, None, messages.append)
+        self.assertEqual(kernel.writes, ["off", "detect"])
+        self.assertEqual(messages, ["ready", "disconnected", "detect-restored"])
+
+    def test_timeout_eof_cancel_and_uncertain_off_always_detect(self):
+        for failure in (TimeoutError("timeout"), InterruptedError("SIGTERM"), "",
+                        KeyboardInterrupt()):
+            with self.subTest(failure=failure):
+                kernel = self.kernel(("off\n", failure))
+                with self.assertRaises((OSError, ValueError, KeyboardInterrupt)):
+                    self.helper.rediscover(kernel, None, lambda _: None)
+                self.assertEqual(kernel.writes, ["off", "detect"])
+        kernel = self.kernel()
+        original = kernel.write
+        def fail(connector, value):
+            original(connector, value)
+            if value == "off":
+                raise OSError("uncertain write")
+        kernel.write = fail
+        with self.assertRaises(OSError):
+            self.helper.rediscover(kernel, None, lambda _: None)
+        self.assertEqual(kernel.writes, ["off", "detect"])
+
+    def test_invalid_identity_disconnected_and_unarmed_never_off(self):
+        for fault in ("edid", "disconnected", "unarmed"):
+            kernel = self.kernel(("no\n",))
+            if fault == "edid":
+                kernel.edid = lambda _: b"bad"
+            elif fault == "disconnected":
+                kernel.state = "disconnected"
+            with self.assertRaises(ValueError):
+                self.helper.rediscover(kernel, None, lambda _: None)
+            self.assertEqual(kernel.writes, [])
+
+    def test_final_edid_recheck_precedes_off(self):
+        kernel = self.kernel()
+        calls = 0
+        def changing(_):
+            nonlocal calls
+            calls += 1
+            return ReceiverEdidTests.edid if calls == 1 else b""
+        kernel.edid = changing
+        with self.assertRaises(ValueError):
+            self.helper.rediscover(kernel, None, lambda _: None)
+        self.assertEqual(kernel.writes, [])
+
+    def test_detect_failure_is_explicit(self):
+        kernel = self.kernel()
+        original = kernel.write
+        def fail(connector, value):
+            if value == "detect":
+                raise OSError("detect incomplete")
+            original(connector, value)
+        kernel.write = fail
+        with self.assertRaisesRegex(OSError, "detect incomplete"):
+            self.helper.rediscover(kernel, None, lambda _: None)
+
+    def test_kernel_selects_card_vendor_not_connector_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "card1/device").mkdir(parents=True)
+            (root / "card1/device/vendor").write_text("0x10de\n")
+            (root / "card1-HDMI-A-1").mkdir()
+            with mock.patch.object(self.helper, "Path", return_value=root):
+                self.assertEqual(self.helper.Kernel().connector(), root / "card1-HDMI-A-1")
+                (root / "card1-HDMI-A-2").mkdir()
+                with self.assertRaisesRegex(ValueError, "ambiguous"):
+                    self.helper.Kernel().connector()
+            (root / "card1/device/vendor").write_text("0x1002\n")
+            with mock.patch.object(self.helper, "Path", return_value=root):
+                with self.assertRaisesRegex(ValueError, "GPU"):
+                    self.helper.Kernel().connector()
 
 class AudioTests(unittest.TestCase):
     def setUp(self):

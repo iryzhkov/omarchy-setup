@@ -4,16 +4,19 @@ import argparse
 import contextlib
 import copy
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import select
 import socket
 import stat
 import subprocess
 import threading
 import time
+import uuid
 
 TV = "media_player.sony_living_room_tv"
 SCREEN = "binary_sensor.living_room_tv_screen_on"
@@ -23,7 +26,9 @@ CAST = "media_player.sony_xr_77a80cl"
 ENTITIES = (TV, SCREEN, AVR, BRAVIA, CAST)
 TV_OUTPUT = "HDMI-A-1"
 POLL = 5
-RECEIVER_RESET_COOLDOWN = 300
+REDISCOVER_COOLDOWN = 300
+REDISCOVER_HELPER = Path("/usr/local/libexec/display-hdmi-rediscover")
+WATCHER_SHA256 = "5b7415c8b25dcccc695c808163b9ff4602cdbacecabf23398a166bfe85623b48"
 ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
 
 
@@ -77,8 +82,8 @@ def sony_edid_identity(data):
 def receiver_handshake(monitors, profiles, states, identity):
     """Recognize only our receiver's stale identity backed by the real TV EDID."""
     by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
-    avr, tv = by_id.get(AVR, {}), by_id.get(TV, {})
-    if (choose(states) != "tv-game" or tv.get("state") != "on"
+    avr = by_id.get(AVR, {})
+    if (choose(states) != "tv-game"
             or avr.get("state") != "on"
             or avr.get("attributes", {}).get("source") != "Racing"
             or identity is None or "tv-game" not in profiles):
@@ -89,7 +94,8 @@ def receiver_handshake(monitors, profiles, states, identity):
             or hdmi[0].get("make") != "Sony" or hdmi[0].get("model") != "SONY AVSYSTEM"
             or any(not wanted[0].get(k) or identity.get(k) != wanted[0][k]
                    for k in ("make", "model", "serial"))
-            or hdmi[0].get("serial") != wanted[0]["serial"]
+            or hdmi[0].get("serial") != "0x01010101"
+            or wanted[0]["serial"] != "0x01010101"
             or hdmi[0].get("disabled") is not False):
         return False
     identified = copy.deepcopy(monitors)
@@ -365,12 +371,18 @@ class System:
         with paths[0].open("rb") as source:
             return sony_edid_identity(source.read(4097))
 
-    def receiver_call(self, service, **params):
-        if (service not in ("turn_off", "turn_on", "select_source")
-                or params != ({"source": "Racing"} if service == "select_source" else {})):
-            raise ValueError("unsupported receiver recovery action")
-        run([str(Path.home() / ".local/bin/ha"), "call", "media_player." + service,
-             json.dumps({"entity_id": AVR, **params})], timeout=12)
+    def recovery_pending(self):
+        return (self.runtime / "display-hdmi-recovery.json").exists() if self.runtime else False
+
+    def workspace_snapshot(self):
+        value = json.loads(run(["hyprctl", "workspaces", "-j"]))
+        workspace_placement(value)
+        return value
+
+    def command(self, *args):
+        result = run(["hyprctl", *args])
+        if result.strip() != "ok":
+            raise ValueError("Hyprland recovery command rejected")
 
     def workspaces(self):
         return workspace_placement(json.loads(run(["hyprctl", "workspaces", "-j"])))
@@ -553,10 +565,8 @@ class Coordinator:
         self.receiver_last_attempt = float("-inf")
         self.receiver_count = 0
         self.receiver_since = 0
-        self.receiver_away_count = 0
-        self.receiver_away_since = 0
-        self.receiver_restore_pending = False
-        self.receiver_on_count = 0
+        self.rediscover_healthy = 0
+        self.rediscovery_request = None
         self.sleep_observed = False
         self.sleep_count = 0
         self.wake_rearmed = False
@@ -586,105 +596,51 @@ class Coordinator:
                 "daemon_pid": pid, "last_action": self.last_action,
                 "error": self.error, "recovery_inhibited": self.recovery_attempted,
                 "receiver_recovery_attempted": self.receiver_attempted,
-                "receiver_restore_pending": self.receiver_restore_pending}
+                "hdmi_recovery_pending": self.system.recovery_pending()}
 
     def reset_mismatch(self):
         self.mismatch, self.mismatch_count = None, 0
 
-    def receiver_route(self, states):
-        """Receiver power echoes cannot become new input-selection authority."""
-        by_id = {s["entity_id"]: s for s in states if isinstance(s, dict) and "entity_id" in s}
-        tv, avr = by_id.get(TV, {}), by_id.get(AVR, {})
-        source = tv.get("attributes", {}).get("source")
-        away = (tv.get("state") == "on" and isinstance(source, str)
-                and source.strip().lower() not in (
-                    "", "unknown", "unavailable", "hdmi 3", "hdmi 3 (earc/arc)", "str-az5000es"))
-        if away and choose(states) == "desk":
-            if not self.receiver_away_count:
-                self.receiver_away_since = self.clock()
-            self.receiver_away_count += 1
-            if (self.receiver_away_count >= 2
-                    and self.clock() - self.receiver_away_since >= POLL):
-                self.receiver_attempted = False
-        else:
-            self.receiver_away_count = 0
-        if not self.receiver_restore_pending:
-            return choose(states)
-        if away or by_id.get(SCREEN, {}).get("state") == "off":
-            # Honor TV intent immediately, but only a confirmed independent
-            # input change ends the restore wait. Power echoes cannot do so.
-            if (away and self.receiver_away_count >= 2
-                    and self.clock() - self.receiver_away_since >= POLL):
-                self.receiver_restore_pending = False
-            self.receiver_on_count = 0
-            return choose(states)
-        if avr.get("state") == "on":
-            self.receiver_on_count += 1
-            if self.receiver_on_count >= 2:
-                self.receiver_restore_pending = False
-            return choose(states)
-        self.receiver_on_count = 0
-        # Our own off/on may be reflected late by HA. Keep the live layout until
-        # receiver-on is confirmed or the TV supplies independent desk intent.
-        assuming_on = copy.deepcopy(states)
-        for entity in assuming_on:
-            if isinstance(entity, dict) and entity.get("entity_id") == AVR:
-                entity["state"] = "on"
-        return "desk" if choose(assuming_on) == "desk" else None
-
     def reconnect_receiver(self, ipc, profiles, monitors, states):
-        if not any(m.get("name") == TV_OUTPUT and m.get("model") == "SONY AVSYSTEM"
-                   for m in monitors):
+        fault = (any(m.get("name") == TV_OUTPUT and m.get("model") == "SONY AVSYSTEM"
+                     for m in monitors)
+                 and receiver_handshake(monitors, profiles, states, self.system.tv_edid()))
+        if not fault:
             self.receiver_count = 0
+            # Rearm only after two fully verified healthy TV observations.
+            # Failed queries and jitter never count as a fault ending.
+            healthy = (choose(states) == "tv-game" and "tv-game" in profiles
+                       and topology(monitors, profiles, profiles["tv-game"])
+                       and verified_audio_route(self.system, {"source_profile": "tv-game"},
+                                                profiles, monitors) == "tv-game")
+            self.rediscover_healthy = self.rediscover_healthy + 1 if healthy else 0
+            if self.rediscover_healthy >= 2:
+                self.receiver_attempted = False
             return False
-        if (not receiver_handshake(monitors, profiles, states, self.system.tv_edid())
-                or self.system.drm() is not None):
-            self.receiver_count = 0
-            return False
+        self.rediscover_healthy = 0
         now = self.clock()
         if not self.receiver_count:
             self.receiver_since = now
         self.receiver_count += 1
+        self.health = "HDMI identity pending"
         if self.receiver_count < 2 or now - self.receiver_since < POLL:
-            self.health = "receiver handshake pending"
             return True
-        if self.receiver_attempted or now - self.receiver_last_attempt < RECEIVER_RESET_COOLDOWN:
-            self.health = "receiver handshake inhibited"
+        if self.receiver_attempted or now - self.receiver_last_attempt < REDISCOVER_COOLDOWN:
+            self.health = "HDMI identity inhibited"
             return True
-        # Revalidate after the observation window, immediately before the action.
         fresh = self.system.ha()
         if (not receiver_handshake(self.system.monitors(), profiles, fresh, self.system.tv_edid())
-                or self.system.drm() is not None):
+                or self.clock() - now > POLL):
             self.receiver_count = 0
-            self.health = "receiver handshake pending"
             return True
         daemon = ipc.request("status")["daemon"]
         require_ipc_only(daemon)
-        if (daemon.get("preview") or daemon.get("unmanaged")
-                or self.clock() - now > POLL):
+        if daemon.get("preview") or daemon.get("unmanaged"):
             self.receiver_count = 0
-            self.health = "receiver handshake pending"
             return True
+        # Process outside this connection's context, after the old IPC is closed.
         self.receiver_attempted, self.receiver_last_attempt = True, self.clock()
-        self.receiver_restore_pending, self.receiver_on_count = True, 0
-        # An off timeout may still have changed the receiver. Always compensate,
-        # including cancellation during the brief wait, and consume the budget.
-        try:
-            self.system.receiver_call("turn_off")
-            self.system.wait(3)
-        finally:
-            self.system.receiver_call("turn_on")
-        if not self.system.stop.is_set():
-            restored = self.system.ha()
-            by_id = {s["entity_id"]: s for s in restored if isinstance(s, dict) and "entity_id" in s}
-            daemon = ipc.request("status")["daemon"]
-            require_ipc_only(daemon)
-            if (not daemon.get("preview") and not daemon.get("unmanaged")
-                    and choose(restored) == "tv-game"
-                    and by_id.get(AVR, {}).get("attributes", {}).get("source") == "Racing"):
-                self.system.receiver_call("select_source", source="Racing")
-        self.health, self.error = "receiver handshake reset", None
-        self.last_action = "receiver off/on requested"
+        self.rediscovery_request = copy.deepcopy(profiles)
         return True
 
     def transaction(self, ipc, name, profiles, verify=False):
@@ -786,11 +742,11 @@ class Coordinator:
         try:
             try:
                 observed_states = self.system.ha() if states is None else states
-                desired = self.receiver_route(observed_states)
+                desired = choose(observed_states)
             except ERRORS as exc:
                 desired, self.error = None, "HA: " + str(exc)
                 observed_states = []
-                self.receiver_away_count = self.receiver_on_count = 0
+                self.rediscover_healthy = 0
             now = self.clock()
             if (desired == "tv-game" and desired != self.candidate
                     and self.last_known_route == "desk"):
@@ -819,7 +775,7 @@ class Coordinator:
                 self.daemon_ready = True
                 if daemon.get("preview") or daemon.get("unmanaged"):
                     self.receiver_count = 0
-                    self.receiver_away_count = 0
+                    self.rediscover_healthy = 0
                     self.wake_intent = False
                     self.sleep_count = 0
                     self.sleep_observed = False
@@ -830,6 +786,9 @@ class Coordinator:
                 profiles = {p["name"]: p for p in editor["profiles"]
                             if p["name"] in ("desk", "tv-game", "tv-recovery")}
                 monitors = self.system.monitors()
+                if self.system.recovery_pending():
+                    self.health = "HDMI recovery journal pending"
+                    return
                 self.reconcile_audio(editor, profiles, monitors)
                 if desired is None:
                     verified = self.adopt(editor, profiles, monitors)
@@ -856,8 +815,6 @@ class Coordinator:
                     if enabled.get("dpmsStatus") is False:
                         self.sleep_count += 1
                         self.sleep_observed = self.sleep_count >= 2
-                        if self.sleep_count == 2:
-                            self.receiver_attempted = False
                         if self.clock() > self.wake_deadline:
                             self.wake_intent = False
                         if self.wake_intent:
@@ -886,7 +843,7 @@ class Coordinator:
                     self.route_attempted = self.recovery_attempted = False
                     self.wake_rearmed = False
                     self.reset_mismatch()
-                if (desired == "tv-game"
+                if (desired == "tv-game" and editor.get("source_profile") in (None, *profiles)
                         and self.reconnect_receiver(ipc, profiles, monitors, observed_states)):
                     return
                 if (desired not in profiles or not topology(monitors, profiles, profiles[desired])
@@ -952,7 +909,7 @@ class Coordinator:
                 self.reset_mismatch()
         except ERRORS as exc:
             self.receiver_count = 0
-            self.receiver_away_count = self.receiver_on_count = 0
+            self.rediscover_healthy = 0
             self.wake_intent = False
             self.sleep_count = 0
             self.sleep_observed = False
@@ -973,6 +930,10 @@ def runtime_dir():
 def coordinator_lock(runtime, name="display-controller.lock"):
     fd = os.open(runtime / name, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise ValueError("unsafe coordinator lock")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
@@ -991,6 +952,340 @@ def atomic_write(path, text):
             temporary.unlink()
 
 
+def private_lock(runtime, name):
+    """Watcher locks can predate us with mode 0644; only writes need exclusion."""
+    return coordinator_lock(runtime, name)
+
+
+def helper_preflight():
+    for path in (REDISCOVER_HELPER, *REDISCOVER_HELPER.parents):
+        info = path.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode):
+            raise ValueError("HDMI helper and parents must be root-owned and protected")
+    if not os.access(REDISCOVER_HELPER, os.X_OK):
+        raise ValueError("HDMI helper is not executable")
+    identity = json.loads(run(["sudo", "-n", str(REDISCOVER_HELPER), "--check"]))
+    if identity != {"make": "Sony", "model": "SONY TV  *30", "serial": "0x01010101"}:
+        raise ValueError("root helper did not confirm qualified TV")
+    return identity
+
+
+class ConnectorProcess:
+    """A bounded pipe handshake; EOF asks the privileged helper to compensate."""
+    def __init__(self):
+        self.proc = None
+        self.buffer = b""
+        self.detected = False
+        self.closed = False
+
+    def __enter__(self):
+        self.proc = subprocess.Popen(
+            ["sudo", "-n", str(REDISCOVER_HELPER), "--rediscover"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            self.expect("ready")
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def expect(self, wanted):
+        deadline = time.monotonic() + 10
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([self.proc.stdout], [], [], remaining)[0]:
+                raise TimeoutError("root HDMI helper response timeout")
+            chunk = os.read(self.proc.stdout.fileno(), 256)
+            if not chunk or len(self.buffer) + len(chunk) > 1024:
+                raise ValueError("root HDMI helper disconnected")
+            self.buffer += chunk
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        if line.decode("ascii") != wanted:
+            raise ValueError("unexpected root HDMI helper response")
+        if wanted == "detect-restored":
+            self.detected = True
+
+    def send(self, value):
+        self.proc.stdin.write(value.encode("ascii") + b"\n")
+        self.proc.stdin.flush()
+
+    def off(self):
+        self.send("off")
+        self.expect("disconnected")
+
+    def detect(self):
+        self.send("detect")
+        self.expect("detect-restored")
+        if self.proc.wait(timeout=3) != 0:
+            raise ValueError("root HDMI helper failed after detect")
+
+    def __exit__(self, *_):
+        if self.proc and not self.closed:
+            self.closed = True
+            self.proc.stdin.close()
+            try:
+                if not self.detected:
+                    # EOF after off guarantees the helper reaches finally.
+                    # Before off it simply exits without changing the connector.
+                    self.expect("detect-restored")
+            except ERRORS:
+                pass
+            try:
+                self.proc.wait(timeout=10)
+            finally:
+                self.proc.stdout.close()
+
+
+class Rediscovery:
+    """One journal owns one backup and a bounded cleanup, never another off."""
+    def __init__(self, system, child, coordinator):
+        self.system, self.child, self.coordinator = system, child, coordinator
+        self.path = system.runtime / "display-hdmi-recovery.json"
+        self.transaction_id = None
+        self.deadline = coordinator.clock() + 60
+
+    def save(self, state):
+        atomic_write(self.path, json.dumps(state) + "\n")
+
+    def owner(self, ipc):
+        import struct
+        if self.child.proc is None or self.child.proc.poll() is not None:
+            raise ValueError("owned daemon is not running")
+        pid, uid, _ = struct.unpack("3i", ipc.sock.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if pid != self.child.proc.pid or uid != os.getuid():
+            raise ValueError("IPC belongs to another daemon")
+        daemon = ipc.request("status")["daemon"]
+        require_ipc_only(daemon)
+        preview = daemon.get("preview")
+        if (daemon.get("unmanaged")
+                or (preview and preview.get("transaction_id") != self.transaction_id)):
+            raise ValueError("human preview or unmanaged layout owns display")
+        return daemon
+
+    def guard(self, state, ipc=None, fault=False):
+        if self.coordinator.clock() > self.deadline:
+            raise TimeoutError("bounded HDMI recovery deadline exceeded; journal retained")
+        if self.system.stop.is_set():
+            raise InterruptedError("HDMI recovery cancelled; journal retained")
+        if (self.system.runtime / "sunshine-virtual-display/state.json").exists():
+            raise ValueError("Sunshine journal owns display")
+        monitors = self.system.monitors()
+        if fault:
+            if not receiver_handshake(monitors, state["profiles"], self.system.ha(),
+                                      self.system.tv_edid()):
+                raise ValueError("HDMI fault or TV intent changed")
+        else:
+            known = [m for m in monitors if m.get("name") != state["output"]]
+            if (choose(self.system.ha()) != "tv-game"
+                    or any(m.get("name") not in ("DP-1", TV_OUTPUT, state["output"])
+                           for m in monitors)
+                    or len({m.get("name") for m in monitors}) != len(monitors)
+                    or any(m.get("name") == "DP-1" and m.get("disabled") is not True
+                           for m in monitors)):
+                raise ValueError("HDMI recovery intent or topology changed")
+            for monitor in known:
+                candidates = [o for p in state["profiles"].values() for o in p["outputs"]
+                              if o["name"] == monitor.get("name")]
+                if monitor.get("name") == TV_OUTPUT and monitor.get("model") == "SONY AVSYSTEM":
+                    if (monitor.get("make"), monitor.get("serial")) != ("Sony", "0x01010101"):
+                        raise ValueError("unknown receiver identity")
+                elif not any(all(not o.get(k) or o[k] == monitor.get(k)
+                                 for k in ("make", "model", "serial")) for o in candidates):
+                    raise ValueError("physical identity changed during recovery")
+                if monitor.get("name") == TV_OUTPUT and (
+                        monitor.get("disabled") is False and monitor.get("dpmsStatus") is not True):
+                    raise ValueError("TV asleep during recovery")
+        if ipc:
+            self.owner(ipc)
+        return monitors
+
+    def converge(self, state, predicate, ipc=None):
+        deadline = self.coordinator.clock() + 5
+        while True:
+            monitors = self.guard(state, ipc)
+            if predicate(monitors):
+                return monitors
+            if self.coordinator.clock() >= deadline:
+                raise TimeoutError("HDMI recovery convergence timeout")
+            self.system.wait(0.1)
+
+    def verify_workspaces(self, state):
+        current = self.system.workspace_snapshot()
+        placement = workspace_placement(current)
+        before = workspace_placement(state["workspaces"])
+        specials = {w["name"] for w in state["workspaces"] if w["name"].startswith("special:")}
+        shown = sorted(m.get("specialWorkspace", {}).get("name")
+                       for m in self.system.monitors() if m.get("specialWorkspace", {}).get("name"))
+        if (not before.required <= placement.keys()
+                or any(m != TV_OUTPUT for m in placement.values())
+                or any(not any(w["name"] == name and w["monitor"] == TV_OUTPUT for w in current)
+                       for name in specials)
+                or shown != state["shown"]):
+            raise ValueError("original workspaces or special visibility not restored")
+
+    def physical(self, state, monitors):
+        physical = [m for m in monitors if m.get("name") != state["output"]]
+        profile = state["profiles"]["tv-game"]
+        if not topology(physical, state["profiles"], profile):
+            return False
+        tv = next(m for m in physical if m["name"] == TV_OUTPUT)
+        wanted = targets(profile)[0]
+        return (all(tv.get(k) == wanted.get(k) for k in ("width", "height", "scale", "transform", "x", "y"))
+                and ("refresh" not in wanted or abs(tv.get("refreshRate", 0) - wanted["refresh"]) < 0.1)
+                and check(physical, self.system.drm())["health"] == "healthy")
+
+    def restore(self, state):
+        # Fresh child only. Never reuse the old connection or assume startup
+        # selected a profile. IPC-only startup cannot change the display.
+        self.child.start()
+        startup(self.system, self.coordinator)
+        with self.system.ipc() as ipc:
+            self.guard(state, ipc)
+            editor = normalize_editor(ipc.request("editor_state"), ipc.request("status")["daemon"])
+            current = {p["name"]: p for p in editor["profiles"] if p["name"] in state["profiles"]}
+            if current != state["profiles"]:
+                raise ValueError("saved profiles changed; recovery deferred")
+            # Apply once after identity has returned, with no saved-profile edits.
+            self.converge(state, lambda ms: any(
+                m.get("name") == TV_OUTPUT and all(m.get(k) == targets(current["tv-game"])[0].get(k)
+                  for k in ("make", "model", "serial")) for m in ms), ipc)
+            effective = workspace_profile(current["tv-game"], self.system.workspaces())
+            tx = ipc.request("preview", profile=effective, timeout_seconds=120, save_on_commit=False)
+            self.transaction_id = tx["id"]
+            # A failed/uncertain preview retains its rollback deadline and journal.
+            try:
+                monitors = self.converge(state, lambda ms: self.physical(state, ms), ipc)
+                if any(m["name"] == state["output"] and m.get("disabled") is True for m in monitors):
+                    self.guard(state, ipc)
+                    self.system.command("eval", "hl.monitor({output=" + json.dumps(state["output"])
+                                        + ",disabled=false})")
+                    self.converge(state, lambda ms: any(m["name"] == state["output"]
+                        and m.get("disabled") is False for m in ms), ipc)
+                migration = migrate_workspaces(TV_OUTPUT, lambda: self.guard(state, ipc))
+                self.verify_workspaces(state)
+                self.guard(state, ipc)
+                if any(m["name"] == state["output"] for m in self.system.monitors()):
+                    self.system.command("output", "remove", state["output"])
+                self.converge(state, lambda ms: all(m["name"] != state["output"] for m in ms)
+                              and self.physical(state, ms), ipc)
+                migration(final=True)
+                self.verify_workspaces(state)
+                self.guard(state, ipc)
+                ipc.request("commit", transaction_id=self.transaction_id, save=False)
+                self.transaction_id = None
+            except BaseException:
+                # Revert only this connection's own preview. Keep the backup
+                # journal even if rollback succeeds; physical restoration is unproven.
+                with contextlib.suppress(*ERRORS):
+                    ipc.request("revert", transaction_id=self.transaction_id)
+                raise
+        self.path.unlink()
+
+
+    def resume(self):
+        """One cleanup on process startup. Never issue another off."""
+        info = self.path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("unsafe HDMI recovery journal")
+        state = json.loads(self.path.read_text())
+        if (state.get("version") != 1 or not re.fullmatch(r"HEADLESS-REDISCOVER-[0-9a-f]{32}",
+                                                        state.get("output", ""))
+                or state.get("stage") not in ("prepared", "backup", "detect-pending", "restore")
+                or not isinstance(state.get("profiles"), dict)
+                or not isinstance(state.get("shown"), list)):
+            raise ValueError("invalid HDMI recovery journal")
+        workspace_placement(state["workspaces"])
+        directory = self.system.runtime / "sunshine-virtual-display"
+        with coordinator_lock(directory, "lock"), \
+                private_lock(self.system.runtime, "omarchy-monitor-clamshell.lock"), \
+                private_lock(self.system.runtime, "omarchy-monitor-modeless.lock"):
+            with self.system.ipc() as ipc:
+                self.guard(state, ipc)
+            if state["stage"] == "prepared":
+                if any(m["name"] == state["output"] for m in self.system.monitors()):
+                    raise ValueError("unexpected backup before prepared handoff")
+                self.path.unlink()
+                return
+            if state["stage"] == "detect-pending":
+                # Fixed helper detects only; no EDID required for compensation.
+                run(["sudo", "-n", str(REDISCOVER_HELPER), "--detect"], timeout=5)
+                state["stage"] = "restore"
+                self.save(state)
+            self.restore(state)
+
+    def run(self, profiles):
+        # The Sunshine lock covers its start preflight through service handoff.
+        directory = self.system.runtime / "sunshine-virtual-display"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("unsafe Sunshine lock directory")
+        with coordinator_lock(directory, "lock"):
+            if self.path.exists():
+                raise ValueError("HDMI recovery journal pending; explicit cleanup required")
+            helper_preflight()  # No display takeover before helper/sudo qualification.
+            wanted = targets(profiles["tv-game"])[0]
+            if any(wanted.get(k) != v for k, v in (
+                    ("make", "Sony"), ("model", "SONY TV  *30"), ("serial", "0x01010101"))):
+                raise ValueError("saved TV differs from root helper identity")
+            watcher = Path("/usr/share/omarchy/bin/omarchy-hyprland-monitor-watch")
+            if hashlib.sha256(watcher.read_bytes()).hexdigest() != WATCHER_SHA256:
+                raise ValueError("Omarchy watcher lock contract unqualified")
+            with private_lock(self.system.runtime, "omarchy-monitor-clamshell.lock"), \
+                    private_lock(self.system.runtime, "omarchy-monitor-modeless.lock"), \
+                    ConnectorProcess() as helper:
+                state = {"version": 1, "owner": "display-controller",
+                         "child_pid": self.child.proc.pid,
+                         "output": "HEADLESS-REDISCOVER-" + uuid.uuid4().hex,
+                         "profiles": profiles, "workspaces": self.system.workspace_snapshot(),
+                         "shown": sorted(m.get("specialWorkspace", {}).get("name")
+                             for m in self.system.monitors() if m.get("specialWorkspace", {}).get("name")),
+                         "stage": "prepared"}
+                with self.system.ipc() as ipc:
+                    self.owner(ipc)
+                    self.guard(state, ipc, fault=True)
+                    expected = self.child.proc
+                    self.save(state)
+                    self.owner(ipc)  # Final preview/ownership check after journaling.
+                    # No further requests use this old connection.
+                self.child.handoff_stop(expected)
+                if (self.system.runtime / "hyprmoncfgd.sock").exists():
+                    raise ValueError("old daemon socket persists; no recovery mutation")
+                try:
+                    self.guard(state, fault=True)
+                    state["stage"] = "backup"
+                    self.save(state)  # Persist uncertain create ownership first.
+                    self.system.command("output", "create", "headless", state["output"])
+                    self.converge(state, lambda ms: any(m["name"] == state["output"]
+                        and m.get("disabled") is False for m in ms))
+                    migrate_workspaces(state["output"], lambda: self.guard(state))
+                    self.guard(state)
+                    if not receiver_handshake([m for m in self.system.monitors()
+                                               if m["name"] != state["output"]],
+                                              profiles, self.system.ha(), self.system.tv_edid()):
+                        raise ValueError("fault evidence changed before connector off")
+                    state["stage"] = "detect-pending"
+                    self.save(state)
+                    helper.off()
+                    self.converge(state, lambda ms: all(m["name"] != TV_OUTPUT for m in ms))
+                    helper.detect()
+                    state["stage"] = "restore"
+                    self.save(state)
+                finally:
+                    # EOF compensates off even when cancellation or removal
+                    # observation fails. A missing acknowledgement stays journaled.
+                    helper.__exit__(None, None, None)
+                    if helper.detected:
+                        state["stage"] = "restore"
+                        self.save(state)
+                    self.child.start()
+                    startup(self.system, self.coordinator)
+                self.restore(state)
+        self.coordinator.health, self.coordinator.error = "HDMI identity recovered", None
+        self.coordinator.last_action = "connector off/detect; verified tv-game"
+
+
 class Child:
     def __init__(self, spawn=subprocess.Popen):
         self.spawn, self.proc = spawn, None
@@ -999,6 +1294,14 @@ class Child:
         if self.proc is None:
             self.proc = self.spawn([str(Path.home() / ".local/libexec/display-controller/hyprmoncfgd"),
                                     "--ipc-only"])
+
+    def handoff_stop(self, expected):
+        if expected is None or self.proc is not expected or expected.poll() is not None:
+            raise ValueError("owned child changed before handoff")
+        expected.terminate()
+        # A failed stop retains this exact handle, never an external replacement.
+        expected.wait(timeout=8)
+        self.proc = None
 
     def stop(self):
         if self.proc is not None:
@@ -1035,6 +1338,7 @@ def startup(system, coordinator):
 
 
 def supervise(system, coordinator, child, publish):
+    cleanup_checked = False
     try:
         while not system.stop.is_set():
             if child.proc is None:
@@ -1050,7 +1354,22 @@ def supervise(system, coordinator, child, publish):
                     coordinator.health, coordinator.error = "stopped", "hyprmoncfgd exited"
                     publish(coordinator.status(child.proc.pid))
                     raise ChildProcessError("hyprmoncfgd exited unexpectedly")
+                if not cleanup_checked:
+                    cleanup_checked = True
+                    if system.recovery_pending():
+                        coordinator.receiver_attempted = True
+                        coordinator.receiver_last_attempt = coordinator.clock()
+                        try:
+                            Rediscovery(system, child, coordinator).resume()
+                        except ERRORS as exc:
+                            coordinator.health, coordinator.error = "HDMI recovery journal pending", str(exc)
                 coordinator.step()
+                if coordinator.rediscovery_request is not None:
+                    profiles, coordinator.rediscovery_request = coordinator.rediscovery_request, None
+                    try:
+                        Rediscovery(system, child, coordinator).run(profiles)
+                    except ERRORS as exc:
+                        coordinator.health, coordinator.error = "HDMI recovery deferred", str(exc)
             publish(coordinator.status(child.proc.pid if child.proc else None))
             system.stop.wait(POLL)
     finally:

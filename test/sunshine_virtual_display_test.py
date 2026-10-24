@@ -1172,5 +1172,328 @@ class ReceiverTests(unittest.TestCase):
         self.session.save(state)
         self.session.stop()
 
+
+class RediscoveryTests(unittest.TestCase):
+    """Production recovery with a compositor simulation and fake child/root I/O."""
+    def setUp(self):
+        import contextlib
+        import struct
+        import threading
+        self.dc = fixtures.dc
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.runtime = Path(self.temporary.name)
+        self.c = Compositor(refill=True)
+        self.c.active_ws = {self.dc.TV_OUTPUT: 1}
+        self.c.focused = self.dc.TV_OUTPUT
+        self.profiles = self.c.profiles
+        self.identity = {"make": "Sony", "model": "SONY TV  *30", "serial": "0x01010101"}
+        for profile in self.profiles.values():
+            for output in profile["outputs"]:
+                output.update(self.identity if output["name"] == self.dc.TV_OUTPUT else
+                              {"make": "Samsung", "model": "Odyssey", "serial": "desk"})
+                output.update(scale=2 if output["name"] == self.dc.TV_OUTPUT else 1,
+                              transform=0)
+        self.saved = copy.deepcopy(self.profiles)
+        self.c.mon = copy.deepcopy(self.profiles["tv-game"]["outputs"])
+        for monitor in self.c.mon:
+            monitor.update(disabled=not monitor["enabled"], dpmsStatus=True)
+        self.c.mon[0].update(width=0, height=0, currentFormat="Invalid")
+        self.c.mon[1].update(model="SONY AVSYSTEM", width=1280, height=720)
+        for workspace in self.c.ws:
+            workspace["monitor"] = self.dc.TV_OUTPUT
+        self.c.ws[0].update(windows=1, ispersistent=False)
+        self.c.ws[1].update(windows=1, ispersistent=False)
+        self.states = fixtures.ha()
+        self.states[2]["attributes"] = {"source": "Racing"}
+        self.log = []
+        self.preview = None
+        self.pid = 100
+        self.on_phase = lambda phase: None
+        test = self
+
+        class Process:
+            def __init__(self):
+                test.pid += 1
+                self.pid = test.pid
+                self.exited = False
+            def poll(self):
+                return 0 if self.exited else None
+            def terminate(self):
+                test.log.append("child-stop")
+                test.on_phase("child-stop")
+                self.exited = True
+            def wait(self, timeout):
+                if not self.exited:
+                    raise TimeoutError("child stop failed")
+                return 0
+
+        def spawn(args):
+            self.log.append("child-start")
+            self.on_phase("child-start")
+            return Process()
+        self.child = self.dc.Child(spawn)
+        self.child.start()
+        class Connection:
+            def __init__(self):
+                self.sock = mock.Mock()
+                self.sock.getsockopt.return_value = struct.pack("3i", test.child.proc.pid,
+                                                                os.getuid(), 0)
+            def request(self, method, **params):
+                test.on_phase("ipc-" + method)
+                if method == "status":
+                    return {"daemon": {"ipc_only": True, "running": True,
+                                       "preview": test.preview, "unmanaged": False}}
+                if method == "editor_state":
+                    return {"source_profile": "tv-game",
+                            "profiles": copy.deepcopy(list(test.profiles.values()))}
+                if method == "preview":
+                    if test.preview:
+                        raise ValueError("human preview owns daemon")
+                    test.preview = {"transaction_id": "owned"}
+                    test.log.append("preview")
+                    profile = params["profile"]
+                    for monitor in test.c.mon:
+                        if monitor["name"] == test.dc.TV_OUTPUT:
+                            monitor.update(copy.deepcopy(self_tv(profile)),
+                                           disabled=False, dpmsStatus=True)
+                    for rule in profile["workspaces"]["rules"]:
+                        for workspace in test.c.ws:
+                            if rule["workspace"] == (str(workspace["id"]) if workspace["id"] > 0
+                                                    else "name:" + workspace["name"]):
+                                workspace["monitor"] = rule["output_name"]
+                    return {"id": "owned"}
+                if method in ("commit", "revert"):
+                    test.log.append(method)
+                    test.preview = None
+                    return {}
+                raise AssertionError(method)
+        def self_tv(profile):
+            return next(o for o in profile["outputs"] if o["name"] == test.dc.TV_OUTPUT)
+        @contextlib.contextmanager
+        def ipc(timeout=25):
+            yield Connection()
+        def monitors():
+            return json.loads(self.c.hypr(["hyprctl", "monitors", "all", "-j"]))
+        self.system = self.dc.System(self.runtime, threading.Event())
+        self.system.ipc = ipc
+        self.system.ha = lambda: copy.deepcopy(self.states)
+        self.system.tv_edid = lambda: copy.deepcopy(self.identity)
+        self.system.monitors = monitors
+        self.system.workspace_snapshot = lambda: copy.deepcopy(self.c.ws)
+        self.system.workspaces = lambda: self.dc.workspace_placement(self.c.ws)
+        self.system.drm = lambda: (3840, 2160)
+        self.system.wait = self.c.wait
+        def command(*args):
+            self.log.append(args[0] + "-" + args[1])
+            self.on_phase(args[0] + "-" + args[1])
+            self.c.command(*args)
+        self.system.command = command
+        self.coordinator = self.dc.Coordinator(self.system, clock=lambda: self.c.now)
+        self.recovery = self.dc.Rediscovery(self.system, self.child, self.coordinator)
+        self.helper = mock.Mock()
+        self.helper.detected = False
+        self.helper.__enter__ = mock.Mock(return_value=self.helper)
+        self.off = False
+        def detect():
+            self.log.append("detect")
+            self.on_phase("detect")
+            self.c.mon = [m for m in self.c.mon if m["name"] != self.dc.TV_OUTPUT]
+            tv = copy.deepcopy(self.profiles["tv-game"]["outputs"][1])
+            tv.update(disabled=False, dpmsStatus=True, width=1280, height=720)
+            self.c.mon.append(tv)
+            self.helper.detected = True
+        def off():
+            self.log.append("off")
+            self.on_phase("off")
+            self.off = True
+            self.c.mon = [m for m in self.c.mon if m["name"] != self.dc.TV_OUTPUT]
+        def exit_helper(*_):
+            if self.off and not self.helper.detected:
+                detect()
+        self.helper.off.side_effect = off
+        self.helper.detect.side_effect = detect
+        self.helper.__exit__ = mock.Mock(side_effect=exit_helper)
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.object(self.dc, "run", self.c.hypr))
+        self.preflight = self.stack.enter_context(mock.patch.object(
+            self.dc, "helper_preflight", return_value=self.identity))
+        self.stack.enter_context(mock.patch.object(self.dc, "ConnectorProcess", return_value=self.helper))
+        self.stack.enter_context(mock.patch.object(self.dc.Path, "read_bytes", return_value=b"qualified"))
+        self.stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256",
+                                                  hashlib.sha256(b"qualified").hexdigest()))
+
+    def test_complete_handoff_restores_all_workspaces_and_preserves_disabled_dp(self):
+        self.recovery.run(self.profiles)
+        self.assertFalse(self.recovery.path.exists())
+        self.assertEqual([v for v in self.log if v in ("off", "detect")], ["off", "detect"])
+        self.assertLess(self.log.index("child-stop"), self.log.index("off"))
+        self.assertEqual(self.log.count("child-start"), 2)
+        self.assertEqual(self.log[-1], "commit")
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+        self.assertEqual(self.c.shown, {"special:shown"})
+        dp = next(m for m in self.c.mon if m["name"] == "DP-1")
+        self.assertEqual((dp["disabled"], dp["width"], dp["currentFormat"]), (True, 0, "Invalid"))
+        self.assertEqual(self.profiles, self.saved)
+
+    def test_preflight_failures_preview_and_stream_lock_defer_before_takeover(self):
+        import contextlib
+        for fault in ("helper", "preview", "watcher", "stream"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                with contextlib.ExitStack() as stack:
+                    if fault == "helper":
+                        self.preflight.side_effect = PermissionError("sudo refused")
+                    elif fault == "preview":
+                        self.preview = {"transaction_id": "human"}
+                    elif fault == "watcher":
+                        stack.enter_context(mock.patch.object(self.dc, "WATCHER_SHA256", "unqualified"))
+                    else:
+                        directory = self.runtime / "sunshine-virtual-display"
+                        directory.mkdir(mode=0o700)
+                        stack.enter_context(self.dc.coordinator_lock(directory, "lock"))
+                    with self.assertRaises((OSError, ValueError)):
+                        self.recovery.run(self.profiles)
+                self.assertNotIn("child-stop", self.log)
+                self.assertFalse(any(v.startswith("output-") for v in self.log))
+                self.assertNotIn("off", self.log)
+
+    def test_sunshine_journal_overlap_never_stops_child(self):
+        directory = self.runtime / "sunshine-virtual-display"
+        directory.mkdir(mode=0o700)
+        (directory / "state.json").write_text("{}")
+        with self.assertRaisesRegex(ValueError, "Sunshine"):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("child-stop", self.log)
+
+    def test_watcher_locks_held_across_daemon_release_and_reclaim(self):
+        def phase(value):
+            if value not in ("child-stop", "child-start", "off", "detect"):
+                return
+            for name in ("omarchy-monitor-clamshell.lock", "omarchy-monitor-modeless.lock"):
+                with self.assertRaises(BlockingIOError):
+                    with self.dc.coordinator_lock(self.runtime, name):
+                        self.fail("watcher could write during handoff")
+        self.on_phase = phase
+        self.recovery.run(self.profiles)
+
+    def test_cancellation_after_off_compensates_and_retains_backup_journal(self):
+        def phase(value):
+            if value == "off":
+                self.off = True
+                self.system.stop.set()
+                raise InterruptedError("cancel after uncertain off")
+        self.on_phase = phase
+        with self.assertRaises(InterruptedError):
+            self.recovery.run(self.profiles)
+        self.assertIn("detect", self.log)
+        self.assertTrue(self.recovery.path.exists())
+        self.assertTrue(any(m["name"].startswith("HEADLESS-REDISCOVER-") for m in self.c.mon))
+
+    def test_detect_failure_retains_explicit_compensation_ownership(self):
+        self.helper.detect.side_effect = OSError("detect failed")
+        def exit_helper(*_):
+            pass
+        self.helper.__exit__.side_effect = exit_helper
+        with self.assertRaisesRegex(OSError, "detect failed"):
+            self.recovery.run(self.profiles)
+        state = json.loads(self.recovery.path.read_text())
+        self.assertEqual(state["stage"], "detect-pending")
+        self.assertTrue(any(m["name"] == state["output"] for m in self.c.mon))
+
+    def test_child_stop_failure_never_creates_backup_or_disconnects(self):
+        self.child.proc.wait = mock.Mock(side_effect=TimeoutError("stop failed"))
+        with self.assertRaisesRegex(TimeoutError, "stop failed"):
+            self.recovery.run(self.profiles)
+        self.assertTrue(self.recovery.path.exists())
+        self.assertNotIn("off", self.log)
+        self.assertFalse(any(v.startswith("output-") for v in self.log))
+
+    def test_restart_failure_retains_journal(self):
+        def phase(value):
+            if value == "child-start":
+                raise OSError("restart failed")
+        self.on_phase = phase
+        with self.assertRaisesRegex(OSError, "restart failed"):
+            self.recovery.run(self.profiles)
+        self.assertIn("detect", self.log)
+        self.assertTrue(self.recovery.path.exists())
+
+    def test_new_human_preview_after_restart_is_preserved(self):
+        def phase(value):
+            if value == "child-start":
+                self.preview = {"transaction_id": "human"}
+        self.on_phase = phase
+        with self.assertRaisesRegex(ValueError, "human"):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("preview", self.log)
+        self.assertEqual(self.preview, {"transaction_id": "human"})
+        self.assertTrue(self.recovery.path.exists())
+
+    def test_incomplete_output_cleanup_retains_journal(self):
+        self.c.never.add("remove")
+        with self.assertRaises(TimeoutError):
+            self.recovery.run(self.profiles)
+        self.assertTrue(self.recovery.path.exists())
+        self.assertIn("revert", self.log)
+
+    def test_unknown_output_arriving_during_handoff_never_disconnects(self):
+        def phase(value):
+            if value == "child-stop":
+                self.c.mon.append({"name": "DP-9", "disabled": False})
+        self.on_phase = phase
+        with self.assertRaises(ValueError):
+            self.recovery.run(self.profiles)
+        self.assertNotIn("off", self.log)
+
+    def test_startup_cleanup_finishes_without_another_off(self):
+        self.c.never.add("remove")
+        with self.assertRaises(TimeoutError):
+            self.recovery.run(self.profiles)
+        self.c.never.clear()
+        recovery = self.dc.Rediscovery(self.system, self.child, self.coordinator)
+        recovery.resume()
+        self.assertFalse(recovery.path.exists())
+        self.assertEqual(self.log.count("off"), 1)
+        self.assertTrue(all(w["monitor"] == self.dc.TV_OUTPUT for w in self.c.ws))
+
+    def test_scanout_or_scale_mismatch_retains_backup_and_journal(self):
+        self.system.drm = lambda: (1280, 720)
+        with self.assertRaises(TimeoutError):
+            self.recovery.run(self.profiles)
+        self.assertTrue(self.recovery.path.exists())
+        self.assertTrue(any(m["name"].startswith("HEADLESS-REDISCOVER-") for m in self.c.mon))
+        self.assertNotIn("commit", self.log)
+
+    def test_corrupt_journal_never_performs_cleanup(self):
+        self.recovery.path.write_text("{}")
+        with self.assertRaises(ValueError):
+            self.recovery.resume()
+        self.assertEqual(self.log, ["child-start"])
+
+    def test_changed_child_object_is_not_terminated(self):
+        expected = self.child.proc
+        self.child.proc = mock.Mock()
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.child.handoff_stop(expected)
+        self.child.proc.terminate.assert_not_called()
+        self.assertFalse(expected.exited)
+
+    def test_external_ipc_pid_is_rejected(self):
+        with self.system.ipc() as ipc:
+            import struct
+            ipc.sock.getsockopt.return_value = struct.pack("3i", self.pid + 99, os.getuid(), 0)
+            with self.assertRaisesRegex(ValueError, "another daemon"):
+                self.recovery.owner(ipc)
+
+    def test_sunshine_start_fails_closed_on_recovery_journal(self):
+        self.recovery.path.write_text("{}")
+        with mock.patch.object(vd.dc, "IPC") as ipc:
+            with self.assertRaisesRegex(ValueError, "recovery journal"):
+                vd.Host(self.runtime).editor()
+            ipc.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

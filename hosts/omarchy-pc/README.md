@@ -179,39 +179,88 @@ check migration, visibility, safety gates and profile hashes. They do not qualif
 live NVIDIA/headless behavior or physical HDMI recovery. Perform that acceptance
 separately, after review, with no active game.
 
-## Receiver handshake recovery
+## HDMI stale identity recovery
 
-The controller can power-cycle the existing STR-AZ5000ES once when the HDMI
-connector reports Sony SONY AVSYSTEM instead of the saved TV, with no DRM
-scanout. Recovery requires two observations at least five seconds apart, the
-known connector topology, an awake HDMI output, the TV on HDMI3, receiver on
-Racing, and a complete checksummed kernel EDID matching the saved TV identity.
-The same evidence and IPC-only ownership are checked again before the action.
-Unknown replacement displays and manual previews still defer all recovery.
+The controller replaces its receiver power cycle with one bounded logical
+connector disconnect and detect. The automatic trigger remains the exact Sony
+SONY AVSYSTEM identity, serial 0x01010101, on the awake HDMI-A-1 output. A
+checksummed kernel EDID must identify the saved Sony SONY TV  *30, serial
+0x01010101. HA must confirm screen on, HDMI3 intent through the existing source
+precedence, and the receiver on Racing. A stale primary TV entity reporting off
+does not override an on screen sensor and a playing CAST TV/HDMI3 source.
 
-After requesting off, the controller waits three seconds and always requests
-on, even if off timed out or cancellation interrupted the pause. It reselects
-Racing only if that is still the current source, TV intent remains, and no
-manual preview owns the display. It never applies a profile under the receiver
-alias. Normal profile transactions resume only after the real TV identity
-returns. A requested reset is not proof that the physical picture recovered.
+Two fault observations at least five seconds apart are required. One attempt
+consumes the fault budget before takeover. Continuous polls, failed queries,
+receiver power reports, input changes and mode jitter cannot rearm it. Two
+verified healthy TV observations end the fault; a subsequent fault can attempt
+again after the five-minute cooldown. Budgets last for the controller process.
+A pending recovery journal inhibits ordinary routing, audio and another off.
 
-A reset consumes its attempt before sending the off request. Query errors,
-mode changes and continuous awake polls never rearm it. Two observations of an
-explicit TV input away from HDMI3, or a known-output sleep cycle, permit another
-attempt, subject to a five-minute cooldown. Receiver-off and TV-power reports
-alone cannot rearm a reset. After our own reset, receiver-off echoes cannot
-select the desk layout until on is confirmed in two polls or independent TV
-intent changes. An unknown TV source retains the layout. If the on request
-fails to restore power, this wait remains pending; changing the TV input,
-turning the TV off, or restoring receiver power permits routing again.
-Budgets are in memory for the process lifetime; both automatic and explicit
-service restarts reset them. No additional timer or watchdog is used.
-The status includes receiver_recovery_attempted and receiver_restore_pending,
-and reports pending, inhibited or requested handshake recovery separately from
-verified scanout health.
+The root overlay installs /usr/local/libexec/display-hdmi-rediscover, mode 0755,
+root:root. The controller checks protected root ownership and runs sudo -n
+--check before any display takeover. No grant is installed. The helper uses
+isolated Python, standard-library code and fixed sysfs paths only. It requires
+one NVIDIA GPU, one HDMI-A-1 connector on it, connected status, and the complete
+qualified TV EDID. It rechecks immediately before off. There are no caller paths,
+environment settings or external commands in its privileged operation.
 
-## Rollback
+A pipe handshake waits for the controller to observe the physical output absent
+before detect. Failure, EOF, timeout and SIGTERM/INT/HUP after an attempted off
+all execute compensated detect. A detect-only command exists for compensation.
+SIGKILL, machine loss or an unwritable kernel status file cannot be compensated
+by a process; the private journal retains detect ownership in that case.
+
+Recovery holds the existing Sunshine lock, checks for its application journal,
+and refuses every unowned headless or unknown output. Sunshine start also
+refuses a pending HDMI recovery journal. Lock overlap defers acquisition; it
+never stops an active stream. Stock Sunshine Quit Session semantics remain.
+
+The controller stays alive. After a fresh IPC-only capability, peer PID,
+management and preview check, it journals recovery, closes its old IPC connection
+and stops/recreates only its exact owned child. It requires old child exit and
+socket disappearance before creating a unique temporary headless backup.
+It captures regular and special workspaces before off and moves them to that
+backup. DP-1 stays disabled, including an uninitialized 0x0/Invalid DP state.
+
+Daemon shutdown can restart Omarchy's monitor watcher. Recovery holds both
+omarchy-monitor-clamshell.lock and omarchy-monitor-modeless.lock from before
+child shutdown through child startup and cleanup. It accepts only watcher
+script SHA-256
+5b7415c8b25dcccc695c808163b9ff4602cdbacecabf23398a166bfe85623b48,
+whose clamshell and modeless writers honor those locks. Different installed
+bytes fail closed before takeover and need explicit contract qualification.
+The new child reclaims the watcher through the daemon's existing ownership
+lifecycle. No watcher service is disabled or independently restarted here.
+A direct user hyprctl write, or a preview arriving in the narrow interval between
+the final query and child termination, has no atomic reservation API. Fresh
+IPC peer/preview checks and topology checks defer restoration on an observed
+conflict; this path does not claim an atomic human-input reservation.
+
+After detect, the new child serves fresh IPC. The controller applies tv-game
+once without saving a profile, checks identity, dimensions, scale, transform,
+position, refresh and actual DRM scanout, restores regular/special placement and
+special visibility, removes only its backup, verifies again, then commits.
+Saved profiles and calibration are unchanged. Audio follows the verified live
+route on the next normal poll.
+
+The private runtime file display-hdmi-recovery.json owns the backup name,
+original workspace snapshot, saved-profile snapshot and recovery stage.
+Incomplete cleanup leaves that file and backup in place. Ordinary polls defer.
+On a later controller start, one bounded cleanup attempt can compensate detect
+and finish restoration; it never repeats off. A changed profile, preview,
+identity, sleep state or competing owner leaves recovery pending for the
+operator. Do not delete the journal to force routing or start Sunshine over it.
+If stop/start, socket cleanup or watcher qualification fails, status reports
+the concrete error and retains cleanup ownership.
+
+The kernel off/detect primitive was qualified on the healthy TV under a temporary
+backup without restarting Hyprland or applications. Full recovery of a naturally
+stale receiver incident still needs live acceptance. A real-TV identity with
+stale modes is not an automatic trigger until separately qualified. The existing
+Sunshine TV-off receiver snapshot still requires previously initialized DP
+geometry and SDR fields; a disabled DP at 0x0 with currentFormat Invalid remains
+outside that fallback. This change does not qualify every TV-off state.
+
 
 Stop the display service before restoring the backed-up scripts and its previous
 drop-in. Restore the prior autostart file and timer enablement only after the old

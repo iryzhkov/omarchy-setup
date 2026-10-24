@@ -134,6 +134,8 @@ class Host:
         return monitors
 
     def editor(self):
+        if (self.runtime / "display-hdmi-recovery.json").exists():
+            raise ValueError("HDMI recovery journal owns display; controller cleanup required")
         with dc.IPC(self.runtime / "hyprmoncfgd.sock") as ipc:
             daemon = ipc.request("status")["daemon"]
             dc.require_ipc_only(daemon)
