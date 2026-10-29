@@ -35,6 +35,8 @@ WATCHER_SHA256S = {
     "124c14fbc0285cf195e529d7cdee6f90baeec2c9a1421f9b9a3cec933024eced",
 }
 ERRORS = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+# Capture once. Re-reading only at publication would hide an update beneath this process.
+LOADED_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def choose(states):
@@ -113,9 +115,16 @@ def drm_size(report):
     connector = re.search(r"^\d+\s+(\d+)\s+connected\s+HDMI-A-1\s", report, re.M)
     if not connector:
         return None
+    # A connected HDMI output with no encoder/CRTC has no active scanout.
+    # Report a zero size so an awake TV reaches bounded mismatch recovery.
+    # Missing or unparseable DRM evidence remains unavailable.
+    if connector[1] == "0":
+        return (0, 0)
     encoder = re.search(r"^" + connector[1] + r"\s+(\d+)\s+TMDS\s", report, re.M)
-    if not encoder or encoder[1] == "0":
+    if not encoder:
         return None
+    if encoder[1] == "0":
+        return (0, 0)
     crtc = re.search(r"^" + encoder[1] + r"\s+\d+\s+\([^\n]*?\)\s+\((\d+)x(\d+)\)", report, re.M)
     return (int(crtc[1]), int(crtc[2])) if crtc else None
 
@@ -123,14 +132,17 @@ def drm_size(report):
 def check(monitors, actual):
     enabled = [m for m in monitors if m.get("disabled") is False]
     tv = next((m for m in enabled if m.get("name") == TV_OUTPUT), None)
-    if len(enabled) != 1 or not tv or tv.get("dpmsStatus") is not True or actual is None:
-        return {"health": "unavailable"}
+    if len(enabled) != 1 or not tv:
+        return {"health": "unavailable", "reason": "TV is not the sole enabled output"}
+    if tv.get("dpmsStatus") is not True:
+        return {"health": "unavailable", "reason": "TV is asleep or DPMS state is unknown"}
+    if actual is None:
+        return {"health": "unavailable", "reason": "HDMI scanout evidence is missing or unparseable"}
     expected = (tv.get("width"), tv.get("height"))
     if not all(isinstance(v, int) and v > 0 for v in expected):
-        return {"health": "unavailable"}
+        return {"health": "unavailable", "reason": "TV compositor dimensions are invalid"}
     return {"health": "healthy" if expected == actual else "mismatch",
             "expected": expected, "actual": actual}
-
 
 def run(args, timeout=5):
     """Kill the entire helper process group on timeout, including ha's jq."""
@@ -909,6 +921,7 @@ class Coordinator:
                     return
                 state = check(monitors, self.system.drm())
                 self.health = state["health"]
+                self.error = state.get("reason")
                 if self.health != "mismatch":
                     self.reset_mismatch()
                     return
@@ -1599,6 +1612,44 @@ def supervise(system, coordinator, child, publish):
         publish(coordinator.status())
 
 
+def source_identity(state, source_path):
+    """Enrich cached status without querying or changing any display."""
+    state = dict(state)
+    try:
+        installed = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    except OSError:
+        installed = None
+    loaded = state.get("loaded_source_sha256")
+    state["installed_source_sha256"] = installed
+    state["source_changed"] = installed != loaded if installed and loaded else None
+    observed = state.get("observed_at")
+    state["status_age_seconds"] = max(0, time.time() - observed) if isinstance(observed, (int, float)) else None
+    return state
+
+
+class StatusPublisher:
+    """Persist snapshots and journal meaningful transitions, without repeated poll noise."""
+    def __init__(self, runtime, source_path=None):
+        self.runtime = runtime
+        self.source_path = Path(__file__) if source_path is None else source_path
+        self.previous = None
+
+    def __call__(self, state):
+        state = source_identity(dict(state, controller_pid=os.getpid(),
+                                     loaded_source_sha256=LOADED_SOURCE_SHA256,
+                                     observed_at=time.time(),
+                                     hyprland_instance=os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")),
+                                self.source_path)
+        atomic_write(self.runtime / "display-controller-status.json", json.dumps(state) + "\n")
+        if state["selected_route"]:
+            atomic_write(self.runtime / "ha-display-profile", state["selected_route"] + "\n")
+        # Exclude timestamps and snapshot age, which change on every poll.
+        transition = {k: v for k, v in state.items() if k not in ("observed_at", "status_age_seconds")}
+        if transition != self.previous:
+            print(json.dumps({"event": "display-controller-state", **state}), flush=True)
+            self.previous = transition
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
@@ -1619,7 +1670,8 @@ def main(argv=None):
     try:
         runtime = runtime_dir()
         if args.status:
-            print(json.dumps(json.loads((runtime / "display-controller-status.json").read_text())))
+            cached = json.loads((runtime / "display-controller-status.json").read_text())
+            print(json.dumps(source_identity(cached, Path(__file__))))
             return 0
         if args.audio_tv or args.audio_desk:
             system = System(runtime, stop)
@@ -1642,12 +1694,7 @@ def main(argv=None):
             system = System(runtime, stop)
             coordinator = Coordinator(system)
 
-            def publish(state):
-                atomic_write(runtime / "display-controller-status.json", json.dumps(state) + "\n")
-                if state["selected_route"]:
-                    atomic_write(runtime / "ha-display-profile", state["selected_route"] + "\n")
-
-            supervise(system, coordinator, Child(), publish)
+            supervise(system, coordinator, Child(), StatusPublisher(runtime))
         return 0
     except ERRORS as exc:
         print(json.dumps({"health": "unavailable", "error": str(exc)}))
