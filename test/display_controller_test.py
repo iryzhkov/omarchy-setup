@@ -589,6 +589,36 @@ class CoordinatorTests(unittest.TestCase):
         self.tick(3)
         self.assertEqual(len(self.system.mutations()), 2)
 
+    def test_connected_without_scanout_reaches_bounded_recovery(self):
+        for report in ("32 0 connected HDMI-A-1 1600x900 1 12\n",
+                       "12 0 TMDS 0x2 0x0\n32 12 connected HDMI-A-1 1600x900 1 12\n"):
+            with self.subTest(report=report):
+                self.setUp()
+                self.route_tv()
+                follow = self.system.drm
+                self.system.drm = lambda: dc.drm_size(report) if self.system.live == "tv-game" else follow()
+                self.tick(2)
+                self.assertEqual(self.system.live, "tv-recovery")
+                mutations = self.system.mutations()
+                self.tick(10)
+                self.assertEqual(self.system.mutations(), mutations)
+                self.assertEqual(self.coordinator.health, "healthy")
+                self.assertIsNone(self.coordinator.error)
+                self.assertEqual(self.system.profiles, self.system.saved)
+
+    def test_unavailable_scanout_has_reason_and_never_modesets(self):
+        self.route_tv()
+        self.system.actual = None
+        mutations = self.system.mutations()
+        self.tick(4)
+        self.assertEqual(self.coordinator.health, "unavailable")
+        self.assertIn("missing or unparseable", self.coordinator.status()["error"])
+        self.assertEqual(self.system.mutations(), mutations)
+        self.system.actual = "follow"
+        self.tick()
+        self.assertEqual(self.coordinator.health, "healthy")
+        self.assertIsNone(self.coordinator.error)
+
     def test_bounded_recovery_restores_preferred_once(self):
         self.route_tv()
         self.system.actual = (1280, 720)
@@ -1885,7 +1915,10 @@ CRTCs:
 23 45 (4096,0) (1920x1080)
 """
         self.assertEqual(dc.drm_size(report), (1920, 1080))
-        self.assertIsNone(dc.drm_size(report.replace("12 23 TMDS", "12 0 TMDS")))
+        self.assertEqual(dc.drm_size(report.replace("12 23 TMDS", "12 0 TMDS")), (0, 0))
+        self.assertEqual(dc.drm_size(report.replace("32 12 connected HDMI", "32 0 connected HDMI")), (0, 0))
+        self.assertIsNone(dc.drm_size(report.replace("12 23 TMDS", "12 23 UNKNOWN")))
+        self.assertIsNone(dc.drm_size(report.replace("23 45 (4096,0) (1920x1080)", "")))
         self.assertIsNone(dc.drm_size(report.replace("connected HDMI", "disconnected HDMI")))
 
     def test_check_health_and_cli_exit_codes_are_read_only(self):
@@ -1896,6 +1929,57 @@ CRTCs:
             with mock.patch.object(dc, "System", return_value=system), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(dc.main(["--check"]), code)
         self.assertEqual(system.calls, [])
+
+    def test_unavailable_reasons_preserve_sleep_and_topology_guards(self):
+        system = FakeSystem()
+        system.apply("tv-game")
+        tv = next(m for m in system.mon if m["name"] == dc.TV_OUTPUT)
+        for mutation, reason in (
+                (lambda: tv.update(dpmsStatus=False), "asleep"),
+                (lambda: tv.update(dpmsStatus=None), "unknown"),
+                (lambda: tv.update(disabled=True), "sole enabled"),
+                (lambda: tv.update(width=0), "dimensions")):
+            with self.subTest(reason=reason):
+                system.apply("tv-game")
+                tv = next(m for m in system.mon if m["name"] == dc.TV_OUTPUT)
+                mutation()
+                state = dc.check(system.mon, (0, 0))
+                self.assertEqual(state["health"], "unavailable")
+                self.assertIn(reason, state["reason"])
+        self.assertEqual(system.mutations(), [])
+
+    def test_status_logs_transitions_and_detects_source_replacement_without_actions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            source = runtime / "controller"
+            source.write_text("original")
+            loaded = dc.hashlib.sha256(source.read_bytes()).hexdigest()
+            state = dc.Coordinator(FakeSystem()).status(42)
+            publisher = dc.StatusPublisher(runtime, source)
+            with mock.patch.object(dc, "LOADED_SOURCE_SHA256", loaded), \
+                    mock.patch.object(dc, "run") as command, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                publisher(state)
+                publisher(state)
+                self.assertEqual(len(output.getvalue().splitlines()), 1)
+                cached = json.loads((runtime / "display-controller-status.json").read_text())
+                self.assertFalse(cached["source_changed"])
+                self.assertEqual(cached["controller_pid"], os.getpid())
+                self.assertEqual(cached["loaded_source_sha256"], loaded)
+                source.write_text("replacement")
+                # A read sees the update even before another coordinator poll.
+                fresh = dc.source_identity(cached, source)
+                self.assertTrue(fresh["source_changed"])
+                self.assertGreaterEqual(fresh["status_age_seconds"], 0)
+                publisher(state)
+                publisher(state)
+                self.assertEqual(len(output.getvalue().splitlines()), 2)
+                self.assertTrue(json.loads(output.getvalue().splitlines()[-1])["source_changed"])
+                source.unlink()
+                self.assertIsNone(dc.source_identity(cached, source)["source_changed"])
+                self.assertIsNone(dc.source_identity({}, source)["status_age_seconds"])
+                command.assert_not_called()
+            self.assertEqual((runtime / "display-controller-status.json").stat().st_mode & 0o777, 0o600)
 
     def test_ha_reader_does_not_query_unused_fallbacks(self):
         responses = [json.dumps(s) for s in ha()[:3]]

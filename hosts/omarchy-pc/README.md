@@ -56,7 +56,28 @@ overlay; the passive shim keeps an older hook from changing display modes.
 Run only the relevant setup modules when installing this change. Do not run a
 whole-machine setup as part of a display fix. A display-service restart can
 briefly interrupt monitor management, so install while unlocked and with the
-working SDR profile available.
+working SDR profile available. Do not replace installed helpers or restart this
+service while a game or stream is using the display. A source-only repair can be
+tested and published first, with activation deferred until the user is ready.
+
+After a permitted update and service restart, check display-controller --status.
+loaded_source_sha256 records the controller file fingerprint captured at process
+startup; installed_source_sha256 reads the current file. source_changed=true
+means the running process has not picked up the installed file, so schedule a
+service restart for an idle window. It never restarts itself. A missing fingerprint
+from an older process or unreadable file is reported as null, not a verified match.
+controller_pid, hyprland_instance, observed_at and status_age_seconds identify the
+process/session and freshness of the cached observation. --status reads only the
+cached snapshot and controller file, without a compositor query or display action.
+
+The service journals state transitions with event=display-controller-state.
+Unchanged polls do not add log entries. An unavailable physical scanout check
+reports whether the TV layout, DPMS state, dimensions or DRM evidence prevented
+verification. A connected HDMI port with an explicitly inactive encoder or CRTC
+is a zero-output mismatch, allowing the existing bounded recovery attempt.
+Missing or unparseable evidence, display sleep and ownership guards still defer.
+A later healthy observation clears the current error; prior failures remain in
+the journal. This does not establish why an HDMI link failed at the requested mode.
 
 ## Readiness and live testing
 
